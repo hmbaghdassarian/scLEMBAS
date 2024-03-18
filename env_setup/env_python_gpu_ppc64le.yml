@@ -25,10 +25,15 @@ dependencies:
 
 # developer
     # - conda-forge::pygments
+    # - conda-forge::wheel
+    # - conda-forge::twine
     # - pip:
     #     - mkdocs
     #     - mkdocstrings
     #     - mkdocstrings-python
     #     - mkdocs-material
+    #     - mkdocs-jupyter # for jupyter notebooks
     #     - pytkdocs[numpy-style]
+    #     - keyring 
+    #     - keyrings.alt
     

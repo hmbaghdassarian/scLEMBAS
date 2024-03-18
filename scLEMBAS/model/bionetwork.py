@@ -14,11 +14,9 @@ from scipy.sparse.linalg import eigs
 import torch
 import torch.nn as nn
 
-import sys
-sys.path.insert(1, "/home/hmbaghda/Projects/scLEMBAS/")
-from scLEMBAS.model.model_utilities import np_to_torch, format_network
-from scLEMBAS.model.activation_functions import activation_function_map
-from scLEMBAS.utilities import set_seeds
+from .model_utilities import np_to_torch
+from .activation_functions import activation_function_map
+from ..utilities import set_seeds
 
 class ProjectInput(nn.Module):
     """Generate all nodes for the signaling network and linearly scale input ligand values by NN parameters."""
@@ -429,7 +427,7 @@ class BioNet(nn.Module):
 
 class ProjectOutput(nn.Module):
     """Transforms signaling network to TF activity."""
-    def __init__(self, node_idx_map: Dict[str, int], output_labels: : np.array,
+    def __init__(self, node_idx_map: Dict[str, int], output_labels: np.array,
                     projection_amplitude: Union[int, float] = 1,
                     dtype: torch.dtype=torch.float32, device: str = 'cpu'):
         """Initialization method.

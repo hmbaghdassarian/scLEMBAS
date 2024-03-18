@@ -5,7 +5,6 @@ repo_url: https://github.com/hmbaghdassarian/scLEMBAS
 repo_name: hmbaghdassarian/scLEMBAS
 
 theme: readthedocs
-repo_url: https://github.com/hmbaghdassarian/human_me
 plugins:
   - search
   - mkdocstrings:
@@ -18,22 +17,7 @@ plugins:
             show_source: true
           options:
             show_submodules: true
-
-# theme: readthedocs
-# repo_url: https://github.com/hmbaghdassarian/human_me
-# plugins:
-#   - search
-#   - mkdocstrings:
-#       default_handler: python
-#       handlers:
-#         python:
-#           paths: scLEMBAS
-#           selection:
-#             docstring_style: "numpy"
-#           rendering:
-#             show_source: false
-#           options:
-#             show_submodules: true
+  - mkdocs-jupyter
 
 markdown_extensions:
   - pymdownx.highlight

@@ -10,11 +10,12 @@ import torch
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 
-sclembas_path = '/home/hmbaghda/Projects/scLEMBAS'
-import sys
-import os
-sys.path.insert(1, os.path.join(sclembas_path))
-import scLEMBAS.utilities as utils
+# sclembas_path = '/home/hmbaghda/Projects/scLEMBAS'
+# import sys
+# import os
+# sys.path.insert(1, os.path.join(sclembas_path))
+# import scLEMBAS.utilities as utils
+import LEMBAS.utilities as utils
 
 LR_PARAMS = {'max_iter': 5000, 'learning_rate': 2e-3}
 OTHER_PARAMS = {'batch_size': 8, 'noise_level': 10, 'gradient_noise_level': 1e-9}
