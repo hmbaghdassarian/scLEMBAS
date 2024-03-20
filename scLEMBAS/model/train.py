@@ -3,6 +3,7 @@ Train the signaling model.
 """
 from typing import Dict, List, Union
 import time
+from tqdm import trange
 
 import numpy as np
 from sklearn.model_selection import train_test_split
@@ -18,7 +19,7 @@ from torch.utils.data import DataLoader
 import LEMBAS.utilities as utils
 
 LR_PARAMS = {'max_iter': 5000, 'learning_rate': 2e-3}
-OTHER_PARAMS = {'batch_size': 8, 'noise_level': 10, 'gradient_noise_level': 1e-9}
+OTHER_PARAMS = {'batch_size': 32, 'noise_level': 10, 'gradient_noise_level': 1e-9}
 REGULARIZATION_PARAMS = {'param_lambda_L2': 1e-6, 'moa_lambda_L1': 0.1, 'ligand_lambda_L2': 1e-5, 'uniform_lambda_L2': 1e-4, 
                    'uniform_max': (1/1.2), 'spectral_loss_factor': 1e-5}
 SPECTRAL_RADIUS_PARAMS = {'n_probes_spectral': 5, 'power_steps_spectral': 50, 'subset_n_spectral': 10}
@@ -154,17 +155,17 @@ def train_signaling_model(mod,
     optimizer = optimizer(mod.parameters(), lr=1, weight_decay=0)
     reset_state = optimizer.state.copy()
 
+    # set up data objects
+    if not train_seed:
+        train_seed = mod.seed
+    X_train, X_test, X_val, y_train, y_test, y_val = split_data(mod.X_in, mod.y_out, train_split_frac, train_seed)
+
     X_in = mod.df_to_tensor(mod.X_in)
     y_out = mod.df_to_tensor(mod.y_out)
     mean_loss = loss_fn(torch.mean(y_out, dim=0) * torch.ones(y_out.shape, device = y_out.device), y_out) # mean TF (across samples) loss
-
-    # set up data objects
     
-    if not train_seed:
-        train_seed = mod.seed
-    X_train, X_test, X_val, y_train, y_test, y_val = split_data(X_in, y_out, train_split_frac, train_seed)
     
-    train_data = ModelData(X_train.to('cpu'), y_train.to('cpu'))
+    train_data = ModelData(mod.df_to_tensor(X_train).to('cpu'), mod.df_to_tensor(y_train).to('cpu'))
     if mod.device == 'cuda':
         pin_memory = True
     else:
@@ -182,7 +183,7 @@ def train_signaling_model(mod,
                                   shuffle=True) 
     start_time = time.time()
     # begin iteration
-    for e in range(hyper_params['max_iter']):
+    for e in trange(hyper_params['max_iter']):
         # set learning rate
         cur_lr = utils.get_lr(e, hyper_params['max_iter'], max_height = hyper_params['learning_rate'],
                               start_height=hyper_params['learning_rate']/10, end_height=1e-6, peak = 1000)
@@ -235,7 +236,7 @@ def train_signaling_model(mod,
         stats = utils.update_progress(stats, iter = e, loss = cur_loss, eig = cur_eig, learning_rate = cur_lr, 
                                      n_sign_mismatches = mod.signaling_network.count_sign_mismatch())
         
-        if verbose and e % 250 == 0:
+        if verbose and e % (hyper_params['max_iter']/100) == 0:
             utils.print_stats(stats, iter = e)
         
         if np.logical_and(e % reset_epoch == 0, e>0):

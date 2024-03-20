@@ -140,7 +140,7 @@ def _compute_elbow(adata, curve='convex', direction='decreasing', **kwargs):
     rank = kneedle.elbow
     return rank
 
-def project_tf_activity(adata: AnnData, estimate_key: str = 'consensus_estimate'):
+def embed_tf_activity(adata: AnnData, estimate_key: str = 'consensus_estimate'):
     """Runs dimensionality reduction and clustering of cells from their TF activity using default scanpy parameters.
 
     Parameters
