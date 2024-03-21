@@ -131,18 +131,8 @@ def train_signaling_model(mod,
         a list of the spectral_radius across training iterations
     mean_loss : torch.Tensor
         mean TF activity loss across samples (independent of training)
-    X_train : torch.Tensor
-        the train split of the input data
-    X_test : torch.Tensor
-        the test split of the input data
-    X_val : torch.Tensor
-        the validation split of the input data
-    y_train : torch.Tensor
-        the train split of the output data
-    y_test : torch.Tensor
-        the test split of the output data
-    y_val : torch.Tensor
-        the validation split of the output data
+    split_data_dict : Dict[str, pd.DataFrame]
+        key value pairs represent the output of the `split_data` function
     """
     if not hyper_params:
         hyper_params = HYPER_PARAMS.copy()
@@ -158,7 +148,10 @@ def train_signaling_model(mod,
     # set up data objects
     if not train_seed:
         train_seed = mod.seed
+
     X_train, X_test, X_val, y_train, y_test, y_val = split_data(mod.X_in, mod.y_out, train_split_frac, train_seed)
+    split_data_dict = {'X_train': X_train, 'X_test': X_test, 'X_val': X_val, 
+                      'y_train': y_train, 'y_test': y_test, 'y_val': y_val}
 
     X_in = mod.df_to_tensor(mod.X_in)
     y_out = mod.df_to_tensor(mod.y_out)
@@ -246,4 +239,4 @@ def train_signaling_model(mod,
         mins, secs = divmod(time.time() - start_time, 60)
         print("Training ran in: {:.0f} min {:.2f} sec".format(mins, secs))
 
-    return mod, cur_loss, cur_eig, mean_loss, stats, X_train, X_test, X_val, y_train, y_test, y_val
+    return mod, cur_loss, cur_eig, mean_loss, stats, split_data_dict
