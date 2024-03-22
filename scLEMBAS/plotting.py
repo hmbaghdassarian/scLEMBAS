@@ -55,7 +55,8 @@ def shade_plot(X: np.array, Y: np.array, sigma: np.array, x_label: str, y_label:
     return plot
 
 def plot_embedding(adata: anndata.AnnData, group_label: str, embedding: str = 'pca', 
-                   palette: Literal['Set1', 'Set2', 'Set3'] = 'Set1', width: int = 5, height: int = 3):
+                   palette: Literal['Set1', 'Set2', 'Set3'] = 'Set1', width: int = 5, height: int = 3, 
+                  **kwargs):
     """Scatter plot of reduced space. 
 
     Parameters
@@ -82,7 +83,7 @@ def plot_embedding(adata: anndata.AnnData, group_label: str, embedding: str = 'p
 
     p = (
         p9.ggplot(X, p9.aes(x=X.columns[0], y = X.columns[1], color = group_label)) +
-        p9.geom_point() +
+        p9.geom_point(**kwargs) +
         p9.xlab(col_labels[0]) + p9.ylab(col_labels[1]) + 
         p9.theme_bw() + p9.theme(figure_size=(width, height)) + 
         p9.scale_color_manual(values=palette_map[palette])

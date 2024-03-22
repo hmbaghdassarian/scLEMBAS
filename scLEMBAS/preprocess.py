@@ -78,35 +78,35 @@ def get_tf_activity(adata, organism: str, grn = 'collectri',
             
         adata.obsm[estimate_key[0]][adata.obsm[pvals_key[0]] > pval_thresh] = 0
 
-# def _pca_simple(adata: AnnData, n_components: int = 50, random_state: int = 888):
-#     """Minimal re-implementation of scanpy's PCA with default parameters that returns the pca object.
+def _pca_simple(adata: AnnData, n_components: int = 50, random_state: int = 888):
+    """Minimal re-implementation of scanpy's PCA with default parameters that returns the pca object.
 
-#     Parameters
-#     ----------
-#     adata : AnnData
-#         data matrix in `.X` of shape n_obs × n_vars. Rows correspond to cells and columns to features.
-#     n_components : int, optional
-#         Number of principal components to compute, by default 50
-#     random_state : int, optional
-#         Change to use different initial states for the optimization, by default 888
-#     """
-#     pca_mod = PCA(n_components=n_components, random_state = random_state)
-#     pca_mod.fit(adata.X)
-#     X_pca = pca_mod.transform(adata.X) # need to separate fit_transform otherwise won't be able to reproducibly run .transform
-#     adata.obsm["X_pca"] = X_pca
-#     adata.varm["PCs"] = pca_mod.components_.T
+    Parameters
+    ----------
+    adata : AnnData
+        data matrix in `.X` of shape n_obs × n_vars. Rows correspond to cells and columns to features.
+    n_components : int, optional
+        Number of principal components to compute, by default 50
+    random_state : int, optional
+        Change to use different initial states for the optimization, by default 888
+    """
+    pca_mod = PCA(n_components=n_components, random_state = random_state)
+    pca_mod.fit(adata.X)
+    X_pca = pca_mod.transform(adata.X) # need to separate fit_transform otherwise won't be able to reproducibly run .transform
+    adata.obsm["X_pca"] = X_pca
+    adata.varm["PCs"] = pca_mod.components_.T
     
-#     uns_entry = {
-#         "params": {
-#             "zero_center": True,
-#             "use_highly_variable": False,
-#             "mask": None,
-#         },
-#         "variance": pca_mod.explained_variance_,
-#         "variance_ratio": pca_mod.explained_variance_ratio_,
-#         "pca_mod": pca_mod
-#     }
-#     adata.uns["pca"] = uns_entry
+    uns_entry = {
+        "params": {
+            "zero_center": True,
+            "use_highly_variable": False,
+            "mask": None,
+        },
+        "variance": pca_mod.explained_variance_,
+        "variance_ratio": pca_mod.explained_variance_ratio_,
+        "pca_mod": pca_mod
+    }
+    adata.uns["pca"] = uns_entry
 
 def _compute_elbow(adata, curve='convex', direction='decreasing', **kwargs):
     '''Computes the elbow of a curve. Adapted from cell2cell (https://github.com/earmingol/cell2cell/).
@@ -140,7 +140,7 @@ def _compute_elbow(adata, curve='convex', direction='decreasing', **kwargs):
     rank = kneedle.elbow
     return rank
 
-def embed_tf_activity(adata: AnnData, estimate_key: str = 'consensus_estimate'):
+def embed_tf_activity(adata: AnnData, estimate_key: str = 'consensus_estimate', scanpy_pca: bool = False):
     """Runs dimensionality reduction and clustering of cells from their TF activity using default scanpy parameters.
 
     Parameters
@@ -149,6 +149,10 @@ def embed_tf_activity(adata: AnnData, estimate_key: str = 'consensus_estimate'):
         AnnData object with TF activity scores stored in `.obsm[estimate_key]`.
     estimate_key : str, optional
         `.obsm` key under which TF activity is stored, by default 'consensus_estimate'
+        if None, assumes that the anndata object contains the TF activity in `X` 
+    scanpy_pca : bool, optional
+        whether to youse scanpy's PCA (True) or sklearn (False), by default False
+        Using scanpy's, sometimes projecting single vectors into PCA space causes issues which can be avoided with sklearn
 
     Returns
     -------
@@ -157,8 +161,16 @@ def embed_tf_activity(adata: AnnData, estimate_key: str = 'consensus_estimate'):
         in default scanpy locations. Cluster labels on TF activity space are stores in `adata.obs['TF_clusters']`
     """
 
-    tf_adata = AnnData(adata.obsm[estimate_key])
-    sc.tl.pca(data = tf_adata) # _pca_simple(adata = tf_adata) # run PCA # only needed for the model to use transform, but sc.tl.ingest can do this
+    if not estimate_key:
+        tf_adata = adata
+    else:
+        tf_adata = AnnData(adata.obsm[estimate_key])
+
+    if scanpy_pca:
+        sc.tl.pca(data = tf_adata)
+    else:
+        _pca_simple(adata = tf_adata) 
+    
     pc_rank = _compute_elbow(adata = tf_adata)
     tf_adata.uns["pca"]['pca_rank'] = pc_rank
 
@@ -170,6 +182,8 @@ def embed_tf_activity(adata: AnnData, estimate_key: str = 'consensus_estimate'):
     sc.tl.leiden(adata = tf_adata) # cluster
 
     tf_adata.obs.rename(columns = {'leiden': 'TF_clusters'}, inplace = True)
-    tf_adata.obs = pd.concat([adata.obs, tf_adata.obs], axis = 1)
+
+    if estimate_key:
+        tf_adata.obs = pd.concat([adata.obs, tf_adata.obs], axis = 1)
 
     return tf_adata
