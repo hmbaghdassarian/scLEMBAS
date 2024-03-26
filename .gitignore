@@ -6,3 +6,4 @@
 **/*.npz
 **/*.pth
 **/__pycache__/
+/notebooks/cpa/

@@ -17,11 +17,13 @@ dependencies:
         - decoupler==1.5.0
 
 # replace pytorch with this on OS other than ppc64le
-    # - nvidia::cuda-toolkit
-    # - pytorch::pytorch-cuda=11.8#11.6
-    # - pytorch::torchvision
-    # - pytorch::torchaudio
-    # - pytorch::pytorch=*=*cuda*
+    # - pip:
+    #     - torch>=2.1.0
+    ## - nvidia::cuda-toolkit
+    ## - pytorch::pytorch-cuda=11.8#11.6
+    ## - pytorch::torchvision
+    ## - pytorch::torchaudio
+    ## - pytorch::pytorch=*=*cuda*
 
 # developer
     # - conda-forge::pygments

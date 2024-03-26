@@ -21,6 +21,13 @@ def set_seeds(seed: int=888):
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
 
+    # lightning
+    # L.seed_everything(42)
+    
+    # # Ensure that all operations are deterministic on GPU (if used) for reproducibility
+    # torch.backends.cudnn.deterministic = True
+    # torch.backends.cudnn.benchmark = False
+
 def set_cores(n_cores: int):
     """Set environmental variables to ensure core usage is limited to n_cores
 
