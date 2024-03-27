@@ -41,7 +41,7 @@ def update_with_defaults(default_parameters: dict, user_parameters: dict, additi
     """
 
     allowed_params = list(default_parameters.keys())
-    if additional_params:
+    if additional_parameters:
         allowed_params += additional_parameters
     
     params = {**default_parameters.copy(), **user_parameters}

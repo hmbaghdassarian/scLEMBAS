@@ -8,8 +8,8 @@ from tqdm import tqdm
 
 import omnipath as op
 import pandas as pd
+import numpy as np
 import networkx as nx
-
 
 ppi_link = 'https://zenodo.org/records/10823116/files/organism_omnipath_ppi_03_15_24.csv'
 
