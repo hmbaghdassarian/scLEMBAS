@@ -1,6 +1,7 @@
 """
 Helper functions for building the model.
 """
+from typing import List, Optional
 
 import numpy as np
 import pandas as pd
@@ -20,6 +21,33 @@ def np_to_torch(arr: np.array, dtype: torch.float32, device: str = 'cpu'):
         whether to use gpu ("cuda") or cpu ("cpu"), by default "cpu"
     """
     return torch.tensor(arr, dtype=dtype, device = device)
+
+def update_with_defaults(default_parameters: dict, user_parameters: dict, additional_parameters: Optional[List[str]] = None)->dict:
+    """Updates a dictionary of user-provided parameters with default parameters where missing. 
+
+    Parameters
+    ----------
+    default_parameters : dict
+        all default parameters
+    user_parameters : dict
+        user-provided parameters
+    additional_parameters : Optional[List[str]], optional
+        additional keys that are not provided in default parameters, by default None
+
+    Returns
+    -------
+    params : dict
+        the user-provided parameters, updated for missing values
+    """
+
+    allowed_params = list(default_parameters.keys())
+    if additional_params:
+        allowed_params += additional_parameters
+    
+    params = {**default_parameters.copy(), **user_parameters}
+    params = {k: v for k,v in params.items() if k in allowed_params}
+
+    return params
 
 # def get_spectral_radius(weights: nn.parameter.Parameter):
 #     """_summary_

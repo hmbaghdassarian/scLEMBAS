@@ -14,7 +14,7 @@ from scipy.sparse.linalg import eigs
 import torch
 import torch.nn as nn
 
-from .model_utilities import np_to_torch
+from .model_utilities import np_to_torch, update_with_defaults
 from .activation_functions import activation_function_map
 from ..utilities import set_seeds
 
@@ -658,15 +658,21 @@ class SignalingModel(torch.nn.Module):
         attributes : dict
             keys are parameter names and values are parameter value
         """
-        #set defaults
-        default_parameters = self.DEFAULT_TRAINING_PARAMETERS.copy()
-        allowed_params = list(default_parameters.keys()) + ['spectral_target']
+        # #set defaults
+        # default_parameters = self.DEFAULT_TRAINING_PARAMETERS.copy()
+        # allowed_params = list(default_parameters.keys()) + ['spectral_target']
     
-        params = {**default_parameters, **attributes}
+        # params = {**default_parameters, **attributes}
+        # if 'spectral_target' not in params.keys():
+        #     params['spectral_target'] = np.exp(np.log(params['tolerance'])/params['target_steps'])
+    
+        # params = {k: v for k,v in params.items() if k in allowed_params}
+
+        params = update_with_defaults(default_params = default_parameters, 
+                                      user_parameters = attributes, 
+                                      additional_parameters = ['spectral_target'])
         if 'spectral_target' not in params.keys():
             params['spectral_target'] = np.exp(np.log(params['tolerance'])/params['target_steps'])
-    
-        params = {k: v for k,v in params.items() if k in allowed_params}
     
         return params
 
