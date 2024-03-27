@@ -1,7 +1,7 @@
 """
 Constructs the full LEMBAS model.
 """
-from typing import List, Dict, Union, Annotated
+from typing import List, Dict, Union, Annotated, Optional, Any
 from annotated_types import Ge
 
 import pandas as pd
@@ -12,7 +12,7 @@ from torch import nn
 
 from .model_utilities import update_with_defaults
 from .bionetwork import ProjectInput, BioNet, ProjectOutput
-from .tfa import TFA
+from .tfa import TFA, Encoder
 
 class SignalingModel(torch.nn.Module):
     """Constructs the signaling network based RNN."""
@@ -23,7 +23,14 @@ class SignalingModel(torch.nn.Module):
                  ban_list: List[str] = None, weight_label: str = 'mode_of_action', 
                  source_label: str = 'source', target_label: str = 'target', 
                 bionet_params: Dict[str, float] = None , 
-                 activation_function: str='MML', dtype: torch.dtype=torch.float32, device: str = 'cpu', seed: int = 888):
+                 activation_function: str='MML',
+                 
+                 skip_bionet_out: bool = False, 
+                 covariates: Optional[pd.DataFrame] = None, categorical_covariate_keys: Optional[List[str]] = None,
+                 tfa_hyper_params: Dict[str, Any] = TFA.DEFAULT_HYPER_PARAMS, 
+                 encoder_hyper_params: Dict[str, Any] = Encoder.DEFAULT_HYPER_PARAMS,
+                 
+                 dtype: torch.dtype=torch.float32, device: str = 'cpu', seed: int = 888):
         """Parse the signaling network and build the model layers.
 
         Parameters
@@ -57,6 +64,41 @@ class SignalingModel(torch.nn.Module):
                 - 'MML': Michaelis-Menten-like
                 - 'leaky_relu': Leaky ReLU
                 - 'sigmoid': sigmoid 
+        skip_bionet_out : bool, optional
+            whether to skip the ProjectOutput layer when using the autoencoder, by default False.
+            If True, will pass the full signaling network output directly into autoencoder
+            only relevant for bulk data in the presence of covariates
+        covariates : pd.DataFrame, optional
+            metadata with index as sample ids and columns containing various metadata values/mappings, by default None
+            If None, will run the original LEMBAS model
+        categorical_covariate_keys : List[str], optional
+            the columns in the dataframe representing categorical/discrete variables, by default None
+        tfa_hyper_params : Dict[str, Any], optional
+            Keyword arguments to pass to `TFA`. Keys include:
+                n_latent: int, optional
+                    dimension (no. of featuers) of the latent space, by default 64
+                cat_max_norm : int | float | None, optional
+                    passed to `max_norm` argument of nn.Embedding when generating categorical covariate embeddings, by default 1
+                recon_loss : Literal['gauss', 'nb'], optional
+                    Autoencoder loss (either "gauss" or "nb")
+                    Currently can only handle "guass"
+        encoder_hyper_params : Dict[str, Any]
+            Keyword arguments to pass to the `TFA` `Encoder`. Keys include:
+                n_hidden_layers : int, optional
+                    the number of fully-connected hidden layers, by default 1
+                n_hidden_nodes : int, optional
+                    number of hidden nodes per layer, by default 256
+                    if n_hidden_layers > 1, can specify a list of hidden nodes corresponding to number of nodes per layer
+                batch_momentum : float, optional
+                    `momentum` parameter for `BatchNorm` layer, by default .01
+                    If None, a `BatchNorm` is not added
+                layer_norm : bool, optional
+                    whether to have `LayerNorm` layers or not, by default False
+                dropout_rate : int | float, optional
+                    dropout rate to apply to each of the hidden layers, by default 0.1
+                    If None, dropout is not added
+                activation_fn : nn.Module | None, optional
+                    non-linear Pytorch activation function, by default nn.ReLU. No activation if set to None
         dtype : torch.dtype, optional
             datatype to store values in torch, by default torch.float32
         device : str
@@ -81,6 +123,10 @@ class SignalingModel(torch.nn.Module):
         self.X_in = X_in.loc[:, np.intersect1d(X_in.columns.values, node_labels)]
         self.y_out = y_out.loc[:, np.intersect1d(y_out.columns.values, node_labels)]
 
+        # set up TFA
+        tfa_hyper_params = update_with_defaults(default_parameters=TFA.DEFAULT_HYPER_PARAMS, 
+                                                    user_parameters = tfa_hyper_params)
+
         # define model layers
         self.input_layer = ProjectInput(node_idx_map = self.node_idx_map, 
                                         input_labels = self.X_in.columns.values, 
@@ -93,10 +139,25 @@ class SignalingModel(torch.nn.Module):
                                         bionet_params = bionet_params, 
                                         activation_function = activation_function, 
                                         dtype = self.dtype, device = self.device, seed = self.seed)
-        self.output_layer = ProjectOutput(node_idx_map = self.node_idx_map, 
-                                          output_labels = self.y_out.columns.values, 
-                                          projection_amplitude = self.projection_amplitude_out, 
-                                          dtype = self.dtype, device = device)
+
+        if covariates is not None and skip_bionet_out:
+            self.output_layer = None
+            n_features_tfa = len(self.node_idx_map) # no. of nodes in network
+        else:
+            self.output_layer = ProjectOutput(node_idx_map = self.node_idx_map, 
+                                              output_labels = self.y_out.columns.values, 
+                                              projection_amplitude = self.projection_amplitude_out, 
+                                              dtype = self.dtype, device = device)
+            n_features_tfa = self.y_out.shape[1] # no. of TFs
+        if covariates is not None:
+            self.tf_autoencoder = TFA(covariates = covariates, 
+                                      categorical_covariate_keys = categorical_covariate_keys, 
+                                      n_features_in = n_features_tfa, # of TFs 
+                                     device = device,
+                                      encoder_hyper_params = encoder_hyper_params,
+                                      **tfa_hyper_params)
+        else:
+            self.tf_autoencoder = None
 
     def parse_network(self, net: pd.DataFrame, ban_list: List[str] = None, 
                  weight_label: str = 'mode_of_action', source_label: str = 'source', target_label: str = 'target'):
@@ -177,7 +238,7 @@ class SignalingModel(torch.nn.Module):
     
         # params = {k: v for k,v in params.items() if k in allowed_params}
 
-        params = update_with_defaults(default_params = self.DEFAULT_TRAINING_PARAMETERS, 
+        params = update_with_defaults(default_parameters = self.DEFAULT_TRAINING_PARAMETERS, 
                                       user_parameters = attributes, 
                                       additional_parameters = ['spectral_target'])
         if 'spectral_target' not in params.keys():
@@ -190,8 +251,15 @@ class SignalingModel(torch.nn.Module):
         `forward` methods of each layer for details."""
         X_full = self.input_layer(X_in) # input ligands to signaling network
         Y_full = self.signaling_network(X_full) # RNN of full signaling network
-        Y_hat = self.output_layer(Y_full) # TF outputs of signaling network
-        return Y_hat, Y_full
+
+        if self.output_layer:
+            Y_hat = self.output_layer(Y_full) # TF outputs of signaling network
+        else:
+            Y_hat = Y_full
+    
+        if self.tf_autoencoder:
+            z_basal = self.tf_autoencoder(Y_hat) 
+        return Y_hat, Y_full, z_basal
 
     def L2_reg(self, lambda_L2: Annotated[float, Ge(0)] = 0):
         """Get the L2 regularization term for the neural network parameters.

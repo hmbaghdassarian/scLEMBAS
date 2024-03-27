@@ -10,6 +10,7 @@ import pandas as pd
 import torch
 from torch import nn
 
+from ..utilities import set_seeds
 from .model_utilities import update_with_defaults
 
 class Encoder(nn.Module):
@@ -18,15 +19,15 @@ class Encoder(nn.Module):
     Adapted from scVI's `FCLayers`.
     """
 
-    DEFAULT_HYPER_PARAMS = {'n_latent': 64, 'n_hidden_layers': 1, 'n_hidden_nodes': [256], 
+    DEFAULT_HYPER_PARAMS = {'n_latent': 32, 'n_hidden_layers': 1, 'n_hidden_nodes': [64], 
                             'batch_momentum': 0.01, 'layer_norm': False, 'dropout_rate': 0.1,
                             'activation_fn': nn.ReLU # can make as None to have purely linear
                            }
     
     def __init__(self, n_features: int, 
-                 n_latent: int = 64, 
+                 n_latent: int = 32, 
                  n_hidden_layers: int = 1,
-                 n_hidden_nodes: List[int] | int = [256],
+                 n_hidden_nodes: List[int] | int = [64],
                  batch_norm: bool = True, 
                  batch_momentum: float = 0.01,
                  layer_norm: bool = False,
@@ -39,11 +40,11 @@ class Encoder(nn.Module):
         n_features : int
             the full number of features input to the encoder
         n_latent : int, optional
-            dimension (no. of features) of the latent space, by default 64
+            dimension (no. of features) of the latent space, by default 32
         n_hidden_layers : int, optional
             the number of fully-connected hidden layers, by default 1
         n_hidden_nodes : int, optional
-            number of hidden nodes per layer, by default 256
+            number of hidden nodes per layer, by default 64
             if n_hidden_layers > 1, can specify a list of hidden nodes corresponding to number of nodes per layer
         batch_momentum : float, optional
             `momentum` parameter for `BatchNorm` layer, by default .01
@@ -100,9 +101,13 @@ class TFA(nn.Module):
     """Decompose TF activity into basal effects and covariate-specific effects. 
     
     Adapted from Compositional Perturbation Autoencoder (https://doi.org/10.15252/msb.202211517)."""
+
+    DEFAULT_HYPER_PARAMS = {'n_latent': 32, 'cat_max_norm': 1, 'recon_loss': 'gauss'}
+
     def __init__(self, covariates: pd.DataFrame, 
                  categorical_covariate_keys: List[str],
-                 n_latent: int = 64, 
+                 n_features_in: int,
+                 n_latent: int = 32, 
                  cat_max_norm: int | float | None = 1, 
                  recon_loss : Literal['gauss', 'nb'] = 'gauss',
                 encoder_hyper_params: Dict[str, Any] = Encoder.DEFAULT_HYPER_PARAMS, 
@@ -115,8 +120,10 @@ class TFA(nn.Module):
             metadata with index as sample ids and columns containing various metadata values/mappings
         categorical_covariate_keys : List[str]
             the columns in the dataframe representing categorical/discrete variables
+        n_features_in : int
+            the number of input features to the autoencoder (either # of TFs or # of nodes in network)
         n_latent: int, optional
-            dimension (no. of featuers) of the latent space, by default 64
+            dimension (no. of featuers) of the latent space, by default 32
         cat_max_norm : int | float | None, optional
             passed to `max_norm` argument of nn.Embedding when generating categorical covariate embeddings, by default 1
         recon_loss : Literal['gauss', 'nb'], optional
@@ -127,7 +134,7 @@ class TFA(nn.Module):
                 n_hidden_layers : int, optional
                     the number of fully-connected hidden layers, by default 1
                 n_hidden_nodes : int, optional
-                    number of hidden nodes per layer, by default 256
+                    number of hidden nodes per layer, by default 64
                     if n_hidden_layers > 1, can specify a list of hidden nodes corresponding to number of nodes per layer
                 batch_momentum : float, optional
                     `momentum` parameter for `BatchNorm` layer, by default .01
@@ -147,11 +154,10 @@ class TFA(nn.Module):
         self.device = device
 
         # encoder
-        #n_features = ??
         encoder_hyper_params = update_with_defaults(default_parameters=Encoder.DEFAULT_HYPER_PARAMS, 
                                                     user_parameters = encoder_hyper_params)
         encoder_hyper_params['n_latent'] = n_latent
-        self.encoder = Encoder(n_features = n_features, **encoder_hyper_params)
+        self.encoder = Encoder(n_features = n_features_in, **encoder_hyper_params)
 
         # categorical embeddings
         # create an embedding for each discrete covariate
@@ -190,3 +196,4 @@ class TFA(nn.Module):
 
     def forward(self, x):
         z_basal = self.encoder(x)
+        return z_basal

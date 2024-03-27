@@ -456,7 +456,7 @@ class ProjectOutput(nn.Module):
 
         self.output_node_order = torch.tensor([node_idx_map[x] for x in output_labels], device = device) # idx representation of TF outputs
 
-        weights = self.projection_amplitude * torch.ones(len(output_labels), dtype=dtype, device = device)
+        weights = self.projection_amplitude * torch.ones(self.size_out, dtype=dtype, device = device)
         self.weights = nn.Parameter(weights)
 
     def forward(self, Y_full):
