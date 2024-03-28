@@ -80,6 +80,11 @@ class SignalingModel(torch.nn.Module):
                     dimension (no. of featuers) of the latent space, by default 64
                 cat_max_norm : int | float | None, optional
                     passed to `max_norm` argument of nn.Embedding when generating categorical covariate embeddings, by default 1
+                generative_decoder : bool, optional
+                    whether to make the decoder layer variational/generative (True) or not (False)
+                recon_loss : Literal['gauss', 'nb'], optional
+                    Autoencoder loss (either "gauss" or "nb"), by default 'gauss'
+                    Currently can only handle "guass"
         encoder_hyper_params : Dict[str, Any]
             Keyword arguments to pass to the `TFA` `Encoder`. Keys include:
                 n_hidden_nodes : List[int], optional
@@ -95,9 +100,14 @@ class SignalingModel(torch.nn.Module):
                     If None, dropout is not added
                 activation_fn : nn.Module | None, optional
                     non-linear Pytorch activation function, by default nn.ReLU. No activation if set to None
+                linear_output : bool, optional
+                    whether the final layer in the encoder should have a linear activation function (True) or the specified `activation_fn` (False)
         decoder_hyper_params : Dict[str, Any]
             same as `encoder_hyper_params`, but projects back from latent space to full feature space
             note, layer order is reversed so must list `n_hidden_nodes` as you would in encoder (from larger to bigger)
+            Additional key words when using the generative/variational decoder:
+                var_eps : float, optional
+                    Minimum value for the variance, by default 1e-4. Used for numerical stability
         dtype : torch.dtype, optional
             datatype to store values in torch, by default torch.float32
         device : str
@@ -258,8 +268,9 @@ class SignalingModel(torch.nn.Module):
             Y_hat = Y_full
     
         if self.tf_autoencoder:
-            z_basal = self.tf_autoencoder(Y_hat) 
-        return Y_hat, Y_full, z_basal
+            z_basal, z_full, px_mean, px_var = self.tf_autoencoder(Y_hat) 
+
+        return Y_hat, Y_full, z_basal, z_basal, z_full, px_mean, px_var
 
     def L2_reg(self, lambda_L2: Annotated[float, Ge(0)] = 0):
         """Get the L2 regularization term for the neural network parameters.

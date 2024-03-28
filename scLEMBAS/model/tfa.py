@@ -21,18 +21,19 @@ class Encoder(nn.Module):
 
     DEFAULT_HYPER_PARAMS = {'n_hidden_nodes': [64],
                             'batch_momentum': 0.01, 'layer_norm': False, 'dropout_rate': 0.1,
-                            'activation_fn': nn.ReLU # can make as None to have purely linear
+                            'activation_fn': nn.ReLU, # can make as None to have purely linear
+                            'linear_output': True
                             }
     
     def __init__(self, n_features: int, n_latent: int,
                  decode: bool = False,
-                 n_hidden_layers: int = 1,
                  n_hidden_nodes: List[int] = [64],
                  batch_norm: bool = True, 
                  batch_momentum: float = 0.01,
                  layer_norm: bool = False,
                  dropout_rate: int | float = 0.1,
                  activation_fn: nn.Module | None = nn.ReLU,
+                 linear_output : bool = True
                 ):
         """Initialize encoder.
 
@@ -57,6 +58,8 @@ class Encoder(nn.Module):
             If None, dropout is not added
         activation_fn : nn.Module | None, optional
             non-linear Pytorch activation function, by default nn.ReLU. No activation if set to None
+        linear_output : bool, optional
+            whether the final layer in the encoder should only be linear (True) or incorporate the specified `activation_fn` (False)
         """
         super().__init__()
 
@@ -76,14 +79,15 @@ class Encoder(nn.Module):
             self.layers_dim = self.layers_dim[::-1]
 
         enc_name = 'Encoder' if not decode else 'Decoder'
-        self.encoder = nn.Sequential(
-           OrderedDict(
-               [(enc_name + ' Layer {}'.format(i), self._single_layer(n_in,n_out)) 
-                for i, (n_in, n_out) in enumerate(zip(self.layers_dim[:-1], self.layers_dim[1:]))]
-               )
-           ) 
+        all_layers = OrderedDict()
+        for i, (n_in, n_out) in enumerate(zip(self.layers_dim[:-1], self.layers_dim[1:])):
+            if not (linear_output and i == len(n_hidden_nodes)):
+                all_layers[enc_name + ' Layer {}'.format(i)] = self._single_layer(n_in,n_out, drop_activation = False)
+            else:
+                all_layers[enc_name + ' Layer {}'.format(i)] = self._single_layer(n_in,n_out, drop_activation = True)
+        self.encoder = nn.Sequential(all_layers)
 
-    def _single_layer(self, n_in, n_out):
+    def _single_layer(self, n_in, n_out, drop_activation):
         """Creates a single [set of] layer[s] in the encoder."""
 
         all_layers = OrderedDict([('linear', nn.Linear(in_features = n_in, out_features = n_out, bias = True)),
@@ -91,23 +95,103 @@ class Encoder(nn.Module):
                                   ('layer normalization', nn.LayerNorm(n_out, elementwise_affine=False) if self.layer_norm else None),
                                   ('activation', self.activation_fn() if self.activation_fn else None),
                                   ('dropout', nn.Dropout(p=self.dropout_rate) if (self.dropout_rate and self.dropout_rate > 0) else None)])
+        if drop_activation:
+            del all_layers['activation']
+            # all_layers = all_layers['linear']
         return nn.Sequential(OrderedDict((k, v) for k, v in all_layers.items() if v is not None))
 
     def forward(self, x):
         return self.encoder(x)
+
+
+def _identity(x):
+    return x
+
+class VariationalDecoder(nn.Module):
+    """
+    Generative projection from latent space to full feature space.
+    Adapted from scVI's `Encoder`.
+    """
+
+    DEFAULT_HYPER_PARAMS = {'var_eps': 1e-4, 
+                            'n_hidden_nodes': [64],
+                            'batch_momentum': 0.01, 'layer_norm': False, 'dropout_rate': 0.1,
+                            'activation_fn': nn.ReLU, # can make as None to have purely linear
+                            }
+    
+    def __init__(self, n_features: int, n_latent: int,
+                 var_eps: float = 1e-4,
+                 n_hidden_nodes: List[int] = [64],
+                 batch_norm: bool = True, 
+                 batch_momentum: float = 0.01,
+                 layer_norm: bool = False,
+                 dropout_rate: int | float = 0.1,
+                 activation_fn: nn.Module | None = nn.ReLU,
+                ):
+        """Initialize variational decoder.
+
+        Parameters
+        ----------
+        n_features : int
+            the full number of features input to the encoder
+        n_latent : int, optional
+            dimension (no. of features) of the latent space, by default 32
+        var_eps : float, optional
+            Minimum value for the variance, by default 1e-4. Used for numerical stability
+        n_hidden_nodes : List[int], optional
+            number of hidden nodes per hidden layer, by default [64]
+            each element in the list corresponds to one hidden layer (i.e., no. of hidden layers = length of list)
+        batch_momentum : float, optional
+            `momentum` parameter for `BatchNorm` layer, by default .01
+            If None, a `BatchNorm` is not added
+        layer_norm : bool, optional
+            whether to have `LayerNorm` layers or not, by default False
+        dropout_rate : int | float, optional
+            dropout rate to apply to each of the hidden layers, by default 0.1
+            If None, dropout is not added
+        activation_fn : nn.Module | None, optional
+            non-linear Pytorch activation function, by default nn.ReLU. No activation if set to None
+        """
+        super().__init__()
+        
+        self.z_transformation = _identity # z has gaussian distribution
+        self.var_activation = torch.exp # ensure positivity of variance
+        self.var_eps = var_eps
+    
+        n_hidden_final = n_hidden_nodes[0]
+        n_hidden_nodes = n_hidden_nodes[1:]
+        self.decoder = Encoder(n_features = n_hidden_final, n_latent = n_latent, 
+                               decode = True, linear_output = False,
+                               n_hidden_nodes = n_hidden_nodes, batch_norm = batch_norm, 
+                              batch_momentum = batch_momentum, layer_norm = layer_norm, dropout_rate = dropout_rate, 
+                              activation_fn = activation_fn)
+        self.mean_decoder = nn.Linear(n_hidden_final, n_features)
+        self.var_decoder = nn.Linear(n_hidden_final, n_features)
+    
+    def forward(self, x):
+        q = self.decoder(x)
+        q_m = self.mean_decoder(q)
+        q_v = self.var_activation(self.var_decoder(q)) + self.var_eps
+        dist = torch.distributions.Normal(q_m, q_v.sqrt())
+        latent = self.z_transformation(dist.rsample())
+
+        return q_m, q_v, latent
+
 
 class TFA(nn.Module):
     """Decompose TF activity into basal effects and covariate-specific effects. 
     
     Adapted from Compositional Perturbation Autoencoder (https://doi.org/10.15252/msb.202211517)."""
 
-    DEFAULT_HYPER_PARAMS = {'n_latent': 32, 'cat_max_norm': 1}
+    DEFAULT_HYPER_PARAMS = {'n_latent': 32, 'cat_max_norm': 1, 'generative_decoder': True, 'recon_loss': 'gauss'}
 
     def __init__(self, covariates: pd.DataFrame, 
                  categorical_covariate_keys: List[str],
                  n_features_in: int,
                  n_latent: int = 32, 
                  cat_max_norm: int | float | None = 1, 
+                 generative_decoder : bool = True,
+                 recon_loss : Literal['gauss', 'nb'] = 'gauss',
                 encoder_hyper_params: Dict[str, Any] = Encoder.DEFAULT_HYPER_PARAMS, 
                  decoder_hyper_params: Dict[str, Any] = Encoder.DEFAULT_HYPER_PARAMS, 
                 device: str = 'cpu'):
@@ -125,6 +209,11 @@ class TFA(nn.Module):
             dimension (no. of featuers) of the latent space, by default 32
         cat_max_norm : int | float | None, optional
             passed to `max_norm` argument of nn.Embedding when generating categorical covariate embeddings, by default 1
+        generative_decoder : bool, optional
+            whether to make the decoder layer variational/generative (True) or not (False)
+        recon_loss : Literal['gauss', 'nb'], optional
+            Autoencoder loss (either "gauss" or "nb"), by default 'gauss'
+            Currently can only handle "guass"
         encoder_hyper_params : Dict[str, Any]
             Keyword arguments to pass to `Encoder`. Keys include:
                 n_hidden_nodes : List[int], optional
@@ -143,12 +232,16 @@ class TFA(nn.Module):
         decoder_hyper_params : Dict[str, Any]
             same as `encoder_hyper_params`, but projects back from latent space to full feature space
             note, layer order is reversed so must list `n_hidden_nodes` as you would in encoder (from larger to bigger)
+            Additional key words when using the generative/variational decoder:
+                var_eps : float, optional
+                    Minimum value for the variance, by default 1e-4. Used for numerical stability
         device : str
             whether to use gpu ("cuda") or cpu ("cpu"), by default "cpu"
         """
         super().__init__()
 
         self.device = device
+        self.generative_decoder = generative_decoder
 
         # encoder
         encoder_hyper_params = update_with_defaults(default_parameters=Encoder.DEFAULT_HYPER_PARAMS, 
@@ -156,9 +249,17 @@ class TFA(nn.Module):
         self.encoder = Encoder(n_features = n_features_in, n_latent = n_latent, **encoder_hyper_params)
 
         # decoder
-        decoder_hyper_params = update_with_defaults(default_parameters=Encoder.DEFAULT_HYPER_PARAMS, 
-                                                    user_parameters = decoder_hyper_params)
-        self.decoder = Encoder(n_features = n_features_in, n_latent = n_latent, decode = True, **decoder_hyper_params)
+        if not self.generative_decoder: 
+            decoder_hyper_params = update_with_defaults(default_parameters=Encoder.DEFAULT_HYPER_PARAMS,
+                                                        user_parameters = decoder_hyper_params)
+            self.decoder = Encoder(n_features = n_features_in, n_latent = n_latent, decode = True, **decoder_hyper_params)
+        else:
+            if recon_loss == 'gauss':
+                decoder_hyper_params = update_with_defaults(default_parameters=VariationalDecoder.DEFAULT_HYPER_PARAMS,
+                                                            user_parameters = decoder_hyper_params)
+                self.decoder = VariationalDecoder(n_features = n_features_in, n_latent = n_latent, **decoder_hyper_params)
+            else:
+                raise ValueError('Currently, TPA can only handle a guassian loss in its generative process.')
 
         # categorical embeddings
         # create an embedding for each discrete covariate
@@ -192,5 +293,9 @@ class TFA(nn.Module):
 
     def forward(self, x):
         z_basal = self.encoder(x)
-        z_full = self.decoder(z_basal)
-        return z_basal, z_full
+        if not self.generative_decoder:
+            z_full = self.decoder(z_basal)
+            px_mean, px_var,= None, None
+        else: 
+            px_mean, px_var, z_full = self.decoder(z_basal)
+        return z_basal, z_full, px_mean, px_var
