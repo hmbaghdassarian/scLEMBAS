@@ -29,6 +29,7 @@ class SignalingModel(torch.nn.Module):
                  covariates: Optional[pd.DataFrame] = None, categorical_covariate_keys: Optional[List[str]] = None,
                  tfa_hyper_params: Dict[str, Any] = TFA.DEFAULT_HYPER_PARAMS, 
                  encoder_hyper_params: Dict[str, Any] = Encoder.DEFAULT_HYPER_PARAMS,
+                 decoder_hyper_params : Dict[str, Any] = Encoder.DEFAULT_HYPER_PARAMS,
                  
                  dtype: torch.dtype=torch.float32, device: str = 'cpu', seed: int = 888):
         """Parse the signaling network and build the model layers.
@@ -79,16 +80,11 @@ class SignalingModel(torch.nn.Module):
                     dimension (no. of featuers) of the latent space, by default 64
                 cat_max_norm : int | float | None, optional
                     passed to `max_norm` argument of nn.Embedding when generating categorical covariate embeddings, by default 1
-                recon_loss : Literal['gauss', 'nb'], optional
-                    Autoencoder loss (either "gauss" or "nb")
-                    Currently can only handle "guass"
         encoder_hyper_params : Dict[str, Any]
             Keyword arguments to pass to the `TFA` `Encoder`. Keys include:
-                n_hidden_layers : int, optional
-                    the number of fully-connected hidden layers, by default 1
-                n_hidden_nodes : int, optional
-                    number of hidden nodes per layer, by default 256
-                    if n_hidden_layers > 1, can specify a list of hidden nodes corresponding to number of nodes per layer
+                n_hidden_nodes : List[int], optional
+                    number of hidden nodes per hidden layer, by default [64]
+                    each element in the list corresponds to one hidden layer (i.e., no. of hidden layers = length of list)
                 batch_momentum : float, optional
                     `momentum` parameter for `BatchNorm` layer, by default .01
                     If None, a `BatchNorm` is not added
@@ -99,6 +95,9 @@ class SignalingModel(torch.nn.Module):
                     If None, dropout is not added
                 activation_fn : nn.Module | None, optional
                     non-linear Pytorch activation function, by default nn.ReLU. No activation if set to None
+        decoder_hyper_params : Dict[str, Any]
+            same as `encoder_hyper_params`, but projects back from latent space to full feature space
+            note, layer order is reversed so must list `n_hidden_nodes` as you would in encoder (from larger to bigger)
         dtype : torch.dtype, optional
             datatype to store values in torch, by default torch.float32
         device : str
@@ -155,6 +154,7 @@ class SignalingModel(torch.nn.Module):
                                       n_features_in = n_features_tfa, # of TFs 
                                      device = device,
                                       encoder_hyper_params = encoder_hyper_params,
+                                      decoder_hyper_params = decoder_hyper_params,
                                       **tfa_hyper_params)
         else:
             self.tf_autoencoder = None

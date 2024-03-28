@@ -15,24 +15,25 @@ from .model_utilities import update_with_defaults
 
 class Encoder(nn.Module):
     """
-    Project input TF activity to a latent space.
+    Project input TF activity to a latent space (encoder) or vice-versa (decoder).
     Adapted from scVI's `FCLayers`.
     """
 
-    DEFAULT_HYPER_PARAMS = {'n_latent': 32, 'n_hidden_layers': 1, 'n_hidden_nodes': [64], 
+    DEFAULT_HYPER_PARAMS = {'n_hidden_nodes': [64],
                             'batch_momentum': 0.01, 'layer_norm': False, 'dropout_rate': 0.1,
                             'activation_fn': nn.ReLU # can make as None to have purely linear
-                           }
+                            }
     
-    def __init__(self, n_features: int, 
-                 n_latent: int = 32, 
+    def __init__(self, n_features: int, n_latent: int,
+                 decode: bool = False,
                  n_hidden_layers: int = 1,
-                 n_hidden_nodes: List[int] | int = [64],
+                 n_hidden_nodes: List[int] = [64],
                  batch_norm: bool = True, 
                  batch_momentum: float = 0.01,
                  layer_norm: bool = False,
                  dropout_rate: int | float = 0.1,
-                 activation_fn: nn.Module | None = nn.ReLU):
+                 activation_fn: nn.Module | None = nn.ReLU,
+                ):
         """Initialize encoder.
 
         Parameters
@@ -41,11 +42,11 @@ class Encoder(nn.Module):
             the full number of features input to the encoder
         n_latent : int, optional
             dimension (no. of features) of the latent space, by default 32
-        n_hidden_layers : int, optional
-            the number of fully-connected hidden layers, by default 1
-        n_hidden_nodes : int, optional
-            number of hidden nodes per layer, by default 64
-            if n_hidden_layers > 1, can specify a list of hidden nodes corresponding to number of nodes per layer
+        decode : bool, optional
+            whether to encode into latent space (False) or decode into full feature space (True)
+        n_hidden_nodes : List[int], optional
+            number of hidden nodes per hidden layer, by default [64]
+            each element in the list corresponds to one hidden layer (i.e., no. of hidden layers = length of list)
         batch_momentum : float, optional
             `momentum` parameter for `BatchNorm` layer, by default .01
             If None, a `BatchNorm` is not added
@@ -67,19 +68,17 @@ class Encoder(nn.Module):
 
         if self.batch_momentum and self.layer_norm:
             warnings.warn('You have applied both a batch- and layer-normalization. Recommended to choose one of the two.')
+        if n_hidden_nodes != sorted(n_hidden_nodes)[::-1]:
+            warnings.warn('You have specified an encoder/decoder layer that does not have a consistent change in # of nodes per hidden layer')
         
-        # set up the layer sizes
-        if isinstance(n_hidden_nodes, list):
-            if len(n_hidden_nodes) != n_hidden_layers:
-                raise ValueError('The number of elements in n_hidden_nodes must match the number of hidden layers.')
-        else:
-            n_hidden_nodes = [n_hidden_nodes]*n_hidden_layers
-
         self.layers_dim = [n_features] + n_hidden_nodes + [n_latent]
+        if decode: 
+            self.layers_dim = self.layers_dim[::-1]
 
+        enc_name = 'Encoder' if not decode else 'Decoder'
         self.encoder = nn.Sequential(
            OrderedDict(
-               [('Encoder Layer {}'.format(i), self._single_layer(n_in,n_out)) 
+               [(enc_name + ' Layer {}'.format(i), self._single_layer(n_in,n_out)) 
                 for i, (n_in, n_out) in enumerate(zip(self.layers_dim[:-1], self.layers_dim[1:]))]
                )
            ) 
@@ -102,15 +101,15 @@ class TFA(nn.Module):
     
     Adapted from Compositional Perturbation Autoencoder (https://doi.org/10.15252/msb.202211517)."""
 
-    DEFAULT_HYPER_PARAMS = {'n_latent': 32, 'cat_max_norm': 1, 'recon_loss': 'gauss'}
+    DEFAULT_HYPER_PARAMS = {'n_latent': 32, 'cat_max_norm': 1}
 
     def __init__(self, covariates: pd.DataFrame, 
                  categorical_covariate_keys: List[str],
                  n_features_in: int,
                  n_latent: int = 32, 
                  cat_max_norm: int | float | None = 1, 
-                 recon_loss : Literal['gauss', 'nb'] = 'gauss',
                 encoder_hyper_params: Dict[str, Any] = Encoder.DEFAULT_HYPER_PARAMS, 
+                 decoder_hyper_params: Dict[str, Any] = Encoder.DEFAULT_HYPER_PARAMS, 
                 device: str = 'cpu'):
         """Initializes model layers.
     
@@ -126,16 +125,11 @@ class TFA(nn.Module):
             dimension (no. of featuers) of the latent space, by default 32
         cat_max_norm : int | float | None, optional
             passed to `max_norm` argument of nn.Embedding when generating categorical covariate embeddings, by default 1
-        recon_loss : Literal['gauss', 'nb'], optional
-            Autoencoder loss (either "gauss" or "nb")
-            Currently can only handle "guass"
         encoder_hyper_params : Dict[str, Any]
             Keyword arguments to pass to `Encoder`. Keys include:
-                n_hidden_layers : int, optional
-                    the number of fully-connected hidden layers, by default 1
-                n_hidden_nodes : int, optional
-                    number of hidden nodes per layer, by default 64
-                    if n_hidden_layers > 1, can specify a list of hidden nodes corresponding to number of nodes per layer
+                n_hidden_nodes : List[int], optional
+                    number of hidden nodes per hidden layer, by default [64]
+                    each element in the list corresponds to one hidden layer (i.e., no. of hidden layers = length of list)
                 batch_momentum : float, optional
                     `momentum` parameter for `BatchNorm` layer, by default .01
                     If None, a `BatchNorm` is not added
@@ -146,6 +140,9 @@ class TFA(nn.Module):
                     If None, dropout is not added
                 activation_fn : nn.Module | None, optional
                     non-linear Pytorch activation function, by default nn.ReLU. No activation if set to None
+        decoder_hyper_params : Dict[str, Any]
+            same as `encoder_hyper_params`, but projects back from latent space to full feature space
+            note, layer order is reversed so must list `n_hidden_nodes` as you would in encoder (from larger to bigger)
         device : str
             whether to use gpu ("cuda") or cpu ("cpu"), by default "cpu"
         """
@@ -156,8 +153,12 @@ class TFA(nn.Module):
         # encoder
         encoder_hyper_params = update_with_defaults(default_parameters=Encoder.DEFAULT_HYPER_PARAMS, 
                                                     user_parameters = encoder_hyper_params)
-        encoder_hyper_params['n_latent'] = n_latent
-        self.encoder = Encoder(n_features = n_features_in, **encoder_hyper_params)
+        self.encoder = Encoder(n_features = n_features_in, n_latent = n_latent, **encoder_hyper_params)
+
+        # decoder
+        decoder_hyper_params = update_with_defaults(default_parameters=Encoder.DEFAULT_HYPER_PARAMS, 
+                                                    user_parameters = decoder_hyper_params)
+        self.decoder = Encoder(n_features = n_features_in, n_latent = n_latent, decode = True, **decoder_hyper_params)
 
         # categorical embeddings
         # create an embedding for each discrete covariate
@@ -168,11 +169,6 @@ class TFA(nn.Module):
                                            max_norm = cat_max_norm, norm_type = 2) 
                 for covariate_cat, covariate_cat_map in self.cat_mapper.items()}
         )
-    
-        if recon_loss == 'gauss':
-            pass
-        else:
-            raise ValueError('Currently, TPA can only handle a guassian loss.')
 
     def map_cat_covariates(self, covariates: pd.DataFrame, categorical_covariate_keys: List[str]):
         """Creates a dictionary mapping each categorical covariate's values to a numerical value (index). 
@@ -196,4 +192,5 @@ class TFA(nn.Module):
 
     def forward(self, x):
         z_basal = self.encoder(x)
-        return z_basal
+        z_full = self.decoder(z_basal)
+        return z_basal, z_full
