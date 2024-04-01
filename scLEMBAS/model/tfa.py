@@ -13,10 +13,87 @@ from torch import nn
 from ..utilities import set_seeds
 from .model_utilities import update_with_defaults
 
+class FCLayers(nn.Module):
+    """
+    Generates standard, fully-connected neural-network.
+    Adapted from scVI's `FCLayers`.
+    """
+
+    def __init__(self, layers: List[int],
+                 batch_momentum: float = 0.01,
+                 layer_norm: bool = False,
+                 dropout_rate: int | float = 0.1,
+                 activation_fn: nn.Module | None = nn.ReLU,
+                 dtype: torch.dtype=torch.float32,
+                 device: str = 'cpu', 
+                ):
+        """Initialize encoder.
+
+        Parameters
+        ----------
+        layers : List[int]
+            the size of each layer (including inputs and outputs)
+            each element in the list corresponds to one hidden layer (i.e., no. of hidden layers = length of list)
+        batch_momentum : float, optional
+            `momentum` parameter for `BatchNorm` layer, by default .01
+            If None, a `BatchNorm` is not added
+        layer_norm : bool, optional
+            whether to have `LayerNorm` layers or not, by default False
+        dropout_rate : int | float, optional
+            dropout rate to apply to each of the hidden layers, by default 0.1
+            If None, dropout is not added
+        activation_fn : nn.Module | None, optional
+            non-linear Pytorch activation function, by default nn.ReLU. No activation if set to None
+        linear_output : bool, optional
+            whether the final layer in the encoder should only be linear (True) or incorporate the specified `activation_fn` (False)
+        device : str
+            whether to use gpu ("cuda") or cpu ("cpu"), by default "cpu"
+        dtype : torch.dtype, optional
+            datatype to store values in torch, by default torch.float32
+        """
+        super().__init__()
+
+        # set up params
+        self.batch_momentum = batch_momentum
+        self.layer_norm = layer_norm
+        self.dropout_rate = dropout_rate
+        self.activation_fn = activation_fn
+        self.dtype = dtype
+        self.device = device
+
+        if self.batch_momentum and self.layer_norm:
+            warnings.warn('You have applied both a batch- and layer-normalization. Recommended to choose one of the two.')
+
+        fc_layers = OrderedDict()
+        for i, (n_in, n_out) in enumerate(zip(layers[:-1], layers[1:])):
+                fc_layers['FC Layer {}'.format(i)] = self._single_layer(n_in,n_out)#, drop_keys = None)
+        self.fc_layers = nn.Sequential(fc_layers)
+
+    def _single_layer(self, n_in: int, n_out: int):#, drop_keys: Optional[List[str]] = None):
+        """Creates a single [set of] layer[s] in the encoder."""
+
+        all_layers = OrderedDict([('linear', nn.Linear(in_features = n_in, out_features = n_out, bias = True, 
+                                                       device = self.device, dtype = self.dtype)),
+                                  ('batch normalization', nn.BatchNorm1d(n_out, momentum=self.batch_momentum, 
+                                                                         device = self.device, dtype = self.dtype) if self.batch_momentum else None),
+                                  ('layer normalization', nn.LayerNorm(n_out, elementwise_affine=False, 
+                                                                       device = self.device, dtype = self.dtype) if self.layer_norm else None),
+                                  ('activation', self.activation_fn() if self.activation_fn else None),
+                                  ('dropout', nn.Dropout(p=self.dropout_rate) if (self.dropout_rate and self.dropout_rate > 0) else None)])
+        # if drop_keys:
+        #     for dk in drop_keys:
+        #         if dk in all_layers:
+        #             del all_layers[dk]
+        return nn.Sequential(OrderedDict((k, v) for k, v in all_layers.items() if v is not None))
+
+    def forward(self, x):
+        return self.fc_layers(x)
+
+
 class Encoder(nn.Module):
     """
     Project input TF activity to a latent space (encoder) or vice-versa (decoder).
-    Adapted from scVI's `FCLayers`.
+    Adapted from CPA's `VanillaEncoder` (https://github.com/theislab/cpa/blob/main/cpa/_utils.py).
     """
 
     DEFAULT_HYPER_PARAMS = {'n_hidden_nodes': [64],
@@ -70,57 +147,36 @@ class Encoder(nn.Module):
         super().__init__()
 
         # set up params
-        self.batch_momentum = batch_momentum
-        self.layer_norm = layer_norm
-        self.dropout_rate = dropout_rate
-        self.activation_fn = activation_fn
         self.dtype = dtype
         self.device = device
 
-        if self.batch_momentum and self.layer_norm:
-            warnings.warn('You have applied both a batch- and layer-normalization. Recommended to choose one of the two.')
         if n_hidden_nodes != sorted(n_hidden_nodes)[::-1]:
             warnings.warn('You have specified an encoder/decoder layer that does not have a consistent change in # of nodes per hidden layer')
         
-        self.layers_dim = [n_features] + n_hidden_nodes + [n_latent]
-        if decode: 
-            self.layers_dim = self.layers_dim[::-1]
+        if decode:
+            layers_dim = [n_latent] + n_hidden_nodes[::-1]
+            n_encode_in, n_encode_out = n_hidden_nodes[0], n_features
+            enc_name = 'Decoder'
+        else:
+            layers_dim = [n_features] + n_hidden_nodes
+            n_encode_in, n_encode_out = n_hidden_nodes[-1], n_latent
+            enc_name = 'Encoder'
 
-        enc_name = 'Encoder' if not decode else 'Decoder'
-        all_layers = OrderedDict()
-        for i, (n_in, n_out) in enumerate(zip(self.layers_dim[:-1], self.layers_dim[1:])):
-            if i != len(n_hidden_nodes):
-                all_layers[enc_name + ' Layer {}'.format(i)] = self._single_layer(n_in,n_out, drop_keys = None)
-            else:
-                drop_keys = ['batch normalization', 'layer normalization', 'dropout']
-                if linear_output:
-                    drop_keys += ['activation']
-                all_layers[enc_name + ' Layer {}'.format(i)] = self._single_layer(n_in,n_out, drop_keys = drop_keys)
-        self.encoder = nn.Sequential(all_layers)
+        self.fc_layers = FCLayers(layers = layers_dim,
+                                 batch_momentum = batch_momentum, 
+                                 layer_norm = layer_norm, 
+                                 dropout_rate = dropout_rate, 
+                                 activation_fn = activation_fn, 
+                                 dtype = dtype, device = device)
 
-    def _single_layer(self, n_in: int, n_out: int, drop_keys: Optional[List[str]] = None):
-        """Creates a single [set of] layer[s] in the encoder."""
-
-        all_layers = OrderedDict([('linear', nn.Linear(in_features = n_in, out_features = n_out, bias = True, 
+        final_layer = OrderedDict([('linear', nn.Linear(in_features = n_encode_in, out_features = n_encode_out, bias = True, 
                                                        device = self.device, dtype = self.dtype)),
-                                  ('batch normalization', nn.BatchNorm1d(n_out, momentum=self.batch_momentum, 
-                                                                         device = self.device, dtype = self.dtype) if self.batch_momentum else None),
-                                  ('layer normalization', nn.LayerNorm(n_out, elementwise_affine=False, 
-                                                                       device = self.device, dtype = self.dtype) if self.layer_norm else None),
-                                  ('activation', self.activation_fn() if self.activation_fn else None),
-                                  ('dropout', nn.Dropout(p=self.dropout_rate) if (self.dropout_rate and self.dropout_rate > 0) else None)])
-        if drop_keys:
-            for dk in drop_keys:
-                if dk in all_layers:
-                    del all_layers[dk]
-        return nn.Sequential(OrderedDict((k, v) for k, v in all_layers.items() if v is not None))
+                                  ('activation', activation_fn() if activation_fn and not linear_output else None)])
+        self.z = nn.Sequential(OrderedDict((k, v) for k, v in final_layer.items() if v is not None))
 
     def forward(self, x):
-        return self.encoder(x)
+        return self.z(self.fc_layers(x))
 
-
-def _identity(x):
-    return x
 
 class VariationalEncoder(nn.Module):
     """
@@ -132,7 +188,7 @@ class VariationalEncoder(nn.Module):
                             'n_hidden_nodes': [64],
                             'batch_momentum': 0.01, 'layer_norm': False, 'dropout_rate': 0.1,
                             'activation_fn': nn.ReLU, # can make as None to have purely linear
-                            'linear_output': True,}
+                           }
     
     def __init__(self, n_features: int, n_latent: int,
                  var_min: float = 1e-4,
@@ -143,7 +199,6 @@ class VariationalEncoder(nn.Module):
                  layer_norm: bool = False,
                  dropout_rate: int | float = 0.1,
                  activation_fn: nn.Module | None = nn.ReLU,
-                 linear_output : bool = True,
                  dtype: torch.dtype=torch.float32,
                  device: str = 'cpu', 
                 ):
@@ -183,18 +238,29 @@ class VariationalEncoder(nn.Module):
         self.var_activation = torch.exp # ensure positivity of variance
         self.var_min = var_min
     
-        n_hidden_final = n_hidden_nodes[0]
-        n_hidden_nodes = n_hidden_nodes[1:]
-        self.decoder = Encoder(n_features = n_hidden_final, n_latent = n_latent, 
-                               decode = decode, linear_output = linear_output,
-                               n_hidden_nodes = n_hidden_nodes, batch_norm = batch_norm, 
-                              batch_momentum = batch_momentum, layer_norm = layer_norm, dropout_rate = dropout_rate, 
-                              activation_fn = activation_fn, dtype = dtype, device = device)
-        self.mean_decoder = nn.Linear(n_hidden_final, n_features, device = device)
-        self.var_decoder = nn.Linear(n_hidden_final, n_features, device = device, dtype = dtype)
+        if n_hidden_nodes != sorted(n_hidden_nodes)[::-1]:
+            warnings.warn('You have specified an encoder/decoder layer that does not have a consistent change in # of nodes per hidden layer')
+        
+        if decode:
+            layers_dim = [n_latent] + n_hidden_nodes[::-1]
+            n_encode_in, n_encode_out = n_hidden_nodes[0], n_features
+            enc_name = 'Decoder'
+        else:
+            layers_dim = [n_features] + n_hidden_nodes
+            n_encode_in, n_encode_out = n_hidden_nodes[-1], n_latent
+            enc_name = 'Encoder'
+
+        self.fc_layers = FCLayers(layers = layers_dim,
+                                 batch_momentum = batch_momentum, 
+                                 layer_norm = layer_norm, 
+                                 dropout_rate = dropout_rate, 
+                                 activation_fn = activation_fn, 
+                                 dtype = dtype, device = device)
+        self.mean_decoder = nn.Linear(n_encode_in, n_encode_out, device = device)
+        self.var_decoder = nn.Linear(n_encode_in, n_encode_out, device = device, dtype = dtype)
     
     def forward(self, x):
-        z = self.decoder(x)
+        z = self.fc_layers(x)
         z_m = self.mean_decoder(z)
         z_v = self.var_activation(self.var_decoder(z)) + self.var_min # log-var
 
