@@ -13,8 +13,10 @@ dependencies:
     - conda-forge::leidenalg
     - conda-forge::plotnine<=0.12.3
     - conda-forge::patchworklib
+    # - conda-forge::graphviz
     - pip:
         - decoupler==1.5.0
+        # - torchviz
 
 # replace pytorch with this on OS other than ppc64le
     # - pip:

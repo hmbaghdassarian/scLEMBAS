@@ -132,9 +132,6 @@ class SignalingModel(torch.nn.Module):
         self.X_in = X_in.loc[:, np.intersect1d(X_in.columns.values, node_labels)]
         self.y_out = y_out.loc[:, np.intersect1d(y_out.columns.values, node_labels)]
 
-        # set up TFA
-        tfa_hyper_params = update_with_defaults(default_parameters=TFA.DEFAULT_HYPER_PARAMS, 
-                                                    user_parameters = tfa_hyper_params)
 
         # define model layers
         self.input_layer = ProjectInput(node_idx_map = self.node_idx_map, 
@@ -156,13 +153,15 @@ class SignalingModel(torch.nn.Module):
             self.output_layer = ProjectOutput(node_idx_map = self.node_idx_map, 
                                               output_labels = self.y_out.columns.values, 
                                               projection_amplitude = self.projection_amplitude_out, 
-                                              dtype = self.dtype, device = device)
+                                              dtype = self.dtype, device = self.device)
             n_features_tfa = self.y_out.shape[1] # no. of TFs
         if covariates is not None:
+            tfa_hyper_params = update_with_defaults(default_parameters=TFA.DEFAULT_HYPER_PARAMS, 
+                                                    user_parameters = tfa_hyper_params)
             self.tf_autoencoder = TFA(covariates = covariates, 
                                       categorical_covariate_keys = categorical_covariate_keys, 
-                                      n_features_in = n_features_tfa, # of TFs 
-                                     device = device,
+                                      n_features_in = n_features_tfa, # of TFs
+                                      device = self.device, dtype = self.dtype,
                                       encoder_hyper_params = encoder_hyper_params,
                                       decoder_hyper_params = decoder_hyper_params,
                                       **tfa_hyper_params)
@@ -267,8 +266,8 @@ class SignalingModel(torch.nn.Module):
         else:
             Y_hat = Y_full
     
-        if self.tf_autoencoder:
-            z_basal, z_full, px_mean, px_var = self.tf_autoencoder(Y_hat) 
+        # if self.tf_autoencoder:
+        #     z_basal, z_full, px_mean, px_var = self.tf_autoencoder(Y_hat) 
 
         return Y_hat, Y_full, z_basal, z_basal, z_full, px_mean, px_var
 
