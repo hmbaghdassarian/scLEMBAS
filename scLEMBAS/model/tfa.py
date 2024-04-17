@@ -163,13 +163,13 @@ class Encoder(nn.Module):
                                  dropout_rate = dropout_rate, 
                                  activation_fn = activation_fn, 
                                  dtype = dtype, device = device)
-        self.z = FCLayers(layers = [n_encode_in, n_encode_out],
-                          batch_momentum = None, layer_norm = None, dropout_rate = None, 
-                          activation_fn = activation_fn if not linear_output else None,
-                          device = device, dtype = dtype)
+        self.latent_layer = FCLayers(layers = [n_encode_in, n_encode_out],
+                                     batch_momentum = None, layer_norm = None, dropout_rate = None, 
+                                     activation_fn = activation_fn if not linear_output else None,
+                                     device = device, dtype = dtype)
 
     def forward(self, x):
-        return self.z(self.hidden_layers(x))
+        return self.latent_layer(self.hidden_layers(x))
 
 
 # def _identity(x):
@@ -349,6 +349,8 @@ class TFA(nn.Module):
 
         self.device = device
         self.dtype = dtype
+        
+        self.n_latent = n_latent
 
         if encoder_dist == 'nb' or decoder_dist == 'nb':
             raise ValueError('Negative binomial distributions are not currently implemented')
@@ -361,14 +363,14 @@ class TFA(nn.Module):
         # encoder
         encoder_hyper_params = update_with_defaults(default_parameters=tfa_encoder.DEFAULT_HYPER_PARAMS, 
                                                     user_parameters = encoder_hyper_params)
-        self.encoder = tfa_encoder(n_features = n_features_in, n_latent = n_latent, 
+        self.encoder = tfa_encoder(n_features = n_features_in, n_latent = self.n_latent, 
                                device = self.device, dtype = self.dtype,
                                **encoder_hyper_params)
 
         # decoder
         decoder_hyper_params = update_with_defaults(default_parameters=tfa_decoder.DEFAULT_HYPER_PARAMS, 
                                                     user_parameters = encoder_hyper_params)
-        self.decoder = tfa_decoder(n_features = n_features_in, n_latent = n_latent, 
+        self.decoder = tfa_decoder(n_features = n_features_in, n_latent = self.n_latent, 
                                device = self.device, dtype = self.dtype,
                                **decoder_hyper_params)
 
@@ -377,7 +379,7 @@ class TFA(nn.Module):
         self.map_cat_covariates(covariates, categorical_covariate_keys)
         self.cat_embeddings = nn.ModuleDict(
             {
-                covariate_cat: nn.Embedding(num_embeddings = len(covariate_cat_map), embedding_dim = n_latent, 
+                covariate_cat: nn.Embedding(num_embeddings = len(covariate_cat_map), embedding_dim = self.n_latent, 
                                            max_norm = cat_max_norm, norm_type = 2) 
                 for covariate_cat, covariate_cat_map in self.cat_mapper.items()}
         )
