@@ -4,19 +4,17 @@ channels:
   - https://ftp.osuosl.org/pub/open-ce/current # most recent channel for cuda+pytorch on ppc64le (Satori)
   - bioconda
 dependencies:    
-    - https://ftp.osuosl.org/pub/open-ce/current::pytorch # replace with below for OS other than ppc64le
+    # - https://ftp.osuosl.org/pub/open-ce/current::pytorch # replace with below for OS other than ppc64le
+    - conda-forge::lightning
     - conda-forge::scanpy
-    # - conda-forge::matplotlib
     - conda-forge::pip
     - conda-forge::omnipath
     - conda-forge::kneed
     - conda-forge::leidenalg
     - conda-forge::plotnine<=0.12.3
     - conda-forge::patchworklib
-    # - conda-forge::graphviz
     - pip:
         - decoupler==1.5.0
-        # - torchviz
 
 # replace pytorch with this on OS other than ppc64le
     # - pip:

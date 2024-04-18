@@ -42,26 +42,26 @@ def set_cores(n_cores: int):
     os.environ["VECLIB_MAXIMUM_THREADS"] = str(n_cores)
     os.environ["NUMEXPR_NUM_THREADS"] = str(n_cores)
 
-def get_lr(iter: int, max_iter: int, max_height: float = 1e-3, 
+def get_lr(epoch: int, max_epoch: int, max_height: float = 1e-3, 
              start_height: float=1e-5, end_height: float=1e-5, 
              peak: int = 1000):
-    """Calculates learning rate for a given iteration during training.
+    """Calculates learning rate for a given epoch during training.
 
     Parameters
     ----------
-    iter : int
-        the current iteration
-    max_iter : int
-        the maximum number of training iterations
+    epoch : int
+        the current epochs
+    max_epoch : int
+        the maximum number of training epochss
     max_height : float, optional
-        tuning parameters for learning for the first 95% of iterations, by default 1e-3
+        tuning parameters for learning for the first 95% of epochss, by default 1e-3
     start_height : float, optional
-        tuning parameter for learning rate before peak iterations, by default 1e-5
+        tuning parameter for learning rate before peak epochss, by default 1e-5
     end_height : float, optional
-        tuning parameter for learning rate afer peak iterations, by default 1e-5
+        tuning parameter for learning rate afer peak epochss, by default 1e-5
     peak : int, optional
-        the first # of iterations to calculate lr on (should be less than 95% 
-        of max_iter), by default 1000
+        the first # of epochss to calculate lr on (should be less than 95% 
+        of max_epoch), by default 1000
 
     Returns
     -------
@@ -69,13 +69,13 @@ def get_lr(iter: int, max_iter: int, max_height: float = 1e-3,
         the learning rate
     """
 
-    phase_length = 0.95 * max_iter
-    if iter<=peak:
-        effective_iter = iter/peak
-        lr = (max_height-start_height) * 0.5 * (np.cos(np.pi*(effective_iter+1))+1) + start_height
-    elif iter<=phase_length:
-        effective_iter = (iter-peak)/(phase_length-peak)
-        lr = (max_height-end_height) * 0.5 * (np.cos(np.pi*(effective_iter+2))+1) + end_height
+    phase_length = 0.95 * max_epoch
+    if epoch<=peak:
+        effective_epoch = epoch/peak
+        lr = (max_height-start_height) * 0.5 * (np.cos(np.pi*(effective_epoch+1))+1) + start_height
+    elif epoch<=phase_length:
+        effective_epoch = (epoch-peak)/(phase_length-peak)
+        lr = (max_height-end_height) * 0.5 * (np.cos(np.pi*(effective_epoch+2))+1) + end_height
     else:
         lr = end_height
     return lr

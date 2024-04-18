@@ -18,13 +18,6 @@ from torch.utils.data import DataLoader
 # import scLEMBAS.utilities as utils
 import LEMBAS.utilities as utils
 
-LR_PARAMS = {'max_iter': 5000, 'learning_rate': 2e-3}
-OTHER_PARAMS = {'batch_size': 32, 'noise_level': 10, 'gradient_noise_level': 1e-9}
-REGULARIZATION_PARAMS = {'param_lambda_L2': 1e-6, 'moa_lambda_L1': 0.1, 'ligand_lambda_L2': 1e-5, 'uniform_lambda_L2': 1e-4, 
-                   'uniform_max': (1/1.2), 'spectral_loss_factor': 1e-5}
-SPECTRAL_RADIUS_PARAMS = {'n_probes_spectral': 5, 'power_steps_spectral': 50, 'subset_n_spectral': 10}
-HYPER_PARAMS = {**LR_PARAMS, **OTHER_PARAMS, **REGULARIZATION_PARAMS, **SPECTRAL_RADIUS_PARAMS}
-
 def split_data(X_in: torch.Tensor, 
                y_out: torch.Tensor, 
                train_split_frac: Dict = {'train': 0.8, 'test': 0.2, 'validation': None}, 
@@ -97,10 +90,10 @@ def train_signaling_model(mod,
         number of epochs upon which to reset the optimizer state, by default 200
     hyper_params : Dict[str, Union[int, float]], optional
         various hyper parameter inputs for training
-            - 'max_iter' : the number of epochs, by default 5000
+            - 'max_epoch' : the number of epochs, by default 5000
             - 'learning_rate' : the starting learning rate, by default 2e-3
             - 'batch_size' : number of samples per batch, by default 8
-            - 'noise_level' : noise added to signaling network input, by default 10. Set to 0 for no noise. Makes model more robust. 
+            - 'network_noise_scale' : noise added to signaling network input, by default 10. Set to 0 for no noise. Makes model more robust. 
             - 'gradient_noise_level' : noise added to gradient after backward pass. Makes model more robust. 
             - 'reset_epoch' : number of epochs upon which to reset the optimizer state, by default 200
             - 'param_lambda_L2' : L2 regularization penalty term for most of the model weights and biases
