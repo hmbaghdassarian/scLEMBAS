@@ -255,9 +255,19 @@ class SignalingModel(torch.nn.Module):
     
         return params
 
-    def forward(self, X_in):
-        """Linearly scales ligand inputs, learns weights for signaling network interactions, and transforms this to TF activity. See
-        `forward` methods of each layer for details."""
+    def forward(self, X_in, categories: Optional[Dict[str, List[str]]] = None):
+        """Forward pass of the model.Linearly scales ligand inputs, learns weights for signaling network interactions, 
+        and transforms this to TF activity. See `forward` methods of each layer for details.
+
+        Parameters
+        ----------
+        X_in : torch.tensor
+            input ligand values 
+        categories : Optional[Dict[str, List[str]]], optional
+            a dictionary with keys as the category group and values as the 
+            category label for each corresponding sample in `X_in`, by default None
+            Only required if considering categorical covariates and using the autoencoder.
+        """
         X_full = self.input_layer(X_in) # input ligands to signaling network
         Y_full = self.signaling_network(X_full) # RNN of full signaling network
 
@@ -266,8 +276,12 @@ class SignalingModel(torch.nn.Module):
         else:
             Y_hat = Y_full
     
-        # if self.tf_autoencoder:
-        #     z_basal, z_full, px_mean, px_var = self.tf_autoencoder(Y_hat) 
+        if self.tf_autoencoder:
+            if not categories:
+                raise ValueError('Categorical covariates must be provided')
+            z_basal, z_full, px_mean, px_var = self.tf_autoencoder(Y_hat, categories) 
+        else:
+            z_basal, z_full, px_mean, px_var = None, None, None, None
 
         return Y_hat, Y_full, z_basal, z_basal, z_full, px_mean, px_var
 

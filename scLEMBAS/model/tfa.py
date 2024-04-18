@@ -9,6 +9,7 @@ import warnings
 import pandas as pd
 import torch
 from torch import nn
+import torch.nn.functional as F
 
 from ..utilities import set_seeds
 from .model_utilities import update_with_defaults
@@ -304,7 +305,8 @@ class TFA(nn.Module):
         covariates : pd.DataFrame
             metadata with index as sample ids and columns containing various metadata values/mappings
         categorical_covariate_keys : List[str]
-            the columns in the dataframe representing categorical/discrete variables
+            the columns in the `covariates` dataframe representing categorical/discrete variables 
+            ordinality is not currently considered
         n_features_in : int
             the number of input features to the autoencoder (either # of TFs or # of nodes in network)
         n_latent: int, optional
@@ -374,9 +376,9 @@ class TFA(nn.Module):
                                device = self.device, dtype = self.dtype,
                                **decoder_hyper_params)
 
-        # categorical embeddings
-        # create an embedding for each discrete covariate
-        self.map_cat_covariates(covariates, categorical_covariate_keys)
+        # create a numerical mapping and an embedding for each discrete covariate
+        self.covariates = covariates[categorical_covariate_keys]
+        self.map_cat_covariates()
         self.cat_embeddings = nn.ModuleDict(
             {
                 covariate_cat: nn.Embedding(num_embeddings = len(covariate_cat_map), embedding_dim = self.n_latent, 
@@ -384,35 +386,140 @@ class TFA(nn.Module):
                 for covariate_cat, covariate_cat_map in self.cat_mapper.items()}
         )
 
-    def map_cat_covariates(self, covariates: pd.DataFrame, categorical_covariate_keys: List[str]):
-        """Creates a dictionary mapping each categorical covariate's values to a numerical value (index). 
-    
-        Parameters
-        ----------
-        covariates : pd.DataFrame
-            metadata with index as sample ids and columns containing various metadata values/mappings
-        categorical_covariate_keys : List[str]
-            the columns in the dataframe representing categorical/discrete variables
+    def map_cat_covariates(self):
+        """
+        Creates a dictionary mapping each categorical covariate's values to a numerical value (index). 
         """
 
         self.cat_mapper = {}
-        for cvk in categorical_covariate_keys:
-            if covariates[cvk].dtype.name == 'category' and covariates[cvk].dtype.ordered:
-                labels = covariates[cvk].cat.categories
+        self.one_hot = {}
+        for cvk in self.covariates.columns:
+            if self.covariates[cvk].dtype.name == 'category' and self.covariates[cvk].dtype.ordered:
+                labels = self.covariates[cvk].cat.categories
             else:
-                labels = sorted(set(covariates[cvk]))
-            
-            self.cat_mapper[cvk] = {k: idx for idx, k in enumerate(labels)}
+                labels = sorted(set(self.covariates[cvk]))
+        
+            n_labels = len(labels)
+            label_idx = list(range(n_labels))
+            self.cat_mapper[cvk] = dict(zip(labels, label_idx)) # index
+            self.one_hot[cvk] = F.one_hot(torch.tensor(label_idx), n_labels) # each row is the index of the cat_mapper
 
-    def forward(self, x):
+    def forward(self, x, categories: Dict[str, List[str]]):
+        """Forward pass of the TF activity compositional autoencoder.
+
+        Parameters
+        ----------
+        x : torch.tensor
+            input values downstream of `BioNet`
+        categories : Dict[str, List[str]]
+            a dictionary with keys as the category group and values as the 
+            category label for each corresponding sample in x 
+        """
+        # encode to latent space
         if self.encoder_dist == 'vanilla':
             z_m, z_v, z_basal = None, None, self.encoder(x)
         elif self.encoder_dist == 'gauss':
             z_m, z_v, z_basal = self.encoder(x)
 
+        # add the categorical embeddings
+        z = z_basal.clone()
+        for cat in self.covariates.columns:
+            labels = categories[cat] # ensures cats are all the same rather than using items
+            # this implicitly is like multiplying by the one-hot, but indexing the embedding is more efficient:
+            labels_idx = torch.tensor([self.cat_mapper[cat][label] for label in labels])
+            z += self.cat_embeddings[cat](labels_idx)
+
+        # decode to 
         if self.decoder_dist == 'vanilla':
             x_m, x_v, x_ = None, None, self.encoder(z)
         elif self.decoder_dist == 'gauss':
             x_m, x_v, x_ = self.encoder(z)
 
         return z_m, z_v, z_basal
+
+
+class CatDiscriminator(nn.Module):
+    """"Discriminator for categorical covariates in adversarial training of TFA.
+    Adapted from scVI's `Classifier`.
+    """
+    DEFAULT_HYPER_PARAMS = {**FCLayers.DEFAULT_HYPER_PARAMS, **{'n_hidden_nodes': [16, 16, 16], 'optimizer': torch.optim.Adam}}
+    
+    def __init__(
+        self,
+        n_features_in: int,
+        n_labels: int,
+        n_hidden_nodes: List[int] = [16, 16, 16],
+        return_logits: bool = True,
+        batch_momentum: float = 0.01,
+        layer_norm: bool = False,
+        dropout_rate: int | float = 0.1,
+        activation_fn: nn.Module | None = nn.ReLU,
+        optimizer = torch.optim.Adam,
+        dtype: torch.dtype=torch.float32,
+        device: str = 'cpu'
+    ):
+        """Initialize discriminator
+
+        Parameters
+        ----------
+        n_features_in : int
+            number of inpute features to discriminator (should be number of latent features for TFA)
+        n_labels : int
+            number of categories for the given categorical covariate
+        n_hidden_nodes : List[int], optional
+            number of hidden nodes per hidden layer, by default [64]
+            each element in the list corresponds to one hidden layer (i.e., no. of hidden layers = length of list), by default [16, 16, 16]
+        batch_momentum : float, optional
+            `momentum` parameter for `BatchNorm` layer, by default .01
+            If None, a `BatchNorm` is not added
+        layer_norm : bool, optional
+            whether to have `LayerNorm` layers or not, by default False
+        dropout_rate : int | float, optional
+            dropout rate to apply to each of the hidden layers, by default 0.1
+            If None, dropout is not added
+        activation_fn : nn.Module | None, optional
+            non-linear Pytorch activation function, by default nn.ReLU. No activation if set to None
+        optimizer : torch.optim, optional
+            optimizer to use for training, by default torch.optim.Adam
+        dtype : torch.dtype, optional
+            datatype to store values in torch, by default torch.float32
+        device : str
+            whether to use gpu ("cuda") or cpu ("cpu"), by default "cpu"
+        """
+        super().__init__()
+        self.n_labels = n_labels
+        if n_labels > 2: # multi-class
+            self.loss_fn = nn.CrossEntropyLoss # applies softmax
+            out_features = self.n_labels
+        elif n_labels == 2: # binary
+            self.loss_fn = nn.BCEWithLogitsLoss # applies sigmoid
+            out_features = 1
+        else:
+            raise ValueError('There are no distinct classes.')
+
+        self.optimizer = optimizer
+
+        
+        cat_layers = []
+        cat_layers.append(FCLayers(layers = [n_features_in] + n_hidden_nodes, 
+                                   batch_momentum = batch_momentum, 
+                                   layer_norm = layer_norm, 
+                                   dropout_rate = dropout_rate, 
+                                   activation_fn = activation_fn, 
+                                   dtype = dtype, device = device))
+        cat_layers.append(FCLayers(layers = [n_hidden_nodes[-1], out_features], 
+                                   dtype = dtype, device = device,
+                                   batch_momentum = None, layer_norm = False, dropout_rate = None, activation_fn = None))
+
+        self.classifier = nn.Sequential(*cat_layers)
+
+    def forward(self, x):
+        """Returns logits for labels"""
+        return self.classifier(x) 
+
+    def get_probability(self, y):
+        """Calculate the probability from output logits."""
+        if self.n_labels > 2:
+            return F.softmax(y.detach(), dim=-1)
+        else:
+            return F.sigmoid(y.detach(), dim = -1) # probability of the "positive" (labeled "1") layer
