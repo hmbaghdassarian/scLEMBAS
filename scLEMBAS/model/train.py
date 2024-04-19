@@ -16,7 +16,7 @@ from torch.utils.data import DataLoader
 # import os
 # sys.path.insert(1, os.path.join(sclembas_path))
 # import scLEMBAS.utilities as utils
-import LEMBAS.utilities as utils
+# import LEMBAS.utilities as utils
 
 def split_data(X_in: torch.Tensor, 
                y_out: torch.Tensor, 
@@ -95,7 +95,7 @@ def train_signaling_model(mod,
             - 'batch_size' : number of samples per batch, by default 8
             - 'network_noise_scale' : noise added to signaling network input, by default 10. Set to 0 for no noise. Makes model more robust. 
             - 'gradient_noise_level' : noise added to gradient after backward pass. Makes model more robust. 
-            - 'reset_epoch' : number of epochs upon which to reset the optimizer state, by default 200
+            - 'reset_optimizer_epoch' : number of epochs upon which to reset the optimizer state, by default 200; if None, will not reset
             - 'param_lambda_L2' : L2 regularization penalty term for most of the model weights and biases
             - 'moa_lambda_L1' : L1 regularization penalty term for incorrect interaction mechanism of action (inhibiting/stimulating)
             - 'ligand_lambda_L2' : L2 regularization penalty term for ligand biases

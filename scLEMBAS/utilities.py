@@ -109,46 +109,46 @@ def initialize_progress(max_iter: int):
 
     return stats
 
-def update_progress(stats : dict, iter: int, 
-                  loss: List[float]=None, eig: List[float]=None, 
-                  learning_rate: float=None, n_sign_mismatches: float=None):
-    """Updates various stats of the progress of training the model.
+# def update_progress(stats : dict, iter: int, 
+#                   loss: List[float]=None, eig: List[float]=None, 
+#                   learning_rate: float=None, n_sign_mismatches: float=None):
+#     """Updates various stats of the progress of training the model.
 
-    Parameters
-    ----------
-    stats : dict
-        a dictionary of progress statistics
-    iter : int
-        the current training iteration
-    loss : List[float], optional
-        a list of the loss (excluding regularizations) up to `iter` , by default None
-    eig : List[float], optional
-        a list of the spectral_radius up to `iter` , by default None
-    learning_rate : float, optional
-        the model learning rate at `iter`, by default None
-    n_sign_mismatches : float, optional
-        the total number of sign mismatches at `iter`, 
-        output of `SignalingModel.signaling_network.count_sign_mismatch()`, by default None
+#     Parameters
+#     ----------
+#     stats : dict
+#         a dictionary of progress statistics
+#     iter : int
+#         the current training iteration
+#     loss : List[float], optional
+#         a list of the loss (excluding regularizations) up to `iter` , by default None
+#     eig : List[float], optional
+#         a list of the spectral_radius up to `iter` , by default None
+#     learning_rate : float, optional
+#         the model learning rate at `iter`, by default None
+#     n_sign_mismatches : float, optional
+#         the total number of sign mismatches at `iter`, 
+#         output of `SignalingModel.signaling_network.count_sign_mismatch()`, by default None
 
-    Returns
-    -------
-    stats : dict
-        updated dictionary of progress statistics
-    """
-    if loss != None:
-        stats['loss_mean'][iter] = np.mean(np.array(loss))
-        stats['loss_sigma'][iter] = np.std(np.array(loss))
-    if eig != None:
-        stats['eig_mean'][iter] = np.mean(np.array(eig))
-        stats['eig_sigma'][iter] = np.std(np.array(eig))
-    if learning_rate != None:
-        stats['learning_rate'][iter] = learning_rate
-    if n_sign_mismatches != None:
-        stats['violations'][iter] = n_sign_mismatches
+#     Returns
+#     -------
+#     stats : dict
+#         updated dictionary of progress statistics
+#     """
+#     if loss != None:
+#         stats['loss_mean'][iter] = np.mean(np.array(loss))
+#         stats['loss_sigma'][iter] = np.std(np.array(loss))
+#     if eig != None:
+#         stats['eig_mean'][iter] = np.mean(np.array(eig))
+#         stats['eig_sigma'][iter] = np.std(np.array(eig))
+#     if learning_rate != None:
+#         stats['learning_rate'][iter] = learning_rate
+#     if n_sign_mismatches != None:
+#         stats['violations'][iter] = n_sign_mismatches
     
-    stats['iter_time'][iter] = time.time()
+#     stats['iter_time'][iter] = time.time()
 
-    return stats
+#     return stats
 
 def print_stats(stats, iter):
     """Prints various stats of the progress of training the model.
