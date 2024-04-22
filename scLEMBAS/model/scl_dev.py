@@ -3,6 +3,7 @@ Constructs the full LEMBAS model.
 """
 from typing import List, Dict, Union, Annotated, Optional, Any
 from annotated_types import Ge
+import time
 
 import pandas as pd
 import numpy as np
@@ -11,11 +12,12 @@ import torch
 from torch import nn
 import lightning as L
 
-from .model_utilities import update_with_defaults
+from ..utilities import set_seeds
+from .model_utilities import update_with_defaults, get_lr, StandardDeviationMetric
 from .bionetwork import ProjectInput, BioNet, ProjectOutput
 from .tfa import TFA, Encoder
 
-BASE_TRAINING_PARAMS = {'optimizer': torch.optim.Adam, 'loss_fn': torch.nn.MSELoss(reduction='mean')}
+BASE_TRAINING_PARAMS = {'optimizer': torch.optim.Adam, 'loss_fn': torch.nn.MSELoss(reduction='mean'), 'max_epochs': 5000}
 LR_PARAMS = { 'learning_rate': 2e-3, 'reset_optimizer_epoch': 200}
 OTHER_PARAMS = {'network_noise_scale': 10, 'gradient_noise_level': 1e-9}
 REGULARIZATION_PARAMS = {'param_lambda_L2': 1e-6, 'moa_lambda_L1': 0.1, 'ligand_lambda_L2': 1e-5, 'uniform_lambda_L2': 1e-4, 
@@ -378,19 +380,34 @@ class SignalingModel(L.LightningModule):
         self.training_params = update_with_defaults(default_parameters=self.DEFAULT_TRAINING_PARAMS, 
                                                     user_parameters = training_params)
         self.loss_fn = self.training_params['loss_fn']
+        self.bionet_optimizer = self.training_params['optimizer'](self.parameters(), lr=1, weight_decay=0)
+        self.optimizer_start_state = self.bionet_optimizer.state.copy()
+        self.train_recon_sigma = StandardDeviationMetric()
+        self.train_spectral_sigma = StandardDeviationMetric()
 
     def on_train_start(self):
         if not self.training_params:
             raise ValueError('Please run the "configure_training" method to specify hyper parameters for training.')
         self._train_start_time = time.time()
 
-    def on_epoch_start(self):
-        self.current_lr = utils.get_lr(self.current_epoch, self.training_params['max_iter'], max_height = self.training_params['learning_rate'], start_height=self.training_params['learning_rate']/10, end_height=1e-6, peak = 1000)
+    def on_train_epoch_start(self):
+        print('Set LR')
+        self.current_lr = get_lr(self.current_epoch, self.training_params['max_epochs'], max_height = self.training_params['learning_rate'], start_height=self.training_params['learning_rate']/10, end_height=1e-6, peak = 1000)
         self.optimizers().param_groups[0]['lr'] = self.current_lr
 
-    def on_epoch_end(self):
+    def on_train_epoch_end(self):
         if  self.training_params['reset_optimizer_epoch'] and (self.current_epoch % self.training_params['reset_optimizer_epoch'] == 0):
-            self.optimizers().state = reset_state.copy()
+            self.optimizers().state = self.optimizer_start_state.copy()
+
+        # logging        
+        self.log('reconstruction_loss_sigma', self.train_recon_sigma.compute(), 
+                 on_step = False, on_epoch = True, logger = True)
+        self.log('spectral_radius_sigma', self.train_spectral_sigma.compute(), 
+                 on_step = False, on_epoch = True, logger = True)
+
+    def configure_optimizers(self):
+        optimizer = self.bionet_optimizer # lr will be modified in 'on_epoch_start'
+        return optimizer
 
     def training_step(self, batch, batch_idx):
         optimizer = self.optimizers()
@@ -406,7 +423,7 @@ class SignalingModel(L.LightningModule):
         Y_hat = self.output_layer(Y_full)
 
         # loss calculation
-        loss = self._calculate_loss(self, y_out_, Y_hat, Y_full)
+        loss = self._calculate_loss_training_step(y_out_, Y_hat, Y_full)
 
         # because self.automatic_optimization=False: 
         self.manual_backward(loss)
@@ -415,11 +432,11 @@ class SignalingModel(L.LightningModule):
 
         # logging
         self.log('total_loss', loss, on_step=False, 
-                 on_epoch=True, reduce_fx = torch.mean(), logger = True, prog_bar = True)
+                 on_epoch=True, reduce_fx = torch.mean, logger = True, prog_bar = True)
         self.log('learning_rate', self.current_lr, 
-                 on_step=False, on_epoch=True, reduce_fx = torch.mean(), logger = True, prog_bar = True)
+                 on_step=False, on_epoch=True, reduce_fx = torch.mean, logger = True, prog_bar = True)
         self.log('n_sign_mismatches', self.signaling_network.count_sign_mismatch(), 
-                 on_step=False, on_epoch=True, reduce_fx = torch.mean(), logger = True, prog_bar = True)
+                 on_step=False, on_epoch=True, reduce_fx = torch.mean, logger = True, prog_bar = True)
         
         return loss
     
@@ -440,15 +457,14 @@ class SignalingModel(L.LightningModule):
         total_loss = reconstruction_loss + sign_reg + ligand_reg + param_reg + stability_loss + uniform_reg
 
         # logging
+        self.train_recon_sigma.update(reconstruction_loss)
+        self.train_spectral_sigma.update(reconstruction_loss)
+
         self.log('reconstruction_loss', reconstruction_loss, 
-                 on_step = False, on_epoch = True, reduce_fx = torch.mean(), logger = True, prog_bar = True)
-        self.log('reconstruction_loss_sigma', reconstruction_loss, 
-                 on_step = False, on_epoch = True, reduce_fx = torch.std(), logger = True)
+                 on_step = False, on_epoch = True, reduce_fx = torch.mean, logger = True, prog_bar = True)
         self.log('spectral_radius', spectral_radius, 
-                 on_step = False, on_epoch = True, reduce_fx = torch.mean(), logger = True, prog_bar = True)
-        self.log('spectral_radius_sigma', spectral_radius, 
-                 on_step = False, on_epoch = True, reduce_fx = torch.std(), logger = True)
+                 on_step = False, on_epoch = True, reduce_fx = torch.mean, logger = True, prog_bar = True)
+        return total_loss
         
-    
     def copy(self):
         return copy.deepcopy(self)

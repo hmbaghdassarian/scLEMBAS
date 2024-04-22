@@ -90,7 +90,7 @@ def train_signaling_model(mod,
         number of epochs upon which to reset the optimizer state, by default 200
     hyper_params : Dict[str, Union[int, float]], optional
         various hyper parameter inputs for training
-            - 'max_epoch' : the number of epochs, by default 5000
+            - 'max_epochs' : the number of epochs, by default 5000
             - 'learning_rate' : the starting learning rate, by default 2e-3
             - 'batch_size' : number of samples per batch, by default 8
             - 'network_noise_scale' : noise added to signaling network input, by default 10. Set to 0 for no noise. Makes model more robust. 

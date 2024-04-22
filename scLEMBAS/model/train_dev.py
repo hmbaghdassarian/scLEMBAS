@@ -12,6 +12,7 @@ from torch.utils.data import Dataset, DataLoader, random_split
 import lightning as L
 from lightning.pytorch.callbacks import Callback
 
+
 class ModelData(Dataset):
     def __init__(self, X_in, y_out):
         self.X_in = X_in

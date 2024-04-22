@@ -42,72 +42,34 @@ def set_cores(n_cores: int):
     os.environ["VECLIB_MAXIMUM_THREADS"] = str(n_cores)
     os.environ["NUMEXPR_NUM_THREADS"] = str(n_cores)
 
-def get_lr(epoch: int, max_epoch: int, max_height: float = 1e-3, 
-             start_height: float=1e-5, end_height: float=1e-5, 
-             peak: int = 1000):
-    """Calculates learning rate for a given epoch during training.
+# def initialize_progress(max_iter: int):
+#     """Track various stats of the progress of training the model.
 
-    Parameters
-    ----------
-    epoch : int
-        the current epochs
-    max_epoch : int
-        the maximum number of training epochss
-    max_height : float, optional
-        tuning parameters for learning for the first 95% of epochss, by default 1e-3
-    start_height : float, optional
-        tuning parameter for learning rate before peak epochss, by default 1e-5
-    end_height : float, optional
-        tuning parameter for learning rate afer peak epochss, by default 1e-5
-    peak : int, optional
-        the first # of epochss to calculate lr on (should be less than 95% 
-        of max_epoch), by default 1000
+#     Parameters
+#     ----------
+#     max_iter : int
+#         the maximum number of training iterations
 
-    Returns
-    -------
-    lr : float
-        the learning rate
-    """
-
-    phase_length = 0.95 * max_epoch
-    if epoch<=peak:
-        effective_epoch = epoch/peak
-        lr = (max_height-start_height) * 0.5 * (np.cos(np.pi*(effective_epoch+1))+1) + start_height
-    elif epoch<=phase_length:
-        effective_epoch = (epoch-peak)/(phase_length-peak)
-        lr = (max_height-end_height) * 0.5 * (np.cos(np.pi*(effective_epoch+2))+1) + end_height
-    else:
-        lr = end_height
-    return lr
-
-def initialize_progress(max_iter: int):
-    """Track various stats of the progress of training the model.
-
-    Parameters
-    ----------
-    max_iter : int
-        the maximum number of training iterations
-
-    Returns
-    -------
-    stats : dict
-        a dictionary of progress statistics
-    """
-    stats = {}
-    stats['start_time'] = time.time()
-    stats['end_time'] = 0
-    stats['iter_time'] = np.nan*np.ones(max_iter)
+#     Returns
+#     -------
+#     stats : dict
+#         a dictionary of progress statistics
+#     """
+#     stats = {}
+#     stats['start_time'] = time.time()
+#     stats['end_time'] = 0
+#     stats['iter_time'] = np.nan*np.ones(max_iter)
     
-    stats['loss_mean'] = np.nan*np.ones(max_iter)
-    stats['loss_sigma'] = np.nan*np.ones(max_iter)
-    stats['eig_mean'] = np.nan*np.ones(max_iter)
-    stats['eig_sigma'] = np.nan*np.ones(max_iter)
+#     stats['loss_mean'] = np.nan*np.ones(max_iter)
+#     stats['loss_sigma'] = np.nan*np.ones(max_iter)
+#     stats['eig_mean'] = np.nan*np.ones(max_iter)
+#     stats['eig_sigma'] = np.nan*np.ones(max_iter)
 
-    stats['test'] = np.nan*np.ones(max_iter)
-    stats['learning_rate'] = np.nan*np.ones(max_iter)
-    stats['violations'] = np.nan*np.ones(max_iter)
+#     stats['test'] = np.nan*np.ones(max_iter)
+#     stats['learning_rate'] = np.nan*np.ones(max_iter)
+#     stats['violations'] = np.nan*np.ones(max_iter)
 
-    return stats
+#     return stats
 
 # def update_progress(stats : dict, iter: int, 
 #                   loss: List[float]=None, eig: List[float]=None, 
@@ -150,29 +112,29 @@ def initialize_progress(max_iter: int):
 
 #     return stats
 
-def print_stats(stats, iter):
-    """Prints various stats of the progress of training the model.
+# def print_stats(stats, iter):
+#     """Prints various stats of the progress of training the model.
 
-    Parameters
-    ----------
-    stats : dict
-        a dictionary of progress statistics
-    iter : int
-        the current training iteration
-    """
-    msg = 'i={:.0f}'.format(iter)
-    if not np.isnan(stats['loss_mean'][iter]):
-        msg += ', l={:.5f}'.format(stats['loss_mean'][iter])
-    # if not np.isnan(stats['test'][iter]):
-    #     msg += ', t={:.5f}'.format(stats['test'][iter])
-    if not np.isnan(stats['eig_mean'][iter]):
-        msg += ', s={:.3f}'.format(stats['eig_mean'][iter])
-    if not np.isnan(stats['learning_rate'][iter]):
-        msg += ', r={:.5f}'.format(stats['learning_rate'][iter])
-    if not np.isnan(stats['violations'][iter]):
-        msg += ', v={:.0f}'.format(stats['violations'][iter])
+#     Parameters
+#     ----------
+#     stats : dict
+#         a dictionary of progress statistics
+#     iter : int
+#         the current training iteration
+#     """
+#     msg = 'i={:.0f}'.format(iter)
+#     if not np.isnan(stats['loss_mean'][iter]):
+#         msg += ', l={:.5f}'.format(stats['loss_mean'][iter])
+#     # if not np.isnan(stats['test'][iter]):
+#     #     msg += ', t={:.5f}'.format(stats['test'][iter])
+#     if not np.isnan(stats['eig_mean'][iter]):
+#         msg += ', s={:.3f}'.format(stats['eig_mean'][iter])
+#     if not np.isnan(stats['learning_rate'][iter]):
+#         msg += ', r={:.5f}'.format(stats['learning_rate'][iter])
+#     if not np.isnan(stats['violations'][iter]):
+#         msg += ', v={:.0f}'.format(stats['violations'][iter])
         
-    print(msg)
+#     print(msg)
 
 def get_moving_average(values: np.array, n_steps: int):
     """Get the moving average of a tracked state across n_steps. Serves to smooth value. 

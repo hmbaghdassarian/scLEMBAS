@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 import torch
 from torch import nn
+import torchmetrics
 
 def np_to_torch(arr: np.array, dtype: torch.float32, device: str = 'cpu'):
     """Convert a numpy array to a torch.tensor
@@ -49,47 +50,56 @@ def update_with_defaults(default_parameters: dict, user_parameters: dict, additi
 
     return params
 
-# def get_spectral_radius(weights: nn.parameter.Parameter):
-#     """_summary_
+def get_lr(epoch: int, max_epoch: int, max_height: float = 1e-3, 
+             start_height: float=1e-5, end_height: float=1e-5, 
+             peak: int = 1000):
+    """Calculates learning rate for a given epoch during training.
 
-#     Parameters
-#     ----------
-#     weights : nn.parameter.Parameter
-#         the interaction weights
+    Parameters
+    ----------
+    epoch : int
+        the current epochs
+    max_epoch : int
+        the maximum number of training epochss
+    max_height : float, optional
+        tuning parameters for learning for the first 95% of epochss, by default 1e-3
+    start_height : float, optional
+        tuning parameter for learning rate before peak epochss, by default 1e-5
+    end_height : float, optional
+        tuning parameter for learning rate afer peak epochss, by default 1e-5
+    peak : int, optional
+        the first # of epochss to calculate lr on (should be less than 95% 
+        of max_epoch), by default 1000
 
-#     Returns
-#     -------
-#     spectral_radius : np.ndarray
-#         a single element numpy array representing the denominator of the scaling factor for weights 
-#     """
-#     A = scipy.sparse.csr_matrix(weights.detach().numpy())
-#     eigen_value, _ = eigs(A, k = 1) # first eigen value
-#     spectral_radius = np.abs(eigen_value)
-#     return spectral_radius
+    Returns
+    -------
+    lr : float
+        the learning rate
+    """
 
-# def expected_uniform_distribution(Y_full: torch.Tensor, target_min: float = 0.0, target_max: float = None):
-#     """Calculate the distance between the signaling network node values and a desired uniform distribution of the node values
+    phase_length = 0.95 * max_epoch
+    if epoch<=peak:
+        effective_epoch = epoch/peak
+        lr = (max_height-start_height) * 0.5 * (np.cos(np.pi*(effective_epoch+1))+1) + start_height
+    elif epoch<=phase_length:
+        effective_epoch = (epoch-peak)/(phase_length-peak)
+        lr = (max_height-end_height) * 0.5 * (np.cos(np.pi*(effective_epoch+2))+1) + end_height
+    else:
+        lr = end_height
+    return lr
 
-#     Parameters
-#     ----------
-#     Y_full : torch.Tensor
-#         the signaling network scaled by learned interaction weights. Shape is (samples x network nodes). 
-#         Output of BioNet.
-#     target_min : float, optional
-#         minimum values for nodes in Y_full to take on, by default 0.0
-#     target_max : float, optional
-#         maximum values for nodes in Y_full to take on, by default 0.8
+class StandardDeviationMetric(torchmetrics.Metric):
+    def __init__(self):
+        super().__init__(dist_sync_on_step=False)
+        self.add_state("sum", default=torch.tensor(0.0), dist_reduce_fx="sum")
+        self.add_state("sum_of_squares", default=torch.tensor(0.0), dist_reduce_fx="sum")
+        self.add_state("total", default=torch.tensor(0), dist_reduce_fx="sum")
 
-#     Returns
-#     -------
-#     loss : torch.Tensor
-#         the regularization term
-#     """
-#     target_distribution = torch.linspace(target_min, target_max, Y_full.shape[0], dtype=Y_full.dtype, device=Y_full.device).reshape(-1, 1)
+    def update(self, preds):
+        self.sum += torch.sum(preds)
+        self.sum_of_squares += torch.sum(preds ** 2)
+        self.total += preds.numel()
 
-#     sorted_Y_full, _ = torch.sort(Y_full, axis=0) # sorts each column (signaling network node) in ascending order
-#     dist_loss = torch.sum(torch.square(sorted_Y_full - target_distribution)) # difference in distribution
-#     below_range = torch.sum(Y_full.lt(target_min) * torch.square(Y_full-target_min)) # those that are below the minimum value
-#     above_range = torch.sum(Y_full.gt(target_max) * torch.square(Y_full-target_max)) # those that are above the maximum value
-#     loss = dist_loss + below_range + above_range
-#     return loss
+    def compute(self):
+        mean = self.sum / self.total
+        return torch.sqrt(self.sum_of_squares / self.total - mean ** 2)
