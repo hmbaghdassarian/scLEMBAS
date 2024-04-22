@@ -17,7 +17,8 @@ from .model_utilities import update_with_defaults, get_lr, StandardDeviationMetr
 from .bionetwork import ProjectInput, BioNet, ProjectOutput
 from .tfa import TFA, Encoder
 
-BASE_TRAINING_PARAMS = {'optimizer': torch.optim.Adam, 'loss_fn': torch.nn.MSELoss(reduction='mean'), 'max_epochs': 5000}
+BASE_TRAINING_PARAMS = {'optimizer': torch.optim.Adam, 'loss_fn': torch.nn.MSELoss(reduction='mean'), 
+                        'max_epochs': 5000, 'peak_height': 1000, 'end_height': 1e-6}
 LR_PARAMS = { 'learning_rate': 2e-3, 'reset_optimizer_epoch': 200}
 OTHER_PARAMS = {'network_noise_scale': 10, 'gradient_noise_level': 1e-9}
 REGULARIZATION_PARAMS = {'param_lambda_L2': 1e-6, 'moa_lambda_L1': 0.1, 'ligand_lambda_L2': 1e-5, 'uniform_lambda_L2': 1e-4, 
@@ -26,9 +27,9 @@ SPECTRAL_RADIUS_PARAMS = {'n_probes_spectral': 5, 'power_steps_spectral': 50, 's
 
 class SignalingModel(L.LightningModule):
     """Constructs the signaling network based RNN."""
-    DEFAULT_TRAINING_PARAMS = {**BASE_TRAINING_PARAMS, **LR_PARAMS, **OTHER_PARAMS, **REGULARIZATION_PARAMS, **SPECTRAL_RADIUS_PARAMS}
     BIONET_PARAMS = {'target_steps': 100, 'max_steps': 300, 'exp_factor': 20, 'leak': 0.01, 'tolerance': 1e-5}
-    
+    DEFAULT_TRAINING_PARAMS = {**BASE_TRAINING_PARAMS, **LR_PARAMS, **OTHER_PARAMS, **REGULARIZATION_PARAMS, **SPECTRAL_RADIUS_PARAMS}
+
     def __init__(self, net: pd.DataFrame, X_in: pd.DataFrame, y_out: pd.DataFrame,
                  projection_amplitude_in: Union[int, float] = 1, projection_amplitude_out: float = 1,
                  ban_list: List[str] = None, weight_label: str = 'mode_of_action', 
@@ -373,10 +374,36 @@ class SignalingModel(L.LightningModule):
                 all_params[i].grad += (noise_level * all_noise)
     
         self._gradient_seed_counter += 1 # new random noise each time function is called
+        
+    def copy(self):
+        return copy.deepcopy(self)
 
-    ########### LIGHTNING TRAINING ###########
+    ########################LIGHTNING SPECIFIC METHODS########################
     def configure_training(self, training_params):
-        """Sets various parameters for training."""
+        """Sets various parameters for training.
+
+        Parameters
+        ----------
+        training_params : Dict[str, Union[int, float]], optional
+            various hyper parameter for training
+                - 'max_epochs' : the number of epochs, by default 5000
+                - 'learning_rate' : the starting learning rate, by default 2e-3
+                - 'peak_height': epoch at which maximum LR is, by default 1000
+                - 'end_height': , by default 1e-5
+                - 'batch_size' : number of samples per batch, by default 8
+                - 'network_noise_scale' : noise added to signaling network input, by default 10. Set to 0 for no noise. Makes model more robust. 
+                - 'gradient_noise_level' : noise added to gradient after backward pass. Makes model more robust. 
+                - 'reset_optimizer_epoch' : number of epochs upon which to reset the optimizer state, by default 200; if None, will not reset
+                - 'param_lambda_L2' : L2 regularization penalty term for most of the model weights and biases
+                - 'moa_lambda_L1' : L1 regularization penalty term for incorrect interaction mechanism of action (inhibiting/stimulating)
+                - 'ligand_lambda_L2' : L2 regularization penalty term for ligand biases
+                - 'uniform_lambda_L2' : L2 regularization penalty term for 
+                - 'uniform_max' : 
+                - 'spectral_loss_factor' : regularization penalty term for 
+                - 'n_probes_spectral' : 
+                - 'power_steps_spectral' : 
+                - 'subset_n_spectral' : 
+        """
         self.training_params = update_with_defaults(default_parameters=self.DEFAULT_TRAINING_PARAMS, 
                                                     user_parameters = training_params)
         self.loss_fn = self.training_params['loss_fn']
@@ -391,8 +418,7 @@ class SignalingModel(L.LightningModule):
         self._train_start_time = time.time()
 
     def on_train_epoch_start(self):
-        print('Set LR')
-        self.current_lr = get_lr(self.current_epoch, self.training_params['max_epochs'], max_height = self.training_params['learning_rate'], start_height=self.training_params['learning_rate']/10, end_height=1e-6, peak = 1000)
+        self.current_lr = get_lr(self.current_epoch, self.training_params['max_epochs'], max_height = self.training_params['learning_rate'], start_height=self.training_params['learning_rate']/10, end_height=self.training_params['end_height'], peak = self.training_params['peak_height'])
         self.optimizers().param_groups[0]['lr'] = self.current_lr
 
     def on_train_epoch_end(self):
@@ -441,6 +467,7 @@ class SignalingModel(L.LightningModule):
         return loss
     
     def _calculate_loss_training_step(self, y_out_, Y_hat, Y_full):
+        """Calculates the reconstruction + regularization loss for the BioNet."""
         # get prediction loss
         reconstruction_loss = self.loss_fn(y_out_, Y_hat)
         
@@ -465,6 +492,7 @@ class SignalingModel(L.LightningModule):
         self.log('spectral_radius', spectral_radius, 
                  on_step = False, on_epoch = True, reduce_fx = torch.mean, logger = True, prog_bar = True)
         return total_loss
-        
-    def copy(self):
-        return copy.deepcopy(self)
+
+    # def test_step(self, batch, batch_idx):
+    #     X, y = batch
+    #     Y_hat, Y_full, z_basal, z_basal, z_full, px_mean, px_var = self.forward(X)

@@ -27,7 +27,7 @@ class ModelData(Dataset):
 class SignalingDataModule(L.LightningDataModule):
     def __init__(self, X_in, y_out, 
                  batch_size: int, 
-                 train_split_frac: Dict = {'train': 0.8, 'validation': 0.2, 'test': None}):
+                 train_split_frac: Dict = {'train': 0.8, 'test': 0.2, 'validation': None}):
         """Lightning Data Module for running the Signaling Model.
 
         Parameters
@@ -39,7 +39,7 @@ class SignalingDataModule(L.LightningDataModule):
         batch_size : int
             number of samples per batch
         train_split_frac : Dict, optional
-            fraction of samples to be assigned to each of train, validation, and test, by default 0.8, 0.2, and 0 respectively
+            fraction of samples to be assigned to each of train, test, and validation, by default 0.8, 0.2, and 0 respectively
         """
         super().__init__()
 
@@ -47,7 +47,7 @@ class SignalingDataModule(L.LightningDataModule):
         self.data = ModelData(X_in.to('cpu'), y_out.to('cpu'))
 
         self.train_split_frac = OrderedDict({})
-        key_order = ['train', 'validation', 'test']
+        key_order = ['train', 'test', 'validation']
         for key in key_order:
             if key in train_split_frac:
                 self.train_split_frac[key] = train_split_frac[key] if train_split_frac[key] else 0
@@ -57,7 +57,7 @@ class SignalingDataModule(L.LightningDataModule):
             raise ValueError('Must specify a train-test-val split that sums to 1')
 
     def setup(self, stage=None):
-        self.train_data, self.val_data, self.test_data = random_split(self.data, list(self.train_split_frac.values()))
+        self.train_data, self.test_data, self.val_data = random_split(self.data, list(self.train_split_frac.values()))
 
     def train_dataloader(self):
         return DataLoader(dataset=self.train_data, batch_size=self.batch_size, drop_last = False, shuffle=True) # pin_memory = pin_memory,
