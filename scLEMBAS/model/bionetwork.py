@@ -504,4 +504,3 @@ class ProjectOutput(nn.Module):
     #         set to use gpu ("cuda") or cpu ("cpu")
     #     """
     #     self.output_node_order = self.output_node_order.to(device)
-

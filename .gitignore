@@ -7,3 +7,4 @@
 **/*.pth
 **/__pycache__/
 /notebooks/cpa/
+**/*lightning_logs/
