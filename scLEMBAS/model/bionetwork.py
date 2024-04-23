@@ -166,7 +166,8 @@ class BioNet(nn.Module):
         network_targets = self.edge_list[0].numpy() # the target nodes receiving an edge
         n_interactions = len(network_targets)
 
-        set_seeds(self.seed)
+        if self.seed:
+            set_seeds(self.seed)
         weight_values = 0.1 + 0.1*torch.rand(n_interactions, dtype=self.dtype, device = self.device)
         weight_values[self.edge_MOA[1,:]] = -weight_values[self.edge_MOA[1,:]] # make those that are inhibiting negative
         
