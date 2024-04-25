@@ -3,28 +3,38 @@ Constructs the full LEMBAS model.
 """
 from typing import List, Dict, Union, Annotated, Optional, Any
 from annotated_types import Ge
+import time
 
 import pandas as pd
 import numpy as np
 import scipy
 import torch
 from torch import nn
+import lightning as L
 
-from .model_utilities import update_with_defaults
+from .. import utilities as utils
+from .model_utilities import update_with_defaults, get_lr, StandardDeviationMetric
 from .bionetwork import ProjectInput, BioNet, ProjectOutput
 from .tfa import TFA, Encoder
 
-class SignalingModel(torch.nn.Module):
+BASE_TRAINING_PARAMS = {'optimizer': torch.optim.Adam, 'loss_fn': torch.nn.MSELoss(reduction='mean'), 'max_epochs': 5000}
+LR_PARAMS = { 'learning_rate': 2e-3, 'reset_optimizer_epoch': 200}
+OTHER_PARAMS = {'network_noise_scale': 10, 'gradient_noise_level': 1e-9}
+REGULARIZATION_PARAMS = {'param_lambda_L2': 1e-6, 'moa_lambda_L1': 0.1, 'ligand_lambda_L2': 1e-5, 'uniform_lambda_L2': 1e-4, 
+                   'uniform_max': (1/1.2), 'spectral_loss_factor': 1e-5}
+SPECTRAL_RADIUS_PARAMS = {'n_probes_spectral': 5, 'power_steps_spectral': 50, 'subset_n_spectral': 10}
+
+class SignalingModel(L.LightningModule):
     """Constructs the signaling network based RNN."""
-    DEFAULT_TRAINING_PARAMETERS = {'target_steps': 100, 'max_steps': 300, 'exp_factor': 20, 'leak': 0.01, 'tolerance': 1e-5}
+    DEFAULT_TRAINING_PARAMS = {**BASE_TRAINING_PARAMS, **LR_PARAMS, **OTHER_PARAMS, **REGULARIZATION_PARAMS, **SPECTRAL_RADIUS_PARAMS}
+    BIONET_PARAMS = {'target_steps': 100, 'max_steps': 300, 'exp_factor': 20, 'leak': 0.01, 'tolerance': 1e-5}
     
     def __init__(self, net: pd.DataFrame, X_in: pd.DataFrame, y_out: pd.DataFrame,
                  projection_amplitude_in: Union[int, float] = 1, projection_amplitude_out: float = 1,
                  ban_list: List[str] = None, weight_label: str = 'mode_of_action', 
-                 source_label: str = 'source', target_label: str = 'target', 
-                bionet_params: Dict[str, float] = None , 
+                 source_label: str = 'source', target_label: str = 'target',
+                 bionet_params: Dict[str, float] = None , 
                  activation_function: str='MML',
-                 
                  skip_bionet_out: bool = False, 
                  covariates: Optional[pd.DataFrame] = None, categorical_covariate_keys: Optional[List[str]] = None,
                  tfa_hyper_params: Dict[str, Any] = TFA.DEFAULT_HYPER_PARAMS, 
@@ -52,7 +62,7 @@ class SignalingModel(torch.nn.Module):
         projection_amplitude_out : float
              value with which to scale TF activity outputs by, by default 1 (see `ProjectOutput` for details, can also be tuned as a learned parameter in the model)
         bionet_params : Dict[str, float], optional
-            training parameters for the model, by default None
+            parameters for the `BioNet` model, by default None
             Key values include:
                 - 'max_steps': maximum number of time steps of the RNN, by default 300
                 - 'tolerance': threshold at which to break RNN; based on magnitude of change of updated edge weight values, by default 1e-5
@@ -116,17 +126,19 @@ class SignalingModel(torch.nn.Module):
             random seed for torch and numpy operations, by default 888
         """
         super().__init__()
-        self.dtype = dtype
-        self.device = device
+        self._dtype = dtype
+        self._device = device
         self.seed = seed
         self._gradient_seed_counter = 0
+        self.automatic_optimization=False 
+        
         self.projection_amplitude_out = projection_amplitude_out
 
         edge_list, node_labels, edge_MOA = self.parse_network(net, ban_list, weight_label, source_label, target_label)
         if not bionet_params:
-            bionet_params = self.DEFAULT_TRAINING_PARAMETERS.copy()
+            bionet_params = self.BIONET_PARAMS.copy()
         else:
-            bionet_params = self.set_training_parameters(**bionet_params)
+            bionet_params = self._set_bionet_parameters(**bionet_params)
 
         # filter for nodes in the network, sorting by node_labels order
         self.X_in = X_in.loc[:, np.intersect1d(X_in.columns.values, node_labels)]
@@ -137,14 +149,14 @@ class SignalingModel(torch.nn.Module):
         self.input_layer = ProjectInput(node_idx_map = self.node_idx_map, 
                                         input_labels = self.X_in.columns.values, 
                                         projection_amplitude = projection_amplitude_in, 
-                                        dtype = self.dtype, 
-                                        device = self.device)
+                                        dtype = self._dtype, 
+                                        device = self._device)
         self.signaling_network = BioNet(edge_list = edge_list, 
                                         edge_MOA = edge_MOA, 
                                         n_network_nodes = len(node_labels), 
                                         bionet_params = bionet_params, 
                                         activation_function = activation_function, 
-                                        dtype = self.dtype, device = self.device, seed = self.seed)
+                                        dtype = self._dtype, device = self._device, seed = self.seed)
 
         if covariates is not None and skip_bionet_out:
             self.output_layer = None
@@ -153,7 +165,7 @@ class SignalingModel(torch.nn.Module):
             self.output_layer = ProjectOutput(node_idx_map = self.node_idx_map, 
                                               output_labels = self.y_out.columns.values, 
                                               projection_amplitude = self.projection_amplitude_out, 
-                                              dtype = self.dtype, device = self.device)
+                                              dtype = self._dtype, device = self._device)
             n_features_tfa = self.y_out.shape[1] # no. of TFs
         if covariates is not None:
             tfa_hyper_params = update_with_defaults(default_parameters=TFA.DEFAULT_HYPER_PARAMS, 
@@ -161,7 +173,7 @@ class SignalingModel(torch.nn.Module):
             self.tf_autoencoder = TFA(covariates = covariates, 
                                       categorical_covariate_keys = categorical_covariate_keys, 
                                       n_features_in = n_features_tfa, # of TFs
-                                      device = self.device, dtype = self.dtype,
+                                      device = self._device, dtype = self._dtype,
                                       encoder_hyper_params = encoder_hyper_params,
                                       decoder_hyper_params = decoder_hyper_params,
                                       **tfa_hyper_params)
@@ -224,11 +236,7 @@ class SignalingModel(torch.nn.Module):
 
         return edge_list, node_labels, edge_MOA
 
-    def df_to_tensor(self, df: pd.DataFrame):
-        """Converts a pandas dataframe to the appropriate torch.tensor"""
-        return torch.tensor(df.values.copy(), dtype=self.dtype, device = self.device)
-
-    def set_training_parameters(self, **attributes):
+    def _set_bionet_parameters(self, **attributes):
         """Set the parameters for training the model. Overrides default parameters with attributes if specified.
         Adapted from LEMBAS `trainingParameters`
     
@@ -237,23 +245,17 @@ class SignalingModel(torch.nn.Module):
         attributes : dict
             keys are parameter names and values are parameter value
         """
-        # #set defaults
-        # default_parameters = self.DEFAULT_TRAINING_PARAMETERS.copy()
-        # allowed_params = list(default_parameters.keys()) + ['spectral_target']
-    
-        # params = {**default_parameters, **attributes}
-        # if 'spectral_target' not in params.keys():
-        #     params['spectral_target'] = np.exp(np.log(params['tolerance'])/params['target_steps'])
-    
-        # params = {k: v for k,v in params.items() if k in allowed_params}
-
-        params = update_with_defaults(default_parameters = self.DEFAULT_TRAINING_PARAMETERS, 
+        params = update_with_defaults(default_parameters = self.BIONET_PARAMS, 
                                       user_parameters = attributes, 
                                       additional_parameters = ['spectral_target'])
         if 'spectral_target' not in params.keys():
             params['spectral_target'] = np.exp(np.log(params['tolerance'])/params['target_steps'])
     
         return params
+
+    def df_to_tensor(self, df: pd.DataFrame):
+        """Converts a pandas dataframe to the appropriate torch.tensor"""
+        return torch.tensor(df.values.copy(), dtype=self._dtype, device = self._device)
 
     def forward(self, X_in, categories: Optional[Dict[str, List[str]]] = None):
         """Forward pass of the model.Linearly scales ligand inputs, learns weights for signaling network interactions, 
@@ -364,7 +366,7 @@ class SignalingModel(torch.nn.Module):
         """
         all_params = list(self.parameters())
         if self.seed:
-            set_seeds(self.seed + self._gradient_seed_counter)
+            utils.set_seeds(self.seed + self._gradient_seed_counter)
         for i in range(len(all_params)):
             if all_params[i].requires_grad:
                 all_noise = torch.randn(all_params[i].grad.shape, dtype=all_params[i].dtype, device=all_params[i].device)
@@ -372,5 +374,105 @@ class SignalingModel(torch.nn.Module):
     
         self._gradient_seed_counter += 1 # new random noise each time function is called
 
+    ########### LIGHTNING TRAINING ###########
+    def configure_training(self, training_params):
+        """Sets various parameters for training."""
+        self.training_params = update_with_defaults(default_parameters=self.DEFAULT_TRAINING_PARAMS, 
+                                                    user_parameters = training_params)
+        self.loss_fn = self.training_params['loss_fn']
+        self.bionet_optimizer = self.training_params['optimizer'](self.parameters(), lr=1, weight_decay=0)
+        self.optimizer_start_state = self.bionet_optimizer.state.copy()
+        self.train_recon_sigma = StandardDeviationMetric()
+        self.train_spectral_sigma = StandardDeviationMetric()
+
+    def on_train_start(self):
+        if not self.training_params:
+            raise ValueError('Please run the "configure_training" method to specify hyper parameters for training.')
+        self._train_start_time = time.time()
+
+    def on_train_epoch_start(self):
+        self.current_lr = get_lr(self.current_epoch, self.training_params['max_epochs'], max_height = self.training_params['learning_rate'], start_height=self.training_params['learning_rate']/10, end_height=1e-6, peak = 1000)
+        self.optimizers().param_groups[0]['lr'] = self.current_lr
+
+    def on_train_epoch_end(self):
+        if  self.training_params['reset_optimizer_epoch'] and (self.current_epoch % self.training_params['reset_optimizer_epoch'] == 0):
+            self.optimizers().state = self.optimizer_start_state.copy()
+
+        # logging        
+        self.log('reconstruction_loss_sigma', self.train_recon_sigma.compute(), 
+                 on_step = False, on_epoch = True, logger = True)
+        self.log('spectral_radius_sigma', self.train_spectral_sigma.compute(), 
+                 on_step = False, on_epoch = True, logger = True)
+
+        if self.current_epoch % self.training_params['max_epochs']/100 == 0:
+            print_stats = [self.current_epoch,
+                           self.trainer.callback_metrics["reconstruction_loss"],
+                           self.trainer.callback_metrics["spectral_radius"],
+                           self.trainer.callback_metrics["learning_rate"],
+                           self.trainer.callback_metrics['n_sign_mismatches']
+                       ]
+            print('e={}, l={:0.5f}, s={:0.5f}, r={:0.5f}, v={:0.5f}'.format(*print_stats))
+
+    def configure_optimizers(self):
+        optimizer = self.bionet_optimizer # lr will be modified in 'on_epoch_start'
+        return optimizer
+
+    def training_step(self, batch, batch_idx):
+        optimizer = self.optimizers()
+        optimizer.zero_grad() # because self.automatic_optimization=False 
+        X_in_, y_out_ = batch
+
+        # forward pass
+        X_full = self.input_layer(X_in_) # transform to full network with ligand input concentrations
+        utils.set_seeds(self.seed + self._gradient_seed_counter)
+        network_noise = torch.randn(X_full.shape, device = X_full.device)
+        X_full = X_full + (self.training_params['network_noise_scale'] * self.current_lr * network_noise) # randomly add noise to signaling network input, makes model more robust
+        Y_full = self.signaling_network(X_full) # train signaling network weights
+        Y_hat = self.output_layer(Y_full)
+
+        # loss calculation
+        loss = self._calculate_loss_training_step(y_out_, Y_hat, Y_full)
+
+        # because self.automatic_optimization=False: 
+        self.manual_backward(loss)
+        self.add_gradient_noise(noise_level = self.training_params['gradient_noise_level']) # <-- reason why self.automatic_optimizer is False
+        optimizer.step()
+
+        # logging
+        self.log('total_loss', loss, on_step=False, 
+                 on_epoch=True, reduce_fx = torch.mean, logger = True, prog_bar = True)
+        self.log('learning_rate', self.current_lr, 
+                 on_step=False, on_epoch=True, reduce_fx = torch.mean, logger = True, prog_bar = True)
+        self.log('n_sign_mismatches', self.signaling_network.count_sign_mismatch(), 
+                 on_step=False, on_epoch=True, reduce_fx = torch.mean, logger = True, prog_bar = True)
+            
+        return loss
+    
+    def _calculate_loss_training_step(self, y_out_, Y_hat, Y_full):
+        # get prediction loss
+        reconstruction_loss = self.loss_fn(y_out_, Y_hat)
+        
+        # get regularization losses
+        sign_reg = self.signaling_network.sign_regularization(lambda_L1 = self.training_params['moa_lambda_L1']) # incorrect MoA
+        ligand_reg = self.ligand_regularization(lambda_L2 = self.training_params['ligand_lambda_L2']) # ligand biases
+        stability_loss, spectral_radius = self.signaling_network.get_SS_loss(Y_full = Y_full.detach(), spectral_loss_factor = self.training_params['spectral_loss_factor'],
+                                                                            subset_n = self.training_params['subset_n_spectral'], n_probes = self.training_params['n_probes_spectral'], 
+                                                                            power_steps = self.training_params['power_steps_spectral'])
+        uniform_reg = self.uniform_regularization(lambda_L2 = self.training_params['uniform_lambda_L2']*self.current_lr, Y_full = Y_full, 
+                                                 target_min = 0, target_max = self.training_params['uniform_max']) # uniform distribution
+        param_reg = self.L2_reg(self.training_params['param_lambda_L2']) # all model weights and signaling network biases
+        
+        total_loss = reconstruction_loss + sign_reg + ligand_reg + param_reg + stability_loss + uniform_reg
+
+        # logging
+        self.train_recon_sigma.update(reconstruction_loss)
+        self.train_spectral_sigma.update(reconstruction_loss)
+
+        self.log('reconstruction_loss', reconstruction_loss, 
+                 on_step = False, on_epoch = True, reduce_fx = torch.mean, logger = True, prog_bar = True)
+        self.log('spectral_radius', spectral_radius, 
+                 on_step = False, on_epoch = True, reduce_fx = torch.mean, logger = True, prog_bar = True)
+        return total_loss
+        
     def copy(self):
         return copy.deepcopy(self)
