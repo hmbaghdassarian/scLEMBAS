@@ -18,8 +18,9 @@ from torch.utils.data import DataLoader
 # import scLEMBAS.utilities as utils
 import LEMBAS.utilities as utils
 
-LR_PARAMS = {'max_iter': 5000, 'learning_rate': 2e-3}
-OTHER_PARAMS = {'batch_size': 32, 'noise_level': 10, 'gradient_noise_level': 1e-9}
+
+LR_PARAMS = {'max_epochs': 5000, 'learning_rate': 2e-3, 'reset_optimizer_epoch': 200}
+OTHER_PARAMS = {'batch_size': 32, 'network_noise_scale': 10, 'gradient_noise_scale': 1e-9}
 REGULARIZATION_PARAMS = {'param_lambda_L2': 1e-6, 'moa_lambda_L1': 0.1, 'ligand_lambda_L2': 1e-5, 'uniform_lambda_L2': 1e-4, 
                    'uniform_max': (1/1.2), 'spectral_loss_factor': 1e-5}
 SPECTRAL_RADIUS_PARAMS = {'n_probes_spectral': 5, 'power_steps_spectral': 50, 'subset_n_spectral': 10}
@@ -82,7 +83,7 @@ def train_signaling_model(mod,
                           hyper_params: Dict[str, Union[int, float]] = None,
                           train_split_frac: Dict = {'train': 0.8, 'test': 0.2, 'validation': None},
                           train_seed: int = None,
-                         verbose: bool = True):
+                          verbose: bool = True):
     """Trains the signaling model
 
     Parameters
@@ -93,15 +94,14 @@ def train_signaling_model(mod,
         optimizer to use during training
     loss_fn : torch.nn.modules.loss.MSELoss
         loss function to use during training
-    reset_epoch : int, optional
-        number of epochs upon which to reset the optimizer state, by default 200
     hyper_params : Dict[str, Union[int, float]], optional
         various hyper parameter inputs for training
-            - 'max_iter' : the number of epochs, by default 5000
+            - 'max_epochs' : the number of epochs, by default 5000
             - 'learning_rate' : the starting learning rate, by default 2e-3
+            - 'reset_optimizer_epoch' : number of epochs upon which to reset the optimizer state, by default 200
             - 'batch_size' : number of samples per batch, by default 8
-            - 'noise_level' : noise added to signaling network input, by default 10. Set to 0 for no noise. Makes model more robust. 
-            - 'gradient_noise_level' : noise added to gradient after backward pass. Makes model more robust. 
+            - 'network_noise_scale' : noise added to signaling network input, by default 10. Set to 0 for no noise. Makes model more robust. 
+            - 'gradient_noise_scale' : noise added to gradient after backward pass. Makes model more robust. 
             - 'reset_epoch' : number of epochs upon which to reset the optimizer state, by default 200
             - 'param_lambda_L2' : L2 regularization penalty term for most of the model weights and biases
             - 'moa_lambda_L1' : L1 regularization penalty term for incorrect interaction mechanism of action (inhibiting/stimulating)
@@ -134,14 +134,17 @@ def train_signaling_model(mod,
     split_data_dict : Dict[str, pd.DataFrame]
         key value pairs represent the output of the `split_data` function
     """
+    if not mod.signaling_network._prescaled_weights:
+        warnings.warn('Recommended to run `mod.signaling_network.prescale_weights()` prior to training')
+    
+    
     if not hyper_params:
         hyper_params = HYPER_PARAMS.copy()
     else:
         hyper_params = {k: v for k,v in {**HYPER_PARAMS, **hyper_params}.items() if k in HYPER_PARAMS} # give user input priority
     
-    stats = utils.initialize_progress(hyper_params['max_iter'])
+    stats = utils.initialize_progress(hyper_params['max_epochs'])
 
-    mod = mod.copy() # do not overwrite input
     optimizer = optimizer(mod.parameters(), lr=1, weight_decay=0)
     reset_state = optimizer.state.copy()
 
@@ -176,9 +179,9 @@ def train_signaling_model(mod,
                                   shuffle=True) 
     start_time = time.time()
     # begin iteration
-    for e in trange(hyper_params['max_iter']):
+    for e in trange(hyper_params['max_epochs']):
         # set learning rate
-        cur_lr = utils.get_lr(e, hyper_params['max_iter'], max_height = hyper_params['learning_rate'],
+        cur_lr = utils.get_lr(e, hyper_params['max_epochs'], max_height = hyper_params['learning_rate'],
                               start_height=hyper_params['learning_rate']/10, end_height=1e-6, peak = 1000)
         optimizer.param_groups[0]['lr'] = cur_lr
         
@@ -198,7 +201,7 @@ def train_signaling_model(mod,
             X_full = mod.input_layer(X_in_) # transform to full network with ligand input concentrations
             utils.set_seeds(mod.seed + mod._gradient_seed_counter)
             network_noise = torch.randn(X_full.shape, device = X_full.device)
-            X_full = X_full + (hyper_params['noise_level'] * cur_lr * network_noise) # randomly add noise to signaling network input, makes model more robust
+            X_full = X_full + (hyper_params['network_noise_scale'] * cur_lr * network_noise) # randomly add noise to signaling network input, makes model more robust
             Y_full = mod.signaling_network(X_full) # train signaling network weights
             Y_hat = mod.output_layer(Y_full)
             
@@ -219,7 +222,7 @@ def train_signaling_model(mod,
     
             # gradient
             total_loss.backward()
-            mod.add_gradient_noise(noise_level = hyper_params['gradient_noise_level'])
+            mod.add_gradient_noise(noise_level = hyper_params['gradient_noise_scale'])
             optimizer.step()
     
             # store
@@ -229,10 +232,10 @@ def train_signaling_model(mod,
         stats = utils.update_progress(stats, iter = e, loss = cur_loss, eig = cur_eig, learning_rate = cur_lr, 
                                      n_sign_mismatches = mod.signaling_network.count_sign_mismatch())
         
-        if verbose and e % (hyper_params['max_iter']/100) == 0:
+        if verbose and e % (hyper_params['max_epochs']/100) == 0:
             utils.print_stats(stats, iter = e)
         
-        if np.logical_and(e % reset_epoch == 0, e>0):
+        if np.logical_and(e % hyper_params['reset_optimizer_epoch'] == 0, e>0):
             optimizer.state = reset_state.copy()
 
     if verbose:

@@ -5,6 +5,7 @@ Defines the various layers for the signaling-network based RNN.
 from typing import Dict, List, Union, Annotated
 from annotated_types import Ge
 import copy
+import warnings
 
 import pandas as pd
 import numpy as np 
@@ -130,6 +131,7 @@ class BioNet(nn.Module):
         self.device = device
         self.seed = seed
         self._ss_seed_counter = 0
+        self._prescaled_weights = False
 
         self.n_network_nodes = n_network_nodes
         # TODO: delete these _in _out?
@@ -247,6 +249,8 @@ class BioNet(nn.Module):
         
         factor = target_radius/spectral_radius.item()
         self.weights.data = self.weights.data * factor
+        
+        self._prescaled_weights = True
 
     def forward(self, X_full: torch.Tensor):
         """Learn the edeg weights within the signaling network topology.

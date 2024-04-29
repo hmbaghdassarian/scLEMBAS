@@ -10,6 +10,7 @@ import scipy
 import torch
 from torch import nn
 
+from ..utilities import set_seeds
 from .model_utilities import update_with_defaults
 from .bionetwork import ProjectInput, BioNet, ProjectOutput
 from .tfa import TFA, Encoder
@@ -24,11 +25,9 @@ class SignalingModel(torch.nn.Module):
                  source_label: str = 'source', target_label: str = 'target', 
                 bionet_params: Dict[str, float] = None , 
                  activation_function: str='MML',
-                 
-                 skip_bionet_out: bool = False, 
+
                  covariates: Optional[pd.DataFrame] = None, categorical_covariate_keys: Optional[List[str]] = None,
-                 tfa_hyper_params: Dict[str, Any] = TFA.DEFAULT_HYPER_PARAMS, 
-                 encoder_hyper_params: Dict[str, Any] = Encoder.DEFAULT_HYPER_PARAMS,
+                 cat_max_norm: int | float | None = 1,
                  decoder_hyper_params : Dict[str, Any] = Encoder.DEFAULT_HYPER_PARAMS,
                  
                  dtype: torch.dtype=torch.float32, device: str = 'cpu', seed: int = 888):
@@ -65,28 +64,18 @@ class SignalingModel(torch.nn.Module):
                 - 'MML': Michaelis-Menten-like
                 - 'leaky_relu': Leaky ReLU
                 - 'sigmoid': sigmoid 
-        skip_bionet_out : bool, optional
-            whether to skip the ProjectOutput layer when using the autoencoder, by default False.
-            If True, will pass the full signaling network output directly into autoencoder
-            only relevant for bulk data in the presence of covariates
         covariates : pd.DataFrame, optional
             metadata with index as sample ids and columns containing various metadata values/mappings, by default None
             If None, will run the original LEMBAS model
         categorical_covariate_keys : List[str], optional
             the columns in the dataframe representing categorical/discrete variables, by default None
-        tfa_hyper_params : Dict[str, Any], optional
-            Keyword arguments to pass to `TFA`. Keys include:
-                n_latent: int, optional
-                    dimension (no. of featuers) of the latent space, by default 64
-                cat_max_norm : int | float | None, optional
-                    passed to `max_norm` argument of nn.Embedding when generating categorical covariate embeddings, by default 1
-                generative_decoder : bool, optional
-                    whether to make the decoder layer variational/generative (True) or not (False)
-                recon_loss : Literal['gauss', 'nb'], optional
-                    Autoencoder loss (either "gauss" or "nb"), by default 'gauss'
-                    Currently can only handle "guass"
+        cat_max_norm : int | float | None, optional
+            passed to `max_norm` argument of nn.Embedding when generating categorical covariate embeddings, by default 1
         encoder_hyper_params : Dict[str, Any]
-            Keyword arguments to pass to the `TFA` `Encoder`. Keys include:
+            If not None, replaces the linear ProjectOutput layer with the tfa feed-forward network. 
+            Note, this is necessary for single-cell. While it is called an encoder, it should really be thought of as a 
+            [possibly stochastic] feed-forward neural-network transforming nodes from the signaling network to the TF activity.
+            Keyword arguments to pass to the decoder. Keys include:
                 n_hidden_nodes : List[int], optional
                     number of hidden nodes per hidden layer, by default [64]
                     each element in the list corresponds to one hidden layer (i.e., no. of hidden layers = length of list)
@@ -102,10 +91,7 @@ class SignalingModel(torch.nn.Module):
                     non-linear Pytorch activation function, by default nn.ReLU. No activation if set to None
                 linear_output : bool, optional
                     whether the final layer in the encoder should have a linear activation function (True) or the specified `activation_fn` (False)
-        decoder_hyper_params : Dict[str, Any]
-            same as `encoder_hyper_params`, but projects back from latent space to full feature space
-            note, layer order is reversed so must list `n_hidden_nodes` as you would in encoder (from larger to bigger)
-            Additional key words when using the generative/variational decoder:
+             Additional key words when using the generative/variational decoder:
                 var_eps : float, optional
                     Minimum value for the variance, by default 1e-4. Used for numerical stability
         dtype : torch.dtype, optional
@@ -372,5 +358,5 @@ class SignalingModel(torch.nn.Module):
     
         self._gradient_seed_counter += 1 # new random noise each time function is called
 
-    def copy(self):
-        return copy.deepcopy(self)
+#     def copy(self):
+#         return copy.deepcopy(self)
