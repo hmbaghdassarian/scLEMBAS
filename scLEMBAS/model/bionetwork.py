@@ -2,9 +2,10 @@
 Defines the various layers for the signaling-network based RNN.
 """
 
-from typing import Dict, List, Union, Annotated
 from annotated_types import Ge
+from collections import OrderedDict
 import copy
+from typing import Dict, List, Optional, Union, Annotated
 import warnings
 
 import pandas as pd
@@ -14,6 +15,7 @@ from scipy.sparse.linalg import eigs
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from .model_utilities import np_to_torch, update_with_defaults
 from .activation_functions import activation_function_map
@@ -87,11 +89,18 @@ class ProjectInput(nn.Module):
 
 class BioNet(nn.Module):
     """Builds the RNN on the signaling network topology."""
+    
+    DEFAULT_PARAMETERS = {'target_steps': 100, 'max_steps': 300, 'exp_factor': 20, 'leak': 0.01, 'tolerance': 1e-5, 
+                         'cat_max_norm': 1}
+
     def __init__(self, edge_list: np.array, 
                  edge_MOA: np.array, 
                  n_network_nodes: int, 
-                 bionet_params: Dict[str, float], 
                  activation_function: str = 'MML', 
+                 bionet_params: Dict[str, float] = None, 
+                 covariates: Optional[pd.DataFrame] = None,
+                 categorical_covariate_keys: Optional[List[str]] = None,
+                 cat_max_norm: int | float | None = 1,
                  dtype: torch.dtype=torch.float32, 
                 device: str = 'cpu', 
                 seed: int = 888):
@@ -118,6 +127,13 @@ class BioNet(nn.Module):
                 - 'MML': Michaelis-Menten-like
                 - 'leaky_relu': Leaky ReLU
                 - 'sigmoid': sigmoid 
+        covariates : pd.DataFrame, optional
+            metadata with index as sample ids and columns containing various metadata values/mappings, by default None
+            If None, will run the original LEMBAS model that does not distinguish between categorical covariates
+        categorical_covariate_keys : List[str], optional
+            the columns in the `covariates` representing categorical/discrete variables, by default None
+        cat_max_norm : int | float | None, optional
+            passed to `max_norm` argument of nn.Embedding when generating 
         dtype : torch.dtype, optional
            datatype to store values in torch, by default torch.float32
         device : str
@@ -126,7 +142,11 @@ class BioNet(nn.Module):
             random seed for torch and numpy operations, by default 888
         """
         super().__init__()
-        self.training_params = bionet_params
+
+        if not bionet_params:
+            bionet_params = {}
+        self.bionet_params = self.set_bionet_parameters(**bionet_params)
+
         self.dtype = dtype
         self.device = device
         self.seed = seed
@@ -143,16 +163,49 @@ class BioNet(nn.Module):
         self.edge_MOA = np_to_torch(edge_MOA, dtype=torch.bool, device = self.device)
 
         # initialize weights and biases
-        weights, bias = self.initialize_weights()
+        self.covariates = covariates
+        weights, bias_basal = self.initialize_weights()
         self.weights = nn.Parameter(weights)
-        self.bias = nn.Parameter(bias)
-
         self.weights_MOA, self.mask_MOA = self.make_mask_MOA() # mechanism of action 
+
+        if self.covariates is not None:
+            # if not self.single_cell
+            self.bias_basal = nn.Parameter(bias_basal)
+            # else
+            # self.bias_basal = self.encode()
+            
+            # initialize categorical covariate biases
+            self.covariates = self.covariates[categorical_covariate_keys]
+            self.embed_covariates()
+
+        else:
+            self.bias_basal = nn.Parameter(bias_basal)
+
+        
 
         # activation function
         self.activation = activation_function_map[activation_function]['activation']
         self.delta = activation_function_map[activation_function]['delta']
         self.onestepdelta_activation_factor = activation_function_map[activation_function]['onestepdelta']
+
+    def set_bionet_parameters(self, **attributes):
+        """Set the parameters for various calculations in the model. Overrides default parameters with attributes if specified.
+        Adapted from LEMBAS `trainingParameters`
+    
+        Parameters
+        ----------
+        attributes : dict
+            keys are parameter names and values are parameter value
+        """
+        # #set defaults
+
+        params = update_with_defaults(default_parameters = self.DEFAULT_PARAMETERS, 
+                                      user_parameters = attributes, 
+                                      additional_parameters = ['spectral_target'])
+        if 'spectral_target' not in params.keys():
+            params['spectral_target'] = np.exp(np.log(params['tolerance'])/params['target_steps'])
+    
+        return params
 
     def initialize_weight_values(self):
         """Initialize the RNN weight_values for all interactions in the signaling network.
@@ -172,13 +225,14 @@ class BioNet(nn.Module):
         weight_values = 0.1 + 0.1*torch.rand(n_interactions, dtype=self.dtype, device = self.device)
         weight_values[self.edge_MOA[1,:]] = -weight_values[self.edge_MOA[1,:]] # make those that are inhibiting negative
         
-        bias = 1e-3*torch.ones((self.n_network_nodes_in, 1), dtype = self.dtype, device = self.device)
+        bias_basal = 1e-3*torch.ones((self.n_network_nodes_in, 1), dtype = self.dtype, device = self.device)
         
-        for nt_idx in np.unique(network_targets):
-            if torch.all(weight_values[network_targets == nt_idx]<0):
-                bias.data[nt_idx] = 1
-    
-        return weight_values, bias
+        if self.covariates is None: # do not include ligand-specific information in the bias when separating out into basal bias
+            for nt_idx in np.unique(network_targets):
+                if torch.all(weight_values[network_targets == nt_idx]<0):
+                    bias_basal.data[nt_idx] = 1
+
+        return weight_values, bias_basal
 
     def make_mask(self):
         """Generates a mask for adjacency matrix for non-interacting nodes.
@@ -205,12 +259,12 @@ class BioNet(nn.Module):
             a torch.Tensor with randomly initialized values for each signaling network node
         """
 
-        weight_values, bias = self.initialize_weight_values()
+        weight_values, bias_basal = self.initialize_weight_values()
         self.mask = self.make_mask()
         weights = torch.zeros(self.mask.shape, dtype = self.dtype, device = self.device) # adjacency matrix
         weights[self.edge_list] = weight_values
         
-        return weights, bias
+        return weights, bias_basal
 
     def make_mask_MOA(self):
         """Generates mask (and weights) for adjacency matrix for non-interacting nodes AND nodes were mode of action (stimulating/inhibiting) 
@@ -233,6 +287,50 @@ class BioNet(nn.Module):
 
         return weights_MOA, mask_MOA
 
+    def embed_covariates(self):
+        """
+        Creates a dictionary mapping each categorical covariate's values to a numerical value (index), corresponding
+        to the rows of the embedding in `self.cat_embeddings`. 
+        """
+        
+        # map each category's labels to a respective numerical index
+        self.cat_mapper = OrderedDict({})
+#         self.one_hot = {}
+        for cvk in self.covariates.columns:
+            if self.covariates[cvk].dtype.name == 'category' and self.covariates[cvk].dtype.ordered:
+                labels = self.covariates[cvk].cat.categories
+            else:
+                labels = sorted(set(self.covariates[cvk]))
+        
+            n_labels = len(labels)
+            label_idx = list(range(n_labels))
+            self.cat_mapper[cvk] = dict(zip(labels, label_idx)) # index
+#             self.one_hot[cvk] = F.one_hot(torch.tensor(label_idx), n_labels) # each row is the index of the cat_mapper
+        
+        ############################
+        # necessary for forward pass: working with category group and category group label indices rather than strings:
+        # map the covariates dataframe from labels to its respective index
+        self.covariates_idx = self.covariates.copy()
+        for cat in self.covariates_idx.columns:
+            self.covariates_idx[cat] = self.covariates[cat].map(self.cat_mapper[cat])
+        # store the category group orders (1st column/category in `covariates` is 0, 2nd is 1, etc)
+        self._cat_group_idx = dict(enumerate(self.cat_mapper))
+        ############################
+        
+        # embed the categorical data
+        self.cat_embeddings = nn.ModuleDict(
+                        {
+                            covariate_cat: nn.Embedding(num_embeddings = len(covariate_cat_map), 
+                                                        embedding_dim = self.n_network_nodes_in,
+                                                        max_norm = self.bionet_params['cat_max_norm'], norm_type = 2, 
+                                                       device = self.device) 
+                            for covariate_cat, covariate_cat_map in self.cat_mapper.items()}
+                    )
+    
+    def covariates_to_tensor(self, sample_ids):
+        """Returns the covariates by index in torch.Tensor format for a specified list of samples.""" 
+        return torch.tensor(self.covariates_idx.loc[sample_ids, :].values, device = self.device)
+    
     def prescale_weights(self, target_radius: float = 0.8):
         """Scale weights according to spectral radius
     
@@ -252,13 +350,16 @@ class BioNet(nn.Module):
         
         self._prescaled_weights = True
 
-    def forward(self, X_full: torch.Tensor):
+    def forward(self, X_full: torch.Tensor, covariates_idx: torch.Tensor):
         """Learn the edeg weights within the signaling network topology.
 
         Parameters
         ----------
         X_full : torch.Tensor
             the linearly scaled ligand inputs. Shape is (samples x network nodes). Output of ProjectInput.
+        covariates_idx : torch.Tensor
+            rows correspond to samples as in X_full. Each column represents one categorical covariate group. Values
+            in the columns represent the index mapping of the category label. Basically a rowsubset of `self.covariates_idx`.
 
         Returns
         -------
@@ -266,19 +367,31 @@ class BioNet(nn.Module):
             the signaling network scaled by learned interaction weights. Shape is (samples x network nodes).
         """
         self.weights.data.masked_fill_(mask = self.mask, value = 0.0) # fill non-interacting edges with 0
+
+        bias_cats = torch.zeros_like(X_full.T, device = self.device, dtype = self.dtype)
+        # add categorical covariates
+        if self.covariates is not None:
+            for cat_group_idx in range(covariates_idx.shape[1]):
+                cat_group = self._cat_group_idx[cat_group_idx]
+                bias_cats += self.cat_embeddings[cat_group](covariates_idx[:,cat_group_idx]).T
+        #             # the indexing above would be the equivalent of this:
+        #             embedding = self.cat_embeddings[cat_group].weight.clone()
+        #             one_hot = self.one_hot[cat_group][labels_idx].to(embedding.dtype)
+        #             bias_tot += torch.matmul(one_hot, embedding)
         
-        X_bias = X_full.T + self.bias # this is the bias with the projection_amplitude included
-        X_new = torch.zeros_like(X_bias) #initialize all values at 0
+        bias_tot = self.bias_basal + bias_cats
+        X_bias = X_full.T + bias_tot # this is the bias with the projection_amplitude included
+        X_new = torch.zeros_like(X_bias) #initialize hidden state values at 0
         
-        for t in range(self.training_params['max_steps']): # like an RNN, updating from previous time step
+        for t in range(self.bionet_params['max_steps']): # like an RNN, updating from previous time step
             X_old = X_new
             X_new = torch.mm(self.weights, X_new) # scale matrix by edge weights
             X_new = X_new + X_bias  # add original values and bias       
-            X_new = self.activation(X_new, self.training_params['leak'])
+            X_new = self.activation(X_new, self.bionet_params['leak'])
             
             if (t % 10 == 0) and (t > 20):
                 diff = torch.max(torch.abs(X_new - X_old))    
-                if diff.lt(self.training_params['tolerance']):
+                if diff.lt(self.bionet_params['tolerance']):
                     break
 
         Y_full = X_new.T
@@ -297,7 +410,7 @@ class BioNet(nn.Module):
         bionet_L2 : torch.Tensor
             the regularization term
         """
-        bias_loss = lambda_L2 * torch.sum(torch.square(self.bias))
+        bias_loss = lambda_L2 * torch.sum(torch.square(self.bias_basal))
         weight_loss = lambda_L2 * torch.sum(torch.square(self.weights))
 
         bionet_L2 = bias_loss + weight_loss
@@ -392,14 +505,14 @@ class BioNet(nn.Module):
             _description_
         """
         spectral_loss_factor = torch.tensor(spectral_loss_factor, dtype=Y_full.dtype, device=Y_full.device)
-        exp_factor = torch.tensor(self.training_params['exp_factor'], dtype=Y_full.dtype, device=Y_full.device)
+        exp_factor = torch.tensor(self.bionet_params['exp_factor'], dtype=Y_full.dtype, device=Y_full.device)
     
         if self.seed:
             np.random.seed(self.seed + self._ss_seed_counter)
         selected_values = np.random.permutation(Y_full.shape[0])[:subset_n]
     
         SS_deviation, aprox_spectral_radius = self._get_SS_deviation(Y_full[selected_values,:], **kwargs)        
-        spectral_radius_factor = torch.exp(exp_factor*(aprox_spectral_radius-self.training_params['spectral_target']))
+        spectral_radius_factor = torch.exp(exp_factor*(aprox_spectral_radius-self.bionet_params['spectral_target']))
         
         loss = spectral_radius_factor * SS_deviation/torch.sum(SS_deviation.detach())
         loss = spectral_loss_factor * torch.sum(loss)
@@ -410,7 +523,7 @@ class BioNet(nn.Module):
         return loss, aprox_spectral_radius
     
     def _get_SS_deviation(self, Y_full_sub, n_probes: int = 5, power_steps: int = 50):
-        x_prime = self.onestepdelta_activation_factor(Y_full_sub, self.training_params['leak'])     
+        x_prime = self.onestepdelta_activation_factor(Y_full_sub, self.bionet_params['leak'])     
         x_prime = x_prime.unsqueeze(2)
         
         T = x_prime * self.weights

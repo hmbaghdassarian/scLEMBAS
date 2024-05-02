@@ -1,7 +1,7 @@
 """
 Train the signaling model.
 """
-from typing import Dict, List, Union
+from typing import Dict, List, Union, Optional
 import time
 from tqdm import trange
 
@@ -11,12 +11,7 @@ import torch
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 
-# sclembas_path = '/home/hmbaghda/Projects/scLEMBAS'
-# import sys
-# import os
-# sys.path.insert(1, os.path.join(sclembas_path))
-# import scLEMBAS.utilities as utils
-import LEMBAS.utilities as utils
+import scLEMBAS.utilities as utils
 
 
 LR_PARAMS = {'max_epochs': 5000, 'learning_rate': 2e-3, 'reset_optimizer_epoch': 200}
@@ -66,15 +61,36 @@ def split_data(X_in: torch.Tensor,
     return X_train, X_test, X_val, y_train, y_test, y_val
 
 class ModelData(Dataset):
-    def __init__(self, X_in, y_out):
-        self.X_in = X_in
-        self.y_out = y_out
+    def __init__(self, X_in: torch.tensor, y_out: torch.tensor, covariates_idx: Optional[torch.tensor] = None):
+            """_summary_
+
+            Parameters
+            ----------
+            X_in : torch.tensor
+                _description_
+            y_out : torch.tensor
+                _description_
+            covariates_idx : Optional[torch.tensor], optional
+                the numerical index representation of the categorical covariates for each sample, by default None
+                can be obtained from `mod.signaling_network.covariates_idx`
+            """
+            self.X_in = X_in
+            self.y_out = y_out
+    #         if self.covariates is not None:
+    #             self.covariates = covariates
+    #         else:
+    #             self.covariates = torch.full(X_train.shape, torch.nan)
+            if covariates_idx is not None:
+                self.covariates_idx = covariates_idx
+            else:
+                self.covariates_idx = torch.full(self.X_in.shape, torch.nan, device='cpu')
+
     def __len__(self) -> int:
         "Returns the total number of samples."
         return self.X_in.shape[0]
     def __getitem__(self, idx: int):
         "Returns one sample of data, data and label (X, y)."
-        return self.X_in[idx, :], self.y_out[idx, :]
+        return self.X_in[idx, :], self.y_out[idx, :], self.covariates_idx[idx,:]
 
 def train_signaling_model(mod,  
                           optimizer: torch.optim, 
@@ -156,26 +172,27 @@ def train_signaling_model(mod,
     split_data_dict = {'X_train': X_train, 'X_test': X_test, 'X_val': X_val, 
                       'y_train': y_train, 'y_test': y_test, 'y_val': y_val}
 
-    X_in = mod.df_to_tensor(mod.X_in)
-    y_out = mod.df_to_tensor(mod.y_out)
-    mean_loss = loss_fn(torch.mean(y_out, dim=0) * torch.ones(y_out.shape, device = y_out.device), y_out) # mean TF (across samples) loss
+#     y_train = mod.df_to_sensor(y_train)
+#     mean_loss = loss_fn(torch.mean(y_train, dim=0) * torch.ones(y_train.shape, device = y_train.device), y_train) # mean TF (across samples) loss
     
     
-    train_data = ModelData(mod.df_to_tensor(X_train).to('cpu'), mod.df_to_tensor(y_train).to('cpu'))
-    if mod.device == 'cuda':
-        pin_memory = True
+    if mod.signaling_network.covariates is not None:
+        covariates_idx = mod.signaling_network.covariates_to_tensor(sample_ids = X_train.index)
     else:
-        pin_memory = False
+        covariates_idx = None
+    train_data = ModelData(X_in = mod.df_to_tensor(X_train).to('cpu'), 
+                           y_out = mod.df_to_tensor(y_train).to('cpu'),
+                           covariates_idx = covariates_idx)
+#     if mod.device == 'cuda':
+#         pin_memory = True
+#     else:
+#         pin_memory = False
 
-    # if n_cores != 0:
-    #     n_cores_train = min(n_cores, hyper_params['batch_size'])
-    # else:
-    #     n_cores_train = n_cores
     train_dataloader = DataLoader(dataset=train_data,
                                   batch_size=hyper_params['batch_size'],
                                   # num_workers=n_cores_train,
                                   drop_last = False,
-                                  pin_memory = pin_memory,
+                                  pin_memory = False,#pin_memory,
                                   shuffle=True) 
     start_time = time.time()
     # begin iteration
@@ -191,18 +208,19 @@ def train_signaling_model(mod,
         # iterate through batches
         if mod.seed:
             utils.set_seeds(mod.seed + e)
-        for batch, (X_in_, y_out_) in enumerate(train_dataloader):
+        for batch, (X_in_, y_out_, covariates_idx_) in enumerate(train_dataloader):
             mod.train()
             optimizer.zero_grad()
 
-            X_in_, y_out_ = X_in_.to(mod.device), y_out_.to(mod.device)
-            
+            X_in_, y_out_, covariates_idx_ = X_in_.to(mod.device), y_out_.to(mod.device), covariates_idx_.to(mod.device)
+            covariates_idx_ = covariates_idx_.to(mod.device) if covariates_idx is not None else None
+
             # forward pass
             X_full = mod.input_layer(X_in_) # transform to full network with ligand input concentrations
             utils.set_seeds(mod.seed + mod._gradient_seed_counter)
             network_noise = torch.randn(X_full.shape, device = X_full.device)
             X_full = X_full + (hyper_params['network_noise_scale'] * cur_lr * network_noise) # randomly add noise to signaling network input, makes model more robust
-            Y_full = mod.signaling_network(X_full) # train signaling network weights
+            Y_full = mod.signaling_network(X_full, covariates_idx_) # train signaling network weights
             Y_hat = mod.output_layer(Y_full)
             
             # get prediction loss

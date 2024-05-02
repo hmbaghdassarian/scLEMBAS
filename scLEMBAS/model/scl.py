@@ -17,13 +17,12 @@ from .tfa import TFA, Encoder
 
 class SignalingModel(torch.nn.Module):
     """Constructs the signaling network based RNN."""
-    DEFAULT_TRAINING_PARAMETERS = {'target_steps': 100, 'max_steps': 300, 'exp_factor': 20, 'leak': 0.01, 'tolerance': 1e-5}
     
     def __init__(self, net: pd.DataFrame, X_in: pd.DataFrame, y_out: pd.DataFrame,
                  projection_amplitude_in: Union[int, float] = 1, projection_amplitude_out: float = 1,
                  ban_list: List[str] = None, weight_label: str = 'mode_of_action', 
-                 source_label: str = 'source', target_label: str = 'target', 
-                bionet_params: Dict[str, float] = None , 
+                 source_label: str = 'source', target_label: str = 'target',
+                 bionet_params: Dict[str, float] = None, 
                  activation_function: str='MML',
 
                  covariates: Optional[pd.DataFrame] = None, categorical_covariate_keys: Optional[List[str]] = None,
@@ -66,16 +65,13 @@ class SignalingModel(torch.nn.Module):
                 - 'sigmoid': sigmoid 
         covariates : pd.DataFrame, optional
             metadata with index as sample ids and columns containing various metadata values/mappings, by default None
-            If None, will run the original LEMBAS model
+            If None, will run the original LEMBAS model that does not distinguish between categorical covariates
         categorical_covariate_keys : List[str], optional
-            the columns in the dataframe representing categorical/discrete variables, by default None
+            the columns in the `covariates` representing categorical/discrete variables, by default None
         cat_max_norm : int | float | None, optional
             passed to `max_norm` argument of nn.Embedding when generating categorical covariate embeddings, by default 1
         encoder_hyper_params : Dict[str, Any]
-            If not None, replaces the linear ProjectOutput layer with the tfa feed-forward network. 
-            Note, this is necessary for single-cell. While it is called an encoder, it should really be thought of as a 
-            [possibly stochastic] feed-forward neural-network transforming nodes from the signaling network to the TF activity.
-            Keyword arguments to pass to the decoder. Keys include:
+            This is only used for single-cell. Keyword arguments to pass to the encoder. Keys include:
                 n_hidden_nodes : List[int], optional
                     number of hidden nodes per hidden layer, by default [64]
                     each element in the list corresponds to one hidden layer (i.e., no. of hidden layers = length of list)
@@ -109,10 +105,7 @@ class SignalingModel(torch.nn.Module):
         self.projection_amplitude_out = projection_amplitude_out
 
         edge_list, node_labels, edge_MOA = self.parse_network(net, ban_list, weight_label, source_label, target_label)
-        if not bionet_params:
-            bionet_params = self.DEFAULT_TRAINING_PARAMETERS.copy()
-        else:
-            bionet_params = self.set_training_parameters(**bionet_params)
+
 
         # filter for nodes in the network, sorting by node_labels order
         self.X_in = X_in.loc[:, np.intersect1d(X_in.columns.values, node_labels)]
@@ -130,29 +123,14 @@ class SignalingModel(torch.nn.Module):
                                         n_network_nodes = len(node_labels), 
                                         bionet_params = bionet_params, 
                                         activation_function = activation_function, 
+                                        covariates = covariates, 
+                                        categorical_covariate_keys = categorical_covariate_keys, 
+                                        cat_max_norm = cat_max_norm,
                                         dtype = self.dtype, device = self.device, seed = self.seed)
-
-        if covariates is not None and skip_bionet_out:
-            self.output_layer = None
-            n_features_tfa = len(self.node_idx_map) # no. of nodes in network
-        else:
-            self.output_layer = ProjectOutput(node_idx_map = self.node_idx_map, 
-                                              output_labels = self.y_out.columns.values, 
-                                              projection_amplitude = self.projection_amplitude_out, 
-                                              dtype = self.dtype, device = self.device)
-            n_features_tfa = self.y_out.shape[1] # no. of TFs
-        if covariates is not None:
-            tfa_hyper_params = update_with_defaults(default_parameters=TFA.DEFAULT_HYPER_PARAMS, 
-                                                    user_parameters = tfa_hyper_params)
-            self.tf_autoencoder = TFA(covariates = covariates, 
-                                      categorical_covariate_keys = categorical_covariate_keys, 
-                                      n_features_in = n_features_tfa, # of TFs
-                                      device = self.device, dtype = self.dtype,
-                                      encoder_hyper_params = encoder_hyper_params,
-                                      decoder_hyper_params = decoder_hyper_params,
-                                      **tfa_hyper_params)
-        else:
-            self.tf_autoencoder = None
+        self.output_layer = ProjectOutput(node_idx_map = self.node_idx_map, 
+                                          output_labels = self.y_out.columns.values, 
+                                          projection_amplitude = self.projection_amplitude_out, 
+                                          dtype = self.dtype, device = self.device)
 
     def parse_network(self, net: pd.DataFrame, ban_list: List[str] = None, 
                  weight_label: str = 'mode_of_action', source_label: str = 'source', target_label: str = 'target'):
@@ -214,33 +192,6 @@ class SignalingModel(torch.nn.Module):
         """Converts a pandas dataframe to the appropriate torch.tensor"""
         return torch.tensor(df.values.copy(), dtype=self.dtype, device = self.device)
 
-    def set_training_parameters(self, **attributes):
-        """Set the parameters for training the model. Overrides default parameters with attributes if specified.
-        Adapted from LEMBAS `trainingParameters`
-    
-        Parameters
-        ----------
-        attributes : dict
-            keys are parameter names and values are parameter value
-        """
-        # #set defaults
-        # default_parameters = self.DEFAULT_TRAINING_PARAMETERS.copy()
-        # allowed_params = list(default_parameters.keys()) + ['spectral_target']
-    
-        # params = {**default_parameters, **attributes}
-        # if 'spectral_target' not in params.keys():
-        #     params['spectral_target'] = np.exp(np.log(params['tolerance'])/params['target_steps'])
-    
-        # params = {k: v for k,v in params.items() if k in allowed_params}
-
-        params = update_with_defaults(default_parameters = self.DEFAULT_TRAINING_PARAMETERS, 
-                                      user_parameters = attributes, 
-                                      additional_parameters = ['spectral_target'])
-        if 'spectral_target' not in params.keys():
-            params['spectral_target'] = np.exp(np.log(params['tolerance'])/params['target_steps'])
-    
-        return params
-
     def forward(self, X_in, categories: Optional[Dict[str, List[str]]] = None):
         """Forward pass of the model.Linearly scales ligand inputs, learns weights for signaling network interactions, 
         and transforms this to TF activity. See `forward` methods of each layer for details.
@@ -256,20 +207,9 @@ class SignalingModel(torch.nn.Module):
         """
         X_full = self.input_layer(X_in) # input ligands to signaling network
         Y_full = self.signaling_network(X_full) # RNN of full signaling network
+        Y_hat = self.output_layer(Y_full)
 
-        if self.output_layer:
-            Y_hat = self.output_layer(Y_full) # TF outputs of signaling network
-        else:
-            Y_hat = Y_full
-    
-        if self.tf_autoencoder:
-            if not categories:
-                raise ValueError('Categorical covariates must be provided')
-            z_basal, z_full, px_mean, px_var = self.tf_autoencoder(Y_hat, categories) 
-        else:
-            z_basal, z_full, px_mean, px_var = None, None, None, None
-
-        return Y_hat, Y_full, z_basal, z_basal, z_full, px_mean, px_var
+        return Y_hat, Y_full
 
     def L2_reg(self, lambda_L2: Annotated[float, Ge(0)] = 0):
         """Get the L2 regularization term for the neural network parameters.
@@ -288,7 +228,7 @@ class SignalingModel(torch.nn.Module):
 
     def ligand_regularization(self, lambda_L2: Annotated[float, Ge(0)] = 0):
         """Get the L2 regularization term for the ligand biases. Intuitively, extracellular ligands should not contribute to 
-        "baseline (i.e., unstimulated) activity" affecting intrecllular signaling nodes and thus TF outputs.
+        "baseline activity" affecting intracellular signaling nodes.
         
         Parameters
         ----------
@@ -300,7 +240,7 @@ class SignalingModel(torch.nn.Module):
         loss : torch.Tensor
             the regularization term
         """
-        loss = lambda_L2 * torch.sum(torch.square(self.signaling_network.bias[self.input_layer.input_node_order]))
+        loss = lambda_L2 * torch.sum(torch.square(self.signaling_network.bias_basal[self.input_layer.input_node_order]))
         return loss
 
     def uniform_regularization(self, lambda_L2: float, Y_full: torch.Tensor, 

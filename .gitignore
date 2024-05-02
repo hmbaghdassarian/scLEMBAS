@@ -8,3 +8,4 @@
 **/__pycache__/
 /notebooks/cpa/
 **/*lightning_logs/
+**/*.pickle
