@@ -260,4 +260,4 @@ def train_signaling_model(mod,
         mins, secs = divmod(time.time() - start_time, 60)
         print("Training ran in: {:.0f} min {:.2f} sec".format(mins, secs))
 
-    return mod, cur_loss, cur_eig, mean_loss, stats, split_data_dict
+    return mod, cur_loss, cur_eig, stats, split_data_dict
