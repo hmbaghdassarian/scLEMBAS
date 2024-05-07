@@ -12,8 +12,8 @@ from torch import nn
 
 from ..utilities import set_seeds
 from .model_utilities import update_with_defaults
-from .bionetwork import ProjectInput, BioNet, ProjectOutput
-from .tfa import TFA, Encoder
+from .model_components import ProjectInput, ProjectOutput
+from .bionetwork import BioNetSimple, BioNetCat
 
 class SignalingModel(torch.nn.Module):
     """Constructs the signaling network based RNN."""
@@ -26,8 +26,7 @@ class SignalingModel(torch.nn.Module):
                  activation_function: str='MML',
 
                  covariates: Optional[pd.DataFrame] = None, categorical_covariate_keys: Optional[List[str]] = None,
-                 cat_max_norm: int | float | None = 1,
-                 decoder_hyper_params : Dict[str, Any] = Encoder.DEFAULT_HYPER_PARAMS,
+#                  decoder_hyper_params : Dict[str, Any] = Encoder.DEFAULT_HYPER_PARAMS,
                  
                  dtype: torch.dtype=torch.float32, device: str = 'cpu', seed: int = 888):
         """Parse the signaling network and build the model layers.
@@ -57,6 +56,7 @@ class SignalingModel(torch.nn.Module):
                 - 'leak': parameter to tune extent of leaking, analogous to leaky ReLU, by default 0.01
                 - 'spectral_target': _description_, by default np.exp(np.log(params['tolerance'])/params['target_steps'])
                 - 'exp_factor': _description_, by default 20
+                - 'cat_max_norm' : passed to `max_norm` argument of nn.Embedding when generating categorical embeddings (only if covariates is not None)
         activation_function : str, optional
             RNN activation function, by default 'MML'
             options include:
@@ -68,8 +68,6 @@ class SignalingModel(torch.nn.Module):
             If None, will run the original LEMBAS model that does not distinguish between categorical covariates
         categorical_covariate_keys : List[str], optional
             the columns in the `covariates` representing categorical/discrete variables, by default None
-        cat_max_norm : int | float | None, optional
-            passed to `max_norm` argument of nn.Embedding when generating categorical covariate embeddings, by default 1
         encoder_hyper_params : Dict[str, Any]
             This is only used for single-cell. Keyword arguments to pass to the encoder. Keys include:
                 n_hidden_nodes : List[int], optional
@@ -118,16 +116,24 @@ class SignalingModel(torch.nn.Module):
                                         projection_amplitude = projection_amplitude_in, 
                                         dtype = self.dtype, 
                                         device = self.device)
-        self.signaling_network = BioNet(edge_list = edge_list, 
-                                        edge_MOA = edge_MOA,
-                                        input_node_idx = self.input_layer.input_node_idx,
-                                        n_network_nodes = len(node_labels), 
-                                        bionet_params = bionet_params, 
-                                        activation_function = activation_function, 
-                                        covariates = covariates, 
-                                        categorical_covariate_keys = categorical_covariate_keys, 
-                                        cat_max_norm = cat_max_norm,
-                                        dtype = self.dtype, device = self.device, seed = self.seed)
+        if covariates is None:
+            self.signaling_network = BioNetSimple(edge_list = edge_list, 
+                                                edge_MOA = edge_MOA,
+                                                input_node_idx = self.input_layer.input_node_idx,
+                                                n_network_nodes = len(node_labels), 
+                                                bionet_params = bionet_params, 
+                                                activation_function = activation_function, 
+                                                dtype = self.dtype, device = self.device, seed = self.seed)
+        else:
+            self.signaling_network = BioNetCat(edge_list = edge_list, 
+                                               edge_MOA = edge_MOA,
+                                               input_node_idx = self.input_layer.input_node_idx,
+                                               n_network_nodes = len(node_labels), 
+                                               bionet_params = bionet_params, 
+                                               activation_function = activation_function, 
+                                               covariates = covariates, 
+                                               categorical_covariate_keys = categorical_covariate_keys, 
+                                               dtype = self.dtype, device = self.device, seed = self.seed)
         self.output_layer = ProjectOutput(node_idx_map = self.node_idx_map, 
                                           output_labels = self.y_out.columns.values, 
                                           projection_amplitude = self.projection_amplitude_out, 
