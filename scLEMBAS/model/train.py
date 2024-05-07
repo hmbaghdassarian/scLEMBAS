@@ -16,8 +16,8 @@ import scLEMBAS.utilities as utils
 
 LR_PARAMS = {'max_epochs': 5000, 'learning_rate': 2e-3, 'reset_optimizer_epoch': 200}
 OTHER_PARAMS = {'batch_size': 32, 'network_noise_scale': 10, 'gradient_noise_scale': 1e-9}
-REGULARIZATION_PARAMS = {'param_lambda_L2': 1e-6, 'moa_lambda_L1': 0.1, 'ligand_lambda_L2': 1e-5, 'uniform_lambda_L2': 1e-4, 
-                   'uniform_max': (1/1.2), 'spectral_loss_factor': 1e-5}
+REGULARIZATION_PARAMS = {'param_lambda_L2': 1e-6, 'moa_lambda_L1': 0.1, #'ligand_lambda_L2': 1e-5, 
+                         'uniform_lambda_L2': 1e-4, 'uniform_max': (1/1.2), 'spectral_loss_factor': 1e-5}
 SPECTRAL_RADIUS_PARAMS = {'n_probes_spectral': 5, 'power_steps_spectral': 50, 'subset_n_spectral': 10}
 HYPER_PARAMS = {**LR_PARAMS, **OTHER_PARAMS, **REGULARIZATION_PARAMS, **SPECTRAL_RADIUS_PARAMS}
 
@@ -121,7 +121,7 @@ def train_signaling_model(mod,
             - 'reset_epoch' : number of epochs upon which to reset the optimizer state, by default 200
             - 'param_lambda_L2' : L2 regularization penalty term for most of the model weights and biases
             - 'moa_lambda_L1' : L1 regularization penalty term for incorrect interaction mechanism of action (inhibiting/stimulating)
-            - 'ligand_lambda_L2' : L2 regularization penalty term for ligand biases
+            - 'ligand_lambda_L2' : DEPRECATED, DO NOT ADD KEY/VALUE PAIR. L2 regularization penalty term for ligand biases. 
             - 'uniform_lambda_L2' : L2 regularization penalty term for 
             - 'uniform_max' : 
             - 'spectral_loss_factor' : regularization penalty term for 
@@ -228,7 +228,7 @@ def train_signaling_model(mod,
             
             # get regularization losses
             sign_reg = mod.signaling_network.sign_regularization(lambda_L1 = hyper_params['moa_lambda_L1']) # incorrect MoA
-            ligand_reg = mod.ligand_regularization(lambda_L2 = hyper_params['ligand_lambda_L2']) # ligand biases
+#             ligand_reg = mod.ligand_regularization(lambda_L2 = hyper_params['ligand_lambda_L2']) # ligand biases
             stability_loss, spectral_radius = mod.signaling_network.get_SS_loss(Y_full = Y_full.detach(), spectral_loss_factor = hyper_params['spectral_loss_factor'],
                                                                                 subset_n = hyper_params['subset_n_spectral'], n_probes = hyper_params['n_probes_spectral'], 
                                                                                 power_steps = hyper_params['power_steps_spectral'])
@@ -236,8 +236,9 @@ def train_signaling_model(mod,
                                                      target_min = 0, target_max = hyper_params['uniform_max']) # uniform distribution
             param_reg = mod.L2_reg(hyper_params['param_lambda_L2']) # all model weights and signaling network biases
             
-            total_loss = fit_loss + sign_reg + ligand_reg + param_reg + stability_loss + uniform_reg
-    
+#             total_loss = fit_loss + sign_reg + ligand_reg + param_reg + stability_loss + uniform_reg
+            total_loss = fit_loss + sign_reg + param_reg + stability_loss + uniform_reg
+
             # gradient
             total_loss.backward()
             mod.add_gradient_noise(noise_level = hyper_params['gradient_noise_scale'])

@@ -449,7 +449,6 @@ class CatDiscriminator(nn.Module):
         n_features_in: int,
         n_labels: int,
         n_hidden_nodes: List[int] = [16, 16, 16],
-        return_logits: bool = True,
         batch_momentum: float = 0.01,
         layer_norm: bool = False,
         dropout_rate: int | float = 0.1,
@@ -488,11 +487,11 @@ class CatDiscriminator(nn.Module):
         """
         super().__init__()
         self.n_labels = n_labels
-        if n_labels > 2: # multi-class
-            self.loss_fn = nn.CrossEntropyLoss # applies softmax
+        if self.n_label > 2: # multi-class
+            self.loss_fn = nn.CrossEntropyLoss # applies softmax to logits prior to CE
             out_features = self.n_labels
-        elif n_labels == 2: # binary
-            self.loss_fn = nn.BCEWithLogitsLoss # applies sigmoid
+        elif self.n_label == 2: # binary
+            self.loss_fn = nn.BCEWithLogitsLoss # applies sigmoid to logits prior to CE
             out_features = 1
         else:
             raise ValueError('There are no distinct classes.')

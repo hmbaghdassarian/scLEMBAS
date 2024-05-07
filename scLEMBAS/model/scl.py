@@ -119,7 +119,8 @@ class SignalingModel(torch.nn.Module):
                                         dtype = self.dtype, 
                                         device = self.device)
         self.signaling_network = BioNet(edge_list = edge_list, 
-                                        edge_MOA = edge_MOA, 
+                                        edge_MOA = edge_MOA,
+                                        input_node_idx = self.input_layer.input_node_idx,
                                         n_network_nodes = len(node_labels), 
                                         bionet_params = bionet_params, 
                                         activation_function = activation_function, 
@@ -227,7 +228,9 @@ class SignalingModel(torch.nn.Module):
         return self.input_layer.L2_reg(lambda_L2) + self.signaling_network.L2_reg(lambda_L2) + self.output_layer.L2_reg(lambda_L2)
 
     def ligand_regularization(self, lambda_L2: Annotated[float, Ge(0)] = 0):
-        """Get the L2 regularization term for the ligand biases. Intuitively, extracellular ligands should not contribute to 
+        """DEPRECATED: now setting bias term to 0 and masking directly during forward pass        
+
+        Get the L2 regularization term for the ligand biases. Intuitively, extracellular ligands should not contribute to 
         "baseline activity" affecting intracellular signaling nodes.
         
         Parameters
@@ -240,7 +243,8 @@ class SignalingModel(torch.nn.Module):
         loss : torch.Tensor
             the regularization term
         """
-        loss = lambda_L2 * torch.sum(torch.square(self.signaling_network.bias_basal[self.input_layer.input_node_order]))
+        raise ValueError('This is deprecated since bias terms are now masked')
+        loss = lambda_L2 * torch.sum(torch.square(self.signaling_network.bias_basal[self.input_layer.input_node_idx]))
         return loss
 
     def uniform_regularization(self, lambda_L2: float, Y_full: torch.Tensor, 

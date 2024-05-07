@@ -46,7 +46,7 @@ class ProjectInput(nn.Module):
         self.dtype = dtype
         self.projection_amplitude = projection_amplitude
         self.size_out = len(node_idx_map) # number of nodes total in prior knowledge network
-        self.input_node_order = torch.tensor([node_idx_map[x] for x in input_labels], device = self.device) # idx representation of ligand inputs
+        self.input_node_idx = torch.tensor([node_idx_map[x] for x in input_labels], device = self.device) # idx representation of ligand inputs
         weights = self.projection_amplitude * torch.ones(len(input_labels), dtype=self.dtype, device = self.device) # scaled input weights
         self.weights = nn.Parameter(weights)
         
@@ -66,7 +66,7 @@ class ProjectInput(nn.Module):
             the linearly scaled ligand inputs. Shape is (samples x network nodes)
         """
         X_full = torch.zeros([X_in.shape[0],  self.size_out], dtype=self.dtype, device=self.device) # shape of (samples x total nodes in network)
-        X_full[:, self.input_node_order] = self.weights * X_in # only modify those nodes that are part of the input (ligands)
+        X_full[:, self.input_node_idx] = self.weights * X_in # only modify those nodes that are part of the input (ligands)
         return X_full
     
     def L2_reg(self, lambda_L2: Annotated[float, Ge(0)] = 0):
@@ -95,6 +95,7 @@ class BioNet(nn.Module):
 
     def __init__(self, edge_list: np.array, 
                  edge_MOA: np.array, 
+                 input_node_idx: torch.Tensor,
                  n_network_nodes: int, 
                  activation_function: str = 'MML', 
                  bionet_params: Dict[str, float] = None, 
@@ -116,6 +117,9 @@ class BioNet(nn.Module):
             a (2, net.shape[0]) array where the first row is a boolean of whether the interactions are stimulating and the 
             second row is a boolean of whether the interactions are inhibiting
             output from  `SignalingModel.parse_network`
+        input_node_idx : torch.Tensor
+            array of indeces representing the ligand nodes in the signaling network. 
+            stored in `ProjectInput.input_node_idx`
         n_network_nodes : int
             the number of nodes in the network
         bionet_params : Dict[str, float]
@@ -152,6 +156,7 @@ class BioNet(nn.Module):
         self.seed = seed
         self._ss_seed_counter = 0
         self._prescaled_weights = False
+        self.input_node_idx = input_node_idx
 
         self.n_network_nodes = n_network_nodes
         # TODO: delete these _in _out?
@@ -163,26 +168,26 @@ class BioNet(nn.Module):
         self.edge_MOA = np_to_torch(edge_MOA, dtype=torch.bool, device = self.device)
 
         # initialize weights and biases
-        self.covariates = covariates
+        self._covariates_prelim = covariates
         weights, bias_basal = self.initialize_weights()
         self.weights = nn.Parameter(weights)
-        self.weights_MOA, self.mask_MOA = self.make_mask_MOA() # mechanism of action 
-
-        if self.covariates is not None:
+        
+        if covariates is not None:
             # if not self.single_cell
             self.bias_basal = nn.Parameter(bias_basal)
             # else
             # self.bias_basal = self.encode()
             
             # initialize categorical covariate biases
-            self.covariates = self.covariates[categorical_covariate_keys]
+            self.covariates = covariates[categorical_covariate_keys]
             self.embed_covariates()
 
         else:
+            self.covariates = covariates
             self.bias_basal = nn.Parameter(bias_basal)
-
         
-
+        self.make_mask()
+        
         # activation function
         self.activation = activation_function_map[activation_function]['activation']
         self.delta = activation_function_map[activation_function]['delta']
@@ -227,26 +232,26 @@ class BioNet(nn.Module):
         
         bias_basal = 1e-3*torch.ones((self.n_network_nodes_in, 1), dtype = self.dtype, device = self.device)
         
-        if self.covariates is None: # do not include ligand-specific information in the bias when separating out into basal bias
+        if self._covariates_prelim is None: # do not include ligand-specific information in the bias when separating out into basal bias
             for nt_idx in np.unique(network_targets):
                 if torch.all(weight_values[network_targets == nt_idx]<0):
                     bias_basal.data[nt_idx] = 1
 
         return weight_values, bias_basal
 
-    def make_mask(self):
-        """Generates a mask for adjacency matrix for non-interacting nodes.
-
+    def initialize_MOA(self):
+        """Generates weights corresponding to adjacency matrix for non-interacting nodes AND nodes where 
+        mode of action (stimulating/inhibiting) is unknown.
+        
         Returns
         -------
-        weights_mask : torch.Tensor
-            a boolean adjacency matrix of all nodes in the signaling network, masking (True) interactions that are not present
+        weights_MOA : torch.Tensor
+            an adjacency matrix of all nodes in the signaling network, with activating interactions set to 1, inhibiting interactions set 
+            to -1, and interactions that do not exist or have an unknown mechanism of action (stimulating/inhibiting) set to 0
         """
-
-        weights_mask = torch.zeros(self.n_network_nodes, self.n_network_nodes, dtype=bool, device = self.device) # adjacency list format (targets (rows)--> sources (columns))
-        weights_mask[self.edge_list] = True # if interaction is present, do not mask
-        weights_mask = torch.logical_not(weights_mask) # make non-interacting edges False and vice-vesa
-        return weights_mask
+        self.weights_MOA = torch.zeros(self.n_network_nodes_out, self.n_network_nodes_in, dtype=torch.long, device = self.device) # adjacency matrix
+        signed_MOA = self.edge_MOA[0, :].type(torch.long) - self.edge_MOA[1, :].type(torch.long) #1=activation -1=inhibition, 0=unknown
+        self.weights_MOA[self.edge_list] = signed_MOA
 
     def initialize_weights(self):
         """Initializes weights and masks for interacting nodes and mechanism of action.
@@ -260,33 +265,40 @@ class BioNet(nn.Module):
         """
 
         weight_values, bias_basal = self.initialize_weight_values()
-        self.mask = self.make_mask()
-        weights = torch.zeros(self.mask.shape, dtype = self.dtype, device = self.device) # adjacency matrix
+        weights = torch.zeros(self.n_network_nodes, self.n_network_nodes, dtype=self.dtype, device = self.device) # adjacency matrix
         weights[self.edge_list] = weight_values
+        
+        self.initialize_MOA()
         
         return weights, bias_basal
 
-    def make_mask_MOA(self):
-        """Generates mask (and weights) for adjacency matrix for non-interacting nodes AND nodes were mode of action (stimulating/inhibiting) 
-        is unknown.
+    def make_mask(self):
+        """Generates a mask for adjacency matrix for non-interacting nodes, for the mechanism of action (unknown weights), 
+        and ligand nodes. 
 
         Returns
         -------
-        weights_MOA : torch.Tensor
-            an adjacency matrix of all nodes in the signaling network, with activating interactions set to 1, inhibiting interactions set 
-            to -1, and interactions that do not exist or have an unknown mechanism of action (stimulating/inhibiting) set to 0
-        mask_MOA : torch.Tensor
-            a boolean adjacency matrix of all nodes in the signaling network, with interactions that do not exist or have an unknown 
-            mechanism of action masked (True)
+        weights_mask : torch.Tensor
+            a boolean adjacency matrix of all nodes in the signaling network, masking (True) interactions that are not present
         """
-    
-        signed_MOA = self.edge_MOA[0, :].type(torch.long) - self.edge_MOA[1, :].type(torch.long) #1=activation -1=inhibition, 0=unknown
-        weights_MOA = torch.zeros(self.n_network_nodes_out, self.n_network_nodes_in, dtype=torch.long, device = self.device) # adjacency matrix
-        weights_MOA[self.edge_list] = signed_MOA
-        mask_MOA = weights_MOA == 0
 
-        return weights_MOA, mask_MOA
+        weights_mask = torch.zeros(self.n_network_nodes, self.n_network_nodes, dtype=bool, device = self.device) # adjacency list format (targets (rows)--> sources (columns))
+        weights_mask[self.edge_list] = True # if interaction is present, do not mask
+        weights_mask = torch.logical_not(weights_mask) # make non-interacting edges False and vice-vesa
+        self.mask = weights_mask
+        
+        # mask ligand bias terms -- ensures bias terms are context-specific (e.g. categorical covariates) in a 
+        # manner that is independent of the ligand information
+        self.bias_mask = torch.zeros((self.n_network_nodes_in, 1), dtype = bool, device = self.device)
+        self.bias_mask[self.input_node_idx] = True
+        self.cat_embeddings_mask = {covariate_cat: torch.cat([self.bias_mask.T] * embedding.weight.shape[0], dim=0)
+                            for covariate_cat, embedding in self.cat_embeddings.items()}
 
+        # a boolean adjacency matrix of all nodes in the signaling network, with interactions that do not exist 
+        # or have an unknown mechanism of action masked (True)
+        self.mask_MOA = self.weights_MOA == 0
+        
+        
     def embed_covariates(self):
         """
         Creates a dictionary mapping each categorical covariate's values to a numerical value (index), corresponding
@@ -366,13 +378,17 @@ class BioNet(nn.Module):
         Y_full :  torch.Tensor
             the signaling network scaled by learned interaction weights. Shape is (samples x network nodes).
         """
+        # implement masks
         self.weights.data.masked_fill_(mask = self.mask, value = 0.0) # fill non-interacting edges with 0
+        self.bias_basal.data.masked_fill_(mask = self.bias_mask, value = 0.0)
 
         bias_cats = torch.zeros_like(X_full.T, device = self.device, dtype = self.dtype)
         # add categorical covariates
         if self.covariates is not None:
             for cat_group_idx in range(covariates_idx.shape[1]):
                 cat_group = self._cat_group_idx[cat_group_idx]
+                self.cat_embeddings[cat_group].weight.data.masked_fill_(mask = self.cat_embeddings_mask[cat_group], 
+                                                                        value = 0.0)
                 bias_cats += self.cat_embeddings[cat_group](covariates_idx[:,cat_group_idx]).T
         #             # the indexing above would be the equivalent of this:
         #             embedding = self.cat_embeddings[cat_group].weight.clone()
@@ -465,26 +481,6 @@ class BioNet(nn.Module):
 
         loss = lambda_L1 * torch.sum(torch.abs(self.weights * sign_mismatch))
         return loss
-
-    # def get_sign_mistmatch_edge_list(self):
-    #     """Same as `get_sign_mistmatch`, but converts to coordinates corresponding to `edge_list`
-        
-    #     Returns
-    #     -------
-    #     sign_mismatch : torch.Tensor
-    #         a binary vector corresponding to coordinates in `edge_list`, where values are 1 if they do not 
-    #         match the mode of action and 0 if they match the mode of action or have an unknown mode of action
-    #     """
-    #     sign_mismatch = self.get_sign_mistmatch()
-        
-    #     # violations = sign_mismatch[self.edge_list] # 1 for interactions in edge list that mismatch, 0 otherwise
-    #     # activation_mismatch = torch.logical_and(violations, self.edge_MOA[0])
-    #     # inhibition_mismatch = torch.logical_and(violations, self.edge_MOA[1])
-    #     # all_mismatch = torch.logical_or(activation_mismatch, inhibition_mismatch)
-        
-    #     sign_mismatch_edge = sign_mismatch[self.edge_list] # 1 for interactions in edge list that mismatch, 0 otherwise
-        
-    #     return sign_mismatch_edge
 
     def get_SS_loss(self, Y_full: torch.Tensor, spectral_loss_factor: float, subset_n: int = 10, **kwargs):
         """_summary_
@@ -596,7 +592,7 @@ class ProjectOutput(nn.Module):
         return Y_hat
 
     def L2_reg(self, lambda_L2: Annotated[float, Ge(0)] = 0):
-        """Get the L2 regularization term for the neural network parameters.
+        """Get the L2 regularization term for the neural network weight parameters.
         Here, this pushes learned parameters towards `projection_amplitude` 
         
         Parameters
