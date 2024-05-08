@@ -1,9 +1,10 @@
 """
-Defines the other various layers and modules needed for building adn training the SignalingModel.
+Defines the other various layers and modules needed for building and training the SignalingModel.
 """
 
 from annotated_types import Ge
-from typing import Dict, Union, Annotated
+from collections import OrderedDict
+from typing import Dict, Union, Annotated, List
 
 import numpy as np 
 
@@ -156,3 +157,163 @@ class ProjectOutput(nn.Module):
     #     """
     #     self.output_node_order = self.output_node_order.to(device)
 
+class FCLayers(nn.Module):
+    """
+    Generates standard, fully-connected neural-network.
+    Adapted from scVI's `FCLayers`.
+    """
+    DEFAULT_HYPER_PARAMS = {'batch_momentum': 0.01, 'layer_norm': False, 'dropout_rate': 0.1,
+                        'activation_fn': nn.ReLU, # can make as None to have purely linear
+                        }
+    def __init__(self, layers: List[int],
+                 batch_momentum: float = 0.01,
+                 layer_norm: bool = False,
+                 dropout_rate: int | float = 0.1,
+                 activation_fn: nn.Module | None = nn.ReLU,
+                 dtype: torch.dtype=torch.float32,
+                 device: str = 'cpu', 
+                ):
+        """Initialize encoder.
+
+        Parameters
+        ----------
+        layers : List[int]
+            the size of each layer (including inputs and outputs)
+            each element in the list corresponds to one hidden layer (i.e., no. of hidden layers = length of list)
+        batch_momentum : float, optional
+            `momentum` parameter for `BatchNorm` layer, by default .01
+            If None, a `BatchNorm` is not added
+        layer_norm : bool, optional
+            whether to have `LayerNorm` layers or not, by default False
+        dropout_rate : int | float, optional
+            dropout rate to apply to each of the hidden layers, by default 0.1
+            If None, dropout is not added
+        activation_fn : nn.Module | None, optional
+            non-linear Pytorch activation function, by default nn.ReLU. No activation if set to None
+        linear_output : bool, optional
+            whether the final layer in the encoder should only be linear (True) or incorporate the specified `activation_fn` (False)
+        device : str
+            whether to use gpu ("cuda") or cpu ("cpu"), by default "cpu"
+        dtype : torch.dtype, optional
+            datatype to store values in torch, by default torch.float32
+        """
+        super().__init__()
+
+        # set up params
+        self.batch_momentum = batch_momentum
+        self.layer_norm = layer_norm
+        self.dropout_rate = dropout_rate
+        self.activation_fn = activation_fn
+        self.dtype = dtype
+        self.device = device
+
+        if self.batch_momentum and self.layer_norm:
+            warnings.warn('You have applied both a batch- and layer-normalization. Recommended to choose one of the two.')
+
+        fc_layers = OrderedDict()
+        for i, (n_in, n_out) in enumerate(zip(layers[:-1], layers[1:])):
+                fc_layers['FC Layer {}'.format(i)] = self._single_layer(n_in,n_out)#, drop_keys = None)
+        self.fc_layers = nn.Sequential(fc_layers)
+
+    def _single_layer(self, n_in: int, n_out: int):#, drop_keys: Optional[List[str]] = None):
+        """Creates a single [set of] layer[s] in the encoder."""
+
+        all_layers = OrderedDict([('linear', nn.Linear(in_features = n_in, out_features = n_out, bias = True, 
+                                                       device = self.device, dtype = self.dtype)),
+                                  ('batch normalization', nn.BatchNorm1d(n_out, momentum=self.batch_momentum, 
+                                                                         device = self.device, dtype = self.dtype) if self.batch_momentum else None),
+                                  ('layer normalization', nn.LayerNorm(n_out, elementwise_affine=False, 
+                                                                       device = self.device, dtype = self.dtype) if self.layer_norm else None),
+                                  ('activation', self.activation_fn() if self.activation_fn else None),
+                                  ('dropout', nn.Dropout(p=self.dropout_rate) if (self.dropout_rate and self.dropout_rate > 0) else None)])
+
+        return nn.Sequential(OrderedDict((k, v) for k, v in all_layers.items() if v is not None))
+
+    def forward(self, x):
+        return self.fc_layers(x)    
+    
+    
+class CatDiscriminator(nn.Module):
+    """"Discriminator for categorical covariates in adversarial training of TFA.
+    Adapted from scVI's `Classifier`.
+    """
+    DEFAULT_HYPER_PARAMS = {**FCLayers.DEFAULT_HYPER_PARAMS, **{'n_hidden_nodes': [16, 16, 16], 'optimizer': torch.optim.Adam}}
+    
+    def __init__(
+        self,
+        n_features_in: int,
+        n_labels: int,
+        n_hidden_nodes: List[int] = [16, 16, 16],
+        batch_momentum: float = 0.01,
+        layer_norm: bool = False,
+        dropout_rate: int | float = 0.1,
+        activation_fn: nn.Module | None = nn.ReLU,
+        optimizer = torch.optim.Adam,
+        dtype: torch.dtype=torch.float32,
+        device: str = 'cpu'
+    ):
+        """Initialize discriminator
+
+        Parameters
+        ----------
+        n_features_in : int
+            number of inpute features to discriminator (should be number of latent features for TFA)
+        n_labels : int
+            number of categories for the given categorical covariate
+        n_hidden_nodes : List[int], optional
+            number of hidden nodes per hidden layer, by default [64]
+            each element in the list corresponds to one hidden layer (i.e., no. of hidden layers = length of list), by default [16, 16, 16]
+        batch_momentum : float, optional
+            `momentum` parameter for `BatchNorm` layer, by default .01
+            If None, a `BatchNorm` is not added
+        layer_norm : bool, optional
+            whether to have `LayerNorm` layers or not, by default False
+        dropout_rate : int | float, optional
+            dropout rate to apply to each of the hidden layers, by default 0.1
+            If None, dropout is not added
+        activation_fn : nn.Module | None, optional
+            non-linear Pytorch activation function, by default nn.ReLU. No activation if set to None
+        optimizer : torch.optim, optional
+            optimizer to use for training, by default torch.optim.Adam
+        dtype : torch.dtype, optional
+            datatype to store values in torch, by default torch.float32
+        device : str
+            whether to use gpu ("cuda") or cpu ("cpu"), by default "cpu"
+        """
+        super().__init__()
+        self.n_labels = n_labels
+        if self.n_labels > 2: # multi-class
+            self.loss_fn = nn.CrossEntropyLoss # applies softmax to logits prior to CE
+            out_features = self.n_labels
+        elif self.n_labels == 2: # binary
+            self.loss_fn = nn.BCEWithLogitsLoss # applies sigmoid to logits prior to CE
+            out_features = 1
+        else:
+            raise ValueError('There are no distinct classes.')
+
+        self.optimizer = optimizer
+
+        
+        cat_layers = []
+        cat_layers.append(FCLayers(layers = [n_features_in] + n_hidden_nodes, 
+                                   batch_momentum = batch_momentum, 
+                                   layer_norm = layer_norm, 
+                                   dropout_rate = dropout_rate, 
+                                   activation_fn = activation_fn, 
+                                   dtype = dtype, device = device))
+        cat_layers.append(FCLayers(layers = [n_hidden_nodes[-1], out_features], 
+                                   dtype = dtype, device = device,
+                                   batch_momentum = None, layer_norm = False, dropout_rate = None, activation_fn = None))
+
+        self.classifier = nn.Sequential(*cat_layers)
+
+    def forward(self, x):
+        """Returns logits for labels"""
+        return self.classifier(x) 
+
+    def get_probability(self, y):
+        """Calculate the probability from output logits."""
+        if self.n_labels > 2:
+            return F.softmax(y.detach(), dim=-1)
+        else:
+            return F.sigmoid(y.detach(), dim = -1) # probability of the "positive" (labeled "1") layer

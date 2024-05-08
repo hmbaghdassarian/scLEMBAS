@@ -9,11 +9,13 @@ import warnings
 import numpy as np
 from sklearn.model_selection import train_test_split
 import torch
+import torch.nn as nn
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 
 import scLEMBAS.utilities as utils
 from scLEMBAS.model.bionetwork import BioNetSimple, BioNetCat
+from scLEMBAS.model.model_components import CatDiscriminator
 
 class ModelData(Dataset):
     def __init__(self, X_in: torch.tensor, y_out: torch.tensor, covariates_idx: Optional[torch.tensor] = None):
@@ -60,7 +62,7 @@ class TrainBase:
 
     def __init__(self, 
                  mod, 
-                 optimizer: torch.optim, 
+                 prediction_optimizer: torch.optim, 
                  prediction_loss_fn: torch.nn.modules.loss,
                  hyper_params: Dict[str, Union[int, float]] = None,
                  train_split_frac: Dict = {'train': 0.8, 'test': 0.2, 'validation': None},
@@ -71,8 +73,8 @@ class TrainBase:
         ----------
         mod : SignalingModel
             initialized signaling model. Suggested to also run `mod.signaling_network.prescale_weights` prior to training
-        optimizer : torch.optim.adam.Adam
-            optimizer to use during training
+        prediction_optimizer : torch.optim.adam.Adam
+            optimizer to use for the prediction during training (as opposed to the discriminator)
         prediction_loss_fn : torch.nn.modules.loss.MSELoss
             loss function for determining how well the model predicts the output (TF activities)
         hyper_params : Dict[str, Union[int, float]], optional
@@ -113,8 +115,8 @@ class TrainBase:
         
         self.mod = mod
         self.prediction_loss_fn = prediction_loss_fn
-        self.optimizer =optimizer(self.mod.parameters(), lr=1, weight_decay=0)
-        self.reset_state = self. optimizer.state.copy()
+        self.prediction_optimizer = prediction_optimizer(self.mod.parameters(), lr=1, weight_decay=0)
+        self.reset_state = self.prediction_optimizer.state.copy()
 
         if not hyper_params:
             self.hyper_params = self.HYPER_PARAMS.copy()
@@ -186,19 +188,19 @@ class TrainSimple(TrainBase):
     """Training the signaling model for bulk data with no categorical covariates."""
     def __init__(self, 
                   mod, 
-                 optimizer: torch.optim, 
+                 prediction_optimizer: torch.optim, 
                  prediction_loss_fn: torch.nn.modules.loss,
-                 reset_epoch : int = 2,
                  hyper_params: Dict[str, Union[int, float]] = None,
                  train_split_frac: Dict = {'train': 0.8, 'test': 0.2, 'validation': None},
-                 train_seed: int = None,):
+                 train_seed: int = None):
+        """See `TrainBase` for parameters."""
         
         if not (type(mod.signaling_network) is BioNetSimple):
             msg = 'You must use the correct training class to match the BioNet class.'
             msg += ' Do you have categorical covariates?'
             raise ValueError(msg)
         super().__init__(mod = mod, 
-                           optimizer = optimizer, 
+                           prediction_optimizer = prediction_optimizer, 
                            prediction_loss_fn = prediction_loss_fn, 
                            hyper_params=hyper_params, 
                            train_split_frac=train_split_frac, 
@@ -231,7 +233,7 @@ class TrainSimple(TrainBase):
             # set learning rate
             cur_lr = utils.get_lr(e, self.hyper_params['max_epochs'], max_height = self.hyper_params['learning_rate'],
                                 start_height=self.hyper_params['learning_rate']/10, end_height=1e-6, peak = 1000)
-            self.optimizer.param_groups[0]['lr'] = cur_lr
+            self.prediction_optimizer.param_groups[0]['lr'] = cur_lr
             
             cur_loss = []
             cur_eig = []
@@ -241,7 +243,7 @@ class TrainSimple(TrainBase):
                 utils.set_seeds(self.mod.seed + e)
             for batch, (X_in_, y_out_, covariates_idx_) in enumerate(self.train_dataloader):
                 self.mod.train()
-                self.optimizer.zero_grad()
+                self.prediction_optimizer.zero_grad()
 
                 X_in_, y_out_, covariates_idx_ = X_in_.to(self.mod.device), y_out_.to(self.mod.device), covariates_idx_.to(self.mod.device)
 
@@ -272,7 +274,7 @@ class TrainSimple(TrainBase):
                 # gradient
                 total_loss.backward()
                 self.mod.add_gradient_noise(noise_level = self.hyper_params['gradient_noise_scale'])
-                self.optimizer.step()
+                self.prediction_optimizer.step()
 
                 # store
                 cur_eig.append(spectral_radius)
@@ -285,7 +287,7 @@ class TrainSimple(TrainBase):
                 utils.print_stats(self.stats, iter = e)
             
             if np.logical_and(e % self.hyper_params['reset_optimizer_epoch'] == 0, e>0):
-                self.optimizer.state = self.reset_state.copy()
+                self.prediction_optimizer.state = self.reset_state.copy()
 
         if verbose:
             mins, secs = divmod(time.time() - start_time, 60)
@@ -296,19 +298,30 @@ class TrainSimple(TrainBase):
 
 class TrainCat(TrainBase):
     """Training the signaling model for bulk data, accounting for categorical covariates of the samples (e.g. cell line, genetic background, etc.)."""
+
     def __init__(self,
                  mod, 
-                 optimizer: torch.optim, 
+                 prediction_optimizer: torch.optim, 
                  prediction_loss_fn: torch.nn.modules.loss,
                  reset_epoch : int = 2,
                  hyper_params: Dict[str, Union[int, float]] = None,
                  train_split_frac: Dict = {'train': 0.8, 'test': 0.2, 'validation': None},
-                 train_seed: int = None):
+                 train_seed: int = None, 
+                discriminator_params: Dict = CatDiscriminator.DEFAULT_HYPER_PARAMS):
+        """See `TrainBase` for parameters. Additional parameters include:
+        
+        Parameters
+        ----------
+        discriminator_params : Dict
+            key word arguments to pass to `CatDiscriminator`
+        
+        
+        """
         if not (type(mod.signaling_network) is BioNetCat):
             raise ValueError('You must use the correct training class to match the BioNet class.')
 
         super().__init__(mod = mod, 
-                           optimizer = optimizer, 
+                           prediction_optimizer = prediction_optimizer, 
                            prediction_loss_fn = prediction_loss_fn, 
                            hyper_params=hyper_params, 
                            train_split_frac=train_split_frac, 
@@ -318,6 +331,26 @@ class TrainCat(TrainBase):
                            y_out = self.mod.df_to_tensor(self.y_train).to('cpu'),
                            covariates_idx = self.mod.signaling_network.covariates_to_tensor(sample_ids = self.X_train.index))
         self.create_data_loader(train_data)
+        self.initialize_discriminator()
+
+    def initialize_discriminator(self):
+        self.discriminators = nn.ModuleDict(
+                        {
+                            covariate_cat: CatDiscriminator(n_features_in = cat_embedding.weight.shape[1],
+                                              n_labels = cat_embedding.weight.shape[0], 
+                                              dtype = self.mod.dtype, 
+                                              device = self.mod.device,
+                                              **discriminator_params)
+                            for covariate_cat, cat_embedding in self.mod.signaling_network.cat_embeddings.items()}
+                    )
+        
+        # discriminator loss is used for the generator as well
+        # prediction optimizer contains the parameters for the the union of the generator and the signaling model
+        self.discriminator_optimizer = {cat: discriminator.optimizer(discriminator.parameters(), lr=1, weight_decay=0) \
+                                for cat, discriminator in self.discriminators.items()}
+        self.discriminator_loss = {cat: discriminator.loss_fn() for cat, discriminator in self.discriminators.items()}
+
+
 
     def train_model(self, verbose: bool = True):
         """Train the model
@@ -341,7 +374,7 @@ class TrainCat(TrainBase):
             # set learning rate
             cur_lr = utils.get_lr(e, self.hyper_params['max_epochs'], max_height = self.hyper_params['learning_rate'],
                                 start_height=self.hyper_params['learning_rate']/10, end_height=1e-6, peak = 1000)
-            self.optimizer.param_groups[0]['lr'] = cur_lr
+            self.prediction_optimizer.param_groups[0]['lr'] = cur_lr
 
             cur_loss = []
             cur_eig = []
@@ -351,7 +384,7 @@ class TrainCat(TrainBase):
                 utils.set_seeds(self.mod.seed + e)
             for batch, (X_in_, y_out_, covariates_idx_) in enumerate(self.train_dataloader):
                 self.mod.train()
-                self.optimizer.zero_grad()
+                self.prediction_optimizer.zero_grad()
 
                 X_in_, y_out_, covariates_idx_ = X_in_.to(self.mod.device), y_out_.to(self.mod.device), covariates_idx_.to(self.mod.device)
                 covariates_idx_ = covariates_idx_.to(self.mod.device)
@@ -383,7 +416,7 @@ class TrainCat(TrainBase):
                 # gradient
                 total_loss.backward()
                 self.mod.add_gradient_noise(noise_level = self.hyper_params['gradient_noise_scale'])
-                self.optimizer.step()
+                self.prediction_optimizer.step()
 
                 # store
                 cur_eig.append(spectral_radius)
@@ -396,7 +429,7 @@ class TrainCat(TrainBase):
                 utils.print_stats(self.stats, iter = e)
 
             if np.logical_and(e % self.hyper_params['reset_optimizer_epoch'] == 0, e>0):
-                self.optimizer.state = self.reset_state.copy()
+                self.prediction_optimizer.state = self.reset_state.copy()
 
         if verbose:
             mins, secs = divmod(time.time() - start_time, 60)
