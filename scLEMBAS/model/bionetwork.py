@@ -494,7 +494,7 @@ class BioNetCat(BioNetBase):
         
         # map each category's labels to a respective numerical index
         self.cat_mapper = OrderedDict({})
-#         self.one_hot = {}
+        self.one_hot = {}
         for cvk in self.covariates.columns:
             if self.covariates[cvk].dtype.name == 'category' and self.covariates[cvk].dtype.ordered:
                 labels = self.covariates[cvk].cat.categories
@@ -504,7 +504,7 @@ class BioNetCat(BioNetBase):
             n_labels = len(labels)
             label_idx = list(range(n_labels))
             self.cat_mapper[cvk] = dict(zip(labels, label_idx)) # index
-#             self.one_hot[cvk] = F.one_hot(torch.tensor(label_idx), n_labels) # each row is the index of the cat_mapper
+#             self.one_hot[cvk] = F.one_hot(torch.tensor(label_idx), n_labels).to(self.device) # each row is the index of the cat_mapper
         
         ############################
         # necessary for forward pass: working with category group and category group label indices rather than strings:
@@ -528,7 +528,7 @@ class BioNetCat(BioNetBase):
     
     def covariates_to_tensor(self, sample_ids):
         """Returns the covariates by index in torch.Tensor format for a specified list of samples.""" 
-        return torch.tensor(self.covariates_idx.loc[sample_ids, :].values, device = self.device)
+        return torch.tensor(self.covariates_idx.loc[sample_ids, :].values, device = self.device, dtype = torch.int64)
     
 
     def forward(self, X_full: torch.Tensor, covariates_idx: torch.Tensor):

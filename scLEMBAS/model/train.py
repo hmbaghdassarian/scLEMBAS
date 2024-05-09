@@ -14,8 +14,9 @@ from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 
 import scLEMBAS.utilities as utils
-from scLEMBAS.model.bionetwork import BioNetSimple, BioNetCat
-from scLEMBAS.model.model_components import CatDiscriminator
+from .model_utilities import update_with_defaults
+from .bionetwork import BioNetSimple, BioNetCat
+from .model_components import CatDiscriminator
 
 class ModelData(Dataset):
     def __init__(self, X_in: torch.tensor, y_out: torch.tensor, covariates_idx: Optional[torch.tensor] = None):
@@ -186,6 +187,7 @@ class TrainBase:
 
 class TrainSimple(TrainBase):
     """Training the signaling model for bulk data with no categorical covariates."""
+
     def __init__(self, 
                   mod, 
                  prediction_optimizer: torch.optim, 
@@ -298,7 +300,9 @@ class TrainSimple(TrainBase):
 
 class TrainCat(TrainBase):
     """Training the signaling model for bulk data, accounting for categorical covariates of the samples (e.g. cell line, genetic background, etc.)."""
-
+    
+    HYPER_PARAMS = {**TrainBase.HYPER_PARAMS, **{'discriminator_lambda_L2': 1e-5}}
+    
     def __init__(self,
                  mod, 
                  prediction_optimizer: torch.optim, 
@@ -306,8 +310,8 @@ class TrainCat(TrainBase):
                  reset_epoch : int = 2,
                  hyper_params: Dict[str, Union[int, float]] = None,
                  train_split_frac: Dict = {'train': 0.8, 'test': 0.2, 'validation': None},
-                 train_seed: int = None, 
-                discriminator_params: Dict = CatDiscriminator.DEFAULT_HYPER_PARAMS):
+                 train_seed: int = None,
+                 discriminator_params: Dict = CatDiscriminator.DEFAULT_HYPER_PARAMS):
         """See `TrainBase` for parameters. Additional parameters include:
         
         Parameters
@@ -331,9 +335,10 @@ class TrainCat(TrainBase):
                            y_out = self.mod.df_to_tensor(self.y_train).to('cpu'),
                            covariates_idx = self.mod.signaling_network.covariates_to_tensor(sample_ids = self.X_train.index))
         self.create_data_loader(train_data)
-        self.initialize_discriminator()
+        self.initialize_discriminator(discriminator_params)
 
-    def initialize_discriminator(self):
+    def initialize_discriminator(self, discriminator_params):
+        discriminator_params['batch_momentum'] = None # bias is a vector in bulk; this should be eliminated in single-cell
         self.discriminators = nn.ModuleDict(
                         {
                             covariate_cat: CatDiscriminator(n_features_in = cat_embedding.weight.shape[1],
@@ -344,11 +349,10 @@ class TrainCat(TrainBase):
                             for covariate_cat, cat_embedding in self.mod.signaling_network.cat_embeddings.items()}
                     )
         
-        # discriminator loss is used for the generator as well
-        # prediction optimizer contains the parameters for the the union of the generator and the signaling model
-        self.discriminator_optimizer = {cat: discriminator.optimizer(discriminator.parameters(), lr=1, weight_decay=0) \
+#         # prediction optimizer contains the parameters for the the union of the generator and the signaling model
+        self.discriminator_optimizers = {cat: discriminator.optimizer(discriminator.parameters(), lr=1, weight_decay=0) \
                                 for cat, discriminator in self.discriminators.items()}
-        self.discriminator_loss = {cat: discriminator.loss_fn() for cat, discriminator in self.discriminators.items()}
+#         self.discriminator_losses = {cat: discriminator.loss_fn() for cat, discriminator in self.discriminators.items()}
 
 
 
@@ -375,6 +379,8 @@ class TrainCat(TrainBase):
             cur_lr = utils.get_lr(e, self.hyper_params['max_epochs'], max_height = self.hyper_params['learning_rate'],
                                 start_height=self.hyper_params['learning_rate']/10, end_height=1e-6, peak = 1000)
             self.prediction_optimizer.param_groups[0]['lr'] = cur_lr
+            for dopt in self.discriminator_optimizers.values():
+                dopt.param_groups[0]['lr'] = cur_lr
 
             cur_loss = []
             cur_eig = []
@@ -384,7 +390,10 @@ class TrainCat(TrainBase):
                 utils.set_seeds(self.mod.seed + e)
             for batch, (X_in_, y_out_, covariates_idx_) in enumerate(self.train_dataloader):
                 self.mod.train()
+                
                 self.prediction_optimizer.zero_grad()
+                for dopt in self.discriminator_optimizers.values():
+                    dopt.zero_grad()
 
                 X_in_, y_out_, covariates_idx_ = X_in_.to(self.mod.device), y_out_.to(self.mod.device), covariates_idx_.to(self.mod.device)
                 covariates_idx_ = covariates_idx_.to(self.mod.device)
@@ -398,9 +407,25 @@ class TrainCat(TrainBase):
                 Y_hat = self.mod.output_layer(Y_full)
 
                 # get prediction loss
-                fit_loss = self.prediction_loss_fn(y_out_, Y_hat)
+                prediction_loss = self.prediction_loss_fn(y_out_, Y_hat)
 
-                # get regularization losses
+                # discriminator prediction and loss
+                discriminator_loss = torch.tensor([0], device = self.mod.device, dtype = self.mod.dtype)
+                for cat_group_idx, (cat, discriminator) in enumerate(self.discriminators.items()):
+                    bias_basal_prediction = discriminator(self.mod.signaling_network.bias_basal.T) # predicted logits
+                    # TO DO: should this expansion of the vector into samples be done after getting the prediction or 
+                    # should it be done prior to 
+                    # if prior, should the batch_norm = False line in the initilize_discriminator be removed?
+                    bias_basal_prediction = bias_basal_prediction.repeat(covariates_idx_.shape[0], 1) # expand vector to # of samples
+
+                    target = covariates_idx_[:, cat_group_idx]
+                    if discriminator.n_labels == 2:
+                        target = target.to(self.mod.dtype).unsqueeze(1)
+
+                    discriminator_loss += discriminator.loss_fn(bias_basal_prediction, target)
+                    prediction_loss -= discriminator.loss_fn(bias_basal_prediction, target) 
+
+                # regularization - SCL
                 sign_reg = self.mod.signaling_network.sign_regularization(lambda_L1 = self.hyper_params['moa_lambda_L1']) # incorrect MoA
         #             ligand_reg = self.mod.ligand_regularization(lambda_L2 = self.hyper_params['ligand_lambda_L2']) # ligand biases
                 stability_loss, spectral_radius = self.mod.signaling_network.get_SS_loss(Y_full = Y_full.detach(), spectral_loss_factor = self.hyper_params['spectral_loss_factor'],
@@ -410,13 +435,19 @@ class TrainCat(TrainBase):
                                                         target_min = 0, target_max = self.hyper_params['uniform_max']) # uniform distribution
                 param_reg = self.mod.L2_reg(self.hyper_params['param_lambda_L2']) # all model weights and signaling network biases
 
-        #             total_loss = fit_loss + sign_reg + ligand_reg + param_reg + stability_loss + uniform_reg
-                total_loss = fit_loss + sign_reg + param_reg + stability_loss + uniform_reg
+                prediction_loss += sign_reg + param_reg + stability_loss + uniform_reg
 
+                # regularization - Discriminator
+                for discriminator in self.discriminators.keys():
+                    discriminator_loss += discriminator.L2_reg(self.hyper_params['discriminator_lambda_L2'])
+                
                 # gradient
-                total_loss.backward()
+                discriminator_loss.backward(retain_graph = True)
+                prediction_loss.backward()
                 self.mod.add_gradient_noise(noise_level = self.hyper_params['gradient_noise_scale'])
                 self.prediction_optimizer.step()
+                for dopt in self.discriminator_optimizers.values():
+                    dopt.step()
 
                 # store
                 cur_eig.append(spectral_radius)

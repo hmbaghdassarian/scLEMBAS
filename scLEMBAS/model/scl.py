@@ -11,7 +11,6 @@ import torch
 from torch import nn
 
 from ..utilities import set_seeds
-from .model_utilities import update_with_defaults
 from .model_components import ProjectInput, ProjectOutput
 from .bionetwork import BioNetSimple, BioNetCat
 

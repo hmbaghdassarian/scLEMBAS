@@ -5,6 +5,7 @@ Defines the other various layers and modules needed for building and training th
 from annotated_types import Ge
 from collections import OrderedDict
 from typing import Dict, Union, Annotated, List
+import warnings
 
 import numpy as np 
 
@@ -237,7 +238,9 @@ class CatDiscriminator(nn.Module):
     """"Discriminator for categorical covariates in adversarial training of TFA.
     Adapted from scVI's `Classifier`.
     """
-    DEFAULT_HYPER_PARAMS = {**FCLayers.DEFAULT_HYPER_PARAMS, **{'n_hidden_nodes': [16, 16, 16], 'optimizer': torch.optim.Adam}}
+    
+    DEFAULT_HYPER_PARAMS = {**FCLayers.DEFAULT_HYPER_PARAMS, 
+                            **{'n_hidden_nodes': [16, 16, 16], 'optimizer': torch.optim.Adam}}
     
     def __init__(
         self,
@@ -283,10 +286,10 @@ class CatDiscriminator(nn.Module):
         super().__init__()
         self.n_labels = n_labels
         if self.n_labels > 2: # multi-class
-            self.loss_fn = nn.CrossEntropyLoss # applies softmax to logits prior to CE
+            self.loss_fn = nn.CrossEntropyLoss() # applies softmax to logits prior to CE
             out_features = self.n_labels
         elif self.n_labels == 2: # binary
-            self.loss_fn = nn.BCEWithLogitsLoss # applies sigmoid to logits prior to CE
+            self.loss_fn = nn.BCEWithLogitsLoss() # applies sigmoid to logits prior to CE
             out_features = 1
         else:
             raise ValueError('There are no distinct classes.')
@@ -296,7 +299,7 @@ class CatDiscriminator(nn.Module):
         
         cat_layers = []
         cat_layers.append(FCLayers(layers = [n_features_in] + n_hidden_nodes, 
-                                   batch_momentum = batch_momentum, 
+                                   batch_momentum = batch_momentum, # since bias is just a vector 
                                    layer_norm = layer_norm, 
                                    dropout_rate = dropout_rate, 
                                    activation_fn = activation_fn, 
@@ -317,3 +320,23 @@ class CatDiscriminator(nn.Module):
             return F.softmax(y.detach(), dim=-1)
         else:
             return F.sigmoid(y.detach(), dim = -1) # probability of the "positive" (labeled "1") layer
+        
+    def L2_reg(self, lambda_L2: Annotated[float, Ge(0)] = 0):
+        """Get the L2 regularization term for the linear layers' parameters.
+        
+        Parameters
+        ----------
+        lambda_2 : Annotated[float, Ge(0)]
+            the regularization parameter, by default 0 (no penalty) 
+        
+        Returns
+        -------
+        l2_loss : torch.Tensor
+            the regularization term
+        """
+        regularization_loss = 0
+        for name, param in self.classifier.named_parameters(): # only the linear parameters
+            regularization_loss += torch.sum(torch.square(param))
+            
+        l2_loss = lambda_L2 * regularization_loss
+        return l2_loss
