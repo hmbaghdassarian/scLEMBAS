@@ -297,9 +297,131 @@ class TrainSimple(TrainBase):
 
         return self.mod, cur_loss, cur_eig, self.split_data_dict, self.stats
 
-
 class TrainCat(TrainBase):
     """Training the signaling model for bulk data, accounting for categorical covariates of the samples (e.g. cell line, genetic background, etc.)."""
+    
+    HYPER_PARAMS = TrainBase.HYPER_PARAMS
+    
+    def __init__(self,
+                 mod, 
+                 prediction_optimizer: torch.optim, 
+                 prediction_loss_fn: torch.nn.modules.loss,
+                 hyper_params: Dict[str, Union[int, float]] = None,
+                 train_split_frac: Dict = {'train': 0.8, 'test': 0.2, 'validation': None},
+                 train_seed: int = None
+                 ):
+        """See `TrainBase` for parameters. Additional parameters include:
+        
+        Parameters
+        ----------
+        discriminator_params : Dict
+            key word arguments to pass to `CatDiscriminator`
+        
+        
+        """
+        if not (type(mod.signaling_network) is BioNetCat):
+            raise ValueError('You must use the correct training class to match the BioNet class.')
+
+        super().__init__(mod = mod, 
+                           prediction_optimizer = prediction_optimizer, 
+                           prediction_loss_fn = prediction_loss_fn, 
+                           hyper_params=hyper_params, 
+                           train_split_frac=train_split_frac, 
+                           train_seed = train_seed)
+
+        train_data = ModelData(X_in = self.mod.df_to_tensor(self.X_train).to('cpu'), 
+                           y_out = self.mod.df_to_tensor(self.y_train).to('cpu'),
+                           covariates_idx = self.mod.signaling_network.covariates_to_tensor(sample_ids = self.X_train.index))
+        self.create_data_loader(train_data)
+
+    def train_model(self, verbose: bool = True):
+        """Train the model
+
+        Parameters
+        ----------
+        verbose : bool, optional
+           print stats during trainin, by default True
+
+        Returns
+        -------
+        mod : SignalingModel
+            the model with trained parameters
+        cur_loss : List[float], optional
+            a list of the loss (excluding regularizations) across training iterations
+        cur_eig : List[float], optional
+            a list of the spectral_radius across training iterations
+       """
+        start_time = time.time()
+        for e in trange(self.hyper_params['max_epochs']):
+            # set learning rate
+            cur_lr = utils.get_lr(e, self.hyper_params['max_epochs'], max_height = self.hyper_params['learning_rate'],
+                                start_height=self.hyper_params['learning_rate']/10, end_height=1e-6, peak = 1000)
+            self.prediction_optimizer.param_groups[0]['lr'] = cur_lr
+
+            cur_loss = []
+            cur_eig = []
+
+            # iterate through batches
+            if self.mod.seed:
+                utils.set_seeds(self.mod.seed + e)
+            for batch, (X_in_, y_out_, covariates_idx_) in enumerate(self.train_dataloader):
+                self.mod.train()
+                
+                self.prediction_optimizer.zero_grad()
+
+                X_in_, y_out_, covariates_idx_ = X_in_.to(self.mod.device), y_out_.to(self.mod.device), covariates_idx_.to(self.mod.device)
+
+                # forward pass
+                X_full = self.mod.input_layer(X_in_) # transform to full network with ligand input concentrations
+                utils.set_seeds(self.mod.seed + self.mod._gradient_seed_counter)
+                network_noise = torch.randn(X_full.shape, device = X_full.device)
+                X_full = X_full + (self.hyper_params['network_noise_scale'] * cur_lr * network_noise) # randomly add noise to signaling network input, makes model more robust
+                Y_full = self.mod.signaling_network(X_full, covariates_idx_) # train signaling network weights
+                Y_hat = self.mod.output_layer(Y_full)
+
+                # get prediction loss
+                prediction_loss = self.prediction_loss_fn(y_out_, Y_hat)
+
+                # regularization
+                sign_reg = self.mod.signaling_network.sign_regularization(lambda_L1 = self.hyper_params['moa_lambda_L1']) # incorrect MoA
+        #             ligand_reg = self.mod.ligand_regularization(lambda_L2 = self.hyper_params['ligand_lambda_L2']) # ligand biases
+                stability_loss, spectral_radius = self.mod.signaling_network.get_SS_loss(Y_full = Y_full.detach(), spectral_loss_factor = self.hyper_params['spectral_loss_factor'],
+                                                                                    subset_n = self.hyper_params['subset_n_spectral'], n_probes = self.hyper_params['n_probes_spectral'], 
+                                                                                    power_steps = self.hyper_params['power_steps_spectral'])
+                uniform_reg = self.mod.uniform_regularization(lambda_L2 = self.hyper_params['uniform_lambda_L2']*cur_lr, Y_full = Y_full, 
+                                                        target_min = 0, target_max = self.hyper_params['uniform_max']) # uniform distribution
+                param_reg = self.mod.L2_reg(self.hyper_params['param_lambda_L2']) # all model weights and signaling network biases
+
+                tot_pred_loss = prediction_loss + sign_reg + param_reg + stability_loss + uniform_reg
+                
+                # gradient
+                tot_pred_loss.backward()
+                self.mod.add_gradient_noise(noise_level = self.hyper_params['gradient_noise_scale'])
+                self.prediction_optimizer.step()
+
+                # store
+                cur_eig.append(spectral_radius)
+                cur_loss.append(prediction_loss.item())
+
+            self.stats = utils.update_progress(self.stats, iter = e, loss = cur_loss, eig = cur_eig, learning_rate = cur_lr, 
+                                        n_sign_mismatches = self.mod.signaling_network.count_sign_mismatch())
+
+            if verbose and e % (self.hyper_params['max_epochs']/100) == 0:
+                utils.print_stats(self.stats, iter = e)
+
+            if np.logical_and(e % self.hyper_params['reset_optimizer_epoch'] == 0, e>0):
+                self.prediction_optimizer.state = self.reset_state.copy()
+
+        if verbose:
+            mins, secs = divmod(time.time() - start_time, 60)
+            print("Training ran in: {:.0f} min {:.2f} sec".format(mins, secs))
+
+        return self.mod, cur_loss, cur_eig, self.split_data_dict, self.stats    
+    
+    
+
+class TrainSC(TrainBase):
+    """Training the signaling model for single-cell data."""
     
     HYPER_PARAMS = {**TrainBase.HYPER_PARAMS, **{'discriminator_lambda_L2': 1e-5}}
     
@@ -396,7 +518,6 @@ class TrainCat(TrainBase):
                 self.discriminator_optimizer.zero_grad()
 
                 X_in_, y_out_, covariates_idx_ = X_in_.to(self.mod.device), y_out_.to(self.mod.device), covariates_idx_.to(self.mod.device)
-                covariates_idx_ = covariates_idx_.to(self.mod.device)
 
                 # forward pass
                 X_full = self.mod.input_layer(X_in_) # transform to full network with ligand input concentrations
@@ -460,6 +581,7 @@ class TrainCat(TrainBase):
 
             if np.logical_and(e % self.hyper_params['reset_optimizer_epoch'] == 0, e>0):
                 self.prediction_optimizer.state = self.reset_state.copy()
+                self.discriminator_optimizer.state = self.reset_state.copy()
 
         if verbose:
             mins, secs = divmod(time.time() - start_time, 60)
