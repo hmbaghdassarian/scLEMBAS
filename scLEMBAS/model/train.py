@@ -435,7 +435,7 @@ class TrainCat(TrainBase):
                                                         target_min = 0, target_max = self.hyper_params['uniform_max']) # uniform distribution
                 param_reg = self.mod.L2_reg(self.hyper_params['param_lambda_L2']) # all model weights and signaling network biases
 
-                prediction_loss += sign_reg + param_reg + stability_loss + uniform_reg
+                tot_pred_loss = prediction_loss + sign_reg + param_reg + stability_loss + uniform_reg
 
                 # regularization - Discriminator
                 for discriminator in self.discriminators.values():
@@ -443,14 +443,14 @@ class TrainCat(TrainBase):
                 
                 # gradient
                 discriminator_loss.backward(retain_graph = True)
-                prediction_loss.backward()
+                tot_pred_loss.backward()
                 self.mod.add_gradient_noise(noise_level = self.hyper_params['gradient_noise_scale'])
                 self.prediction_optimizer.step()
                 self.discriminator_optimizer.step()
 
                 # store
                 cur_eig.append(spectral_radius)
-                cur_loss.append(fit_loss.item())
+                cur_loss.append(prediction_loss.item())
 
             self.stats = utils.update_progress(self.stats, iter = e, loss = cur_loss, eig = cur_eig, learning_rate = cur_lr, 
                                         n_sign_mismatches = self.mod.signaling_network.count_sign_mismatch())

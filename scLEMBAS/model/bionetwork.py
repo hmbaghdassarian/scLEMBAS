@@ -92,9 +92,7 @@ class BioNetBase(nn.Module):
         self.edge_MOA = np_to_torch(edge_MOA, dtype=torch.bool, device = self.device)
 
         # initialize weights and biases
-        weights, bias_basal = self.initialize_weights()
-        self.weights = nn.Parameter(weights)
-        self.bias_basal = nn.Parameter(bias_basal)
+        self.initialize_weights()
         
         # activation function
         self.activation = activation_function_map[activation_function]['activation']
@@ -152,13 +150,12 @@ class BioNetBase(nn.Module):
             a torch.Tensor with randomly initialized values for each signaling network node
         """
 
-        weight_values, bias_basal = self.initialize_weight_values()
+        weight_values = self.initialize_weight_values()
         weights = torch.zeros(self.n_network_nodes, self.n_network_nodes, dtype=self.dtype, device = self.device) # adjacency matrix
         weights[self.edge_list] = weight_values
+        self.weights = nn.Parameter(weights)
         
         self.initialize_MOA()
-        
-        return weights, bias_basal
 
     def prescale_weights(self, target_radius: float = 0.8):
         """Scale weights according to spectral radius
@@ -349,8 +346,9 @@ class BioNetSimple(BioNetBase):
         for nt_idx in np.unique(network_targets):
             if torch.all(weight_values[network_targets == nt_idx]<0):
                 bias_basal.data[nt_idx] = 1
+        self.bias_basal = nn.Parameter(bias_basal)
 
-        return weight_values, bias_basal    
+        return weight_values   
     
     def make_mask(self):
         """Generates a mask for adjacency matrix for non-interacting nodes, for the mechanism of action (unknown weights), 
@@ -410,6 +408,7 @@ class BioNetSimple(BioNetBase):
 
         Y_full = X_new.T
         return Y_full
+    
 class BioNetCat(BioNetBase):
     """Builds the RNN on the signaling network topology, accounting for categorical covariates of the samples (e.g. cell line, genetic background, etc.)."""
     
@@ -425,9 +424,7 @@ class BioNetCat(BioNetBase):
                  bionet_params: Optional[Dict[str, float]] = None, 
                  dtype: torch.dtype=torch.float32, 
                 device: str = 'cpu', 
-                seed: int = 888):
-        """
-        """      
+                seed: int = 888):    
         
         # embed covariates needed for some methods called in super().__init__
         super().__init__(edge_list = edge_list, edge_MOA = edge_MOA, input_node_idx = input_node_idx, 
@@ -456,9 +453,10 @@ class BioNetCat(BioNetBase):
         weight_values = 0.1 + 0.1*torch.rand(n_interactions, dtype=self.dtype, device = self.device)
         weight_values[self.edge_MOA[1,:]] = -weight_values[self.edge_MOA[1,:]] # make those that are inhibiting negative
         
-        bias_basal = 1e-3*torch.ones((self.n_network_nodes_in, 1), dtype = self.dtype, device = self.device)
+        self.bias_basal = torch.zeros((self.n_network_nodes_in, 1), dtype = self.dtype, device = self.device, requires_grad = False) 
+        #1e-3*torch.ones((self.n_network_nodes_in, 1), dtype = self.dtype, device = self.device)
 
-        return weight_values, bias_basal
+        return weight_values
 
     def make_mask(self):
         """Generates a mask for adjacency matrix for non-interacting nodes, for the mechanism of action (unknown weights), 
@@ -531,6 +529,102 @@ class BioNetCat(BioNetBase):
         """Returns the covariates by index in torch.Tensor format for a specified list of samples.""" 
         return torch.tensor(self.covariates_idx.loc[sample_ids, :].values, device = self.device, dtype = torch.int64)
     
+
+    def forward(self, X_full: torch.Tensor, covariates_idx: torch.Tensor):
+        """Learn the edeg weights within the signaling network topology.
+
+        Parameters
+        ----------
+        X_full : torch.Tensor
+            the linearly scaled ligand inputs. Shape is (samples x network nodes). Output of ProjectInput.
+        covariates_idx : torch.Tensor
+            rows correspond to samples as in X_full. Each column represents one categorical covariate group. Values
+            in the columns represent the index mapping of the category label. Basically a rowsubset of `self.covariates_idx`.
+
+        Returns
+        -------
+        Y_full :  torch.Tensor
+            the signaling network scaled by learned interaction weights. Shape is (samples x network nodes).
+        """
+        # implement masks
+        self.weights.data.masked_fill_(mask = self.mask, value = 0.0) # fill non-interacting edges with 0
+#         self.bias_basal.data.masked_fill_(mask = self.bias_mask, value = 0.0)
+
+        bias_cats = torch.zeros_like(X_full.T, device = self.device, dtype = self.dtype)
+        # add categorical covariates
+        for cat_group_idx in range(covariates_idx.shape[1]):
+            cat_group = self._cat_group_idx[cat_group_idx]
+            self.cat_embeddings[cat_group].weight.data.masked_fill_(mask = self.cat_embeddings_mask[cat_group], 
+                                                                    value = 0.0)
+            bias_cats += self.cat_embeddings[cat_group](covariates_idx[:,cat_group_idx]).T
+    #             # the indexing above would be the equivalent of this:
+    #             embedding = self.cat_embeddings[cat_group].weight.clone()
+    #             one_hot = self.one_hot[cat_group][labels_idx].to(embedding.dtype)
+    #             bias_tot += torch.matmul(one_hot, embedding)
+        
+        bias_tot = self.bias_basal + bias_cats
+        X_bias = X_full.T + bias_tot # this is the bias with the projection_amplitude included
+        X_new = torch.zeros_like(X_bias) #initialize hidden state values at 0
+        
+        for t in range(self.bionet_params['max_steps']): # like an RNN, updating from previous time step
+            X_old = X_new
+            X_new = torch.mm(self.weights, X_new) # scale matrix by edge weights
+            X_new = X_new + X_bias  # add original values and bias       
+            X_new = self.activation(X_new, self.bionet_params['leak'])
+            
+            if (t % 10 == 0) and (t > 20):
+                diff = torch.max(torch.abs(X_new - X_old))    
+                if diff.lt(self.bionet_params['tolerance']):
+                    break
+
+        Y_full = X_new.T
+        return Y_full
+    
+class BioNetSC(BioNetCat):
+    """Builds the RNN on the signaling network topology, accounting for single-cell inputs."""
+    
+    DEFAULT_PARAMETERS = BioNetCat.DEFAULT_PARAMETERS
+
+    def __init__(self, edge_list: np.array, 
+                 edge_MOA: np.array, 
+                 input_node_idx: torch.Tensor,
+                 n_network_nodes: int, 
+                 covariates: pd.DataFrame,
+                 categorical_covariate_keys: List[str],
+                 activation_function: str = 'MML', 
+                 bionet_params: Optional[Dict[str, float]] = None, 
+                 dtype: torch.dtype=torch.float32, 
+                device: str = 'cpu', 
+                seed: int = 888):    
+        
+        # embed covariates needed for some methods called in super().__init__
+        super().__init__(edge_list = edge_list, edge_MOA = edge_MOA, input_node_idx = input_node_idx, 
+                         n_network_nodes = n_network_nodes, activation_function = activation_function, 
+                         bionet_params = bionet_params, dtype = dtype, device = device, seed = seed)
+
+
+    def initialize_weight_values(self):
+        """Initialize the RNN weight_values for all interactions in the signaling network.
+
+        Returns
+        -------
+        weight_values : torch.Tensor
+            a torch.Tensor with randomly initialized values for each signaling network interaction
+        bias : torch.Tensor
+            a torch.Tensor with randomly initialized values for each signaling network node
+        """
+        
+        network_targets = self.edge_list[0].numpy() # the target nodes receiving an edge
+        n_interactions = len(network_targets)
+
+        set_seeds(self.seed)
+        weight_values = 0.1 + 0.1*torch.rand(n_interactions, dtype=self.dtype, device = self.device)
+        weight_values[self.edge_MOA[1,:]] = -weight_values[self.edge_MOA[1,:]] # make those that are inhibiting negative
+        
+        self.bias_basal = nn.Parameter(1e-3*torch.ones((self.n_network_nodes_in, 1), 
+                                                       dtype = self.dtype, device = self.device))        #
+
+        return weight_values
 
     def forward(self, X_full: torch.Tensor, covariates_idx: torch.Tensor):
         """Learn the edeg weights within the signaling network topology.
