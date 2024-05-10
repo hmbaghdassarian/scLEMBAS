@@ -192,6 +192,7 @@ class BioNetBase(nn.Module):
         bionet_L2 : torch.Tensor
             the regularization term
         """
+        # cat embeddings in the cat one are already normalized
         bias_loss = lambda_L2 * torch.sum(torch.square(self.bias_basal))
         weight_loss = lambda_L2 * torch.sum(torch.square(self.weights))
 

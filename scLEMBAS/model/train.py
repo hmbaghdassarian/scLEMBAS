@@ -307,11 +307,12 @@ class TrainCat(TrainBase):
                  mod, 
                  prediction_optimizer: torch.optim, 
                  prediction_loss_fn: torch.nn.modules.loss,
-                 reset_epoch : int = 2,
+                 discriminator_optimizer: torch.optim,
+                 discriminator_params: Dict = CatDiscriminator.DEFAULT_HYPER_PARAMS,
                  hyper_params: Dict[str, Union[int, float]] = None,
                  train_split_frac: Dict = {'train': 0.8, 'test': 0.2, 'validation': None},
-                 train_seed: int = None,
-                 discriminator_params: Dict = CatDiscriminator.DEFAULT_HYPER_PARAMS):
+                 train_seed: int = None
+                 ):
         """See `TrainBase` for parameters. Additional parameters include:
         
         Parameters
@@ -335,9 +336,9 @@ class TrainCat(TrainBase):
                            y_out = self.mod.df_to_tensor(self.y_train).to('cpu'),
                            covariates_idx = self.mod.signaling_network.covariates_to_tensor(sample_ids = self.X_train.index))
         self.create_data_loader(train_data)
-        self.initialize_discriminator(discriminator_params)
+        self.initialize_discriminator(discriminator_params, discriminator_optimizer)
 
-    def initialize_discriminator(self, discriminator_params):
+    def initialize_discriminator(self, discriminator_params, discriminator_optimizer):
         discriminator_params['batch_momentum'] = None # bias is a vector in bulk; this should be eliminated in single-cell
         self.discriminators = nn.ModuleDict(
                         {
@@ -349,12 +350,13 @@ class TrainCat(TrainBase):
                             for covariate_cat, cat_embedding in self.mod.signaling_network.cat_embeddings.items()}
                     )
         
-#         # prediction optimizer contains the parameters for the the union of the generator and the signaling model
-        self.discriminator_optimizers = {cat: discriminator.optimizer(discriminator.parameters(), lr=1, weight_decay=0) \
-                                for cat, discriminator in self.discriminators.items()}
-#         self.discriminator_losses = {cat: discriminator.loss_fn() for cat, discriminator in self.discriminators.items()}
-
-
+        # prediction optimizer contains the parameters for the the union of the generator and the signaling model
+        # note, this combines all discriminator parameters into one optimizer
+        # may want to check back into this
+        discriminator_params = []
+        for discriminator in self.discriminators.values():
+            discriminator_params += list(discriminator.parameters())
+        self.discriminator_optimizer = discriminator_optimizer(discriminator_params, lr = 1, weight_decay = 0)
 
     def train_model(self, verbose: bool = True):
         """Train the model
@@ -379,8 +381,7 @@ class TrainCat(TrainBase):
             cur_lr = utils.get_lr(e, self.hyper_params['max_epochs'], max_height = self.hyper_params['learning_rate'],
                                 start_height=self.hyper_params['learning_rate']/10, end_height=1e-6, peak = 1000)
             self.prediction_optimizer.param_groups[0]['lr'] = cur_lr
-            for dopt in self.discriminator_optimizers.values():
-                dopt.param_groups[0]['lr'] = cur_lr
+            self.discriminator_optimizer.param_groups[0]['lr'] = cur_lr
 
             cur_loss = []
             cur_eig = []
@@ -392,8 +393,7 @@ class TrainCat(TrainBase):
                 self.mod.train()
                 
                 self.prediction_optimizer.zero_grad()
-                for dopt in self.discriminator_optimizers.values():
-                    dopt.zero_grad()
+                self.discriminator_optimizer.zero_grad()
 
                 X_in_, y_out_, covariates_idx_ = X_in_.to(self.mod.device), y_out_.to(self.mod.device), covariates_idx_.to(self.mod.device)
                 covariates_idx_ = covariates_idx_.to(self.mod.device)
@@ -438,7 +438,7 @@ class TrainCat(TrainBase):
                 prediction_loss += sign_reg + param_reg + stability_loss + uniform_reg
 
                 # regularization - Discriminator
-                for discriminator in self.discriminators.keys():
+                for discriminator in self.discriminators.values():
                     discriminator_loss += discriminator.L2_reg(self.hyper_params['discriminator_lambda_L2'])
                 
                 # gradient
@@ -446,8 +446,7 @@ class TrainCat(TrainBase):
                 prediction_loss.backward()
                 self.mod.add_gradient_noise(noise_level = self.hyper_params['gradient_noise_scale'])
                 self.prediction_optimizer.step()
-                for dopt in self.discriminator_optimizers.values():
-                    dopt.step()
+                self.discriminator_optimizer.step()
 
                 # store
                 cur_eig.append(spectral_radius)

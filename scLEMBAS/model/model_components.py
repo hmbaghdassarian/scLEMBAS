@@ -240,7 +240,7 @@ class CatDiscriminator(nn.Module):
     """
     
     DEFAULT_HYPER_PARAMS = {**FCLayers.DEFAULT_HYPER_PARAMS, 
-                            **{'n_hidden_nodes': [16, 16, 16], 'optimizer': torch.optim.Adam}}
+                            **{'n_hidden_nodes': [16, 16, 16]}}
     
     def __init__(
         self,
@@ -251,7 +251,6 @@ class CatDiscriminator(nn.Module):
         layer_norm: bool = False,
         dropout_rate: int | float = 0.1,
         activation_fn: nn.Module | None = nn.ReLU,
-        optimizer = torch.optim.Adam,
         dtype: torch.dtype=torch.float32,
         device: str = 'cpu'
     ):
@@ -276,8 +275,6 @@ class CatDiscriminator(nn.Module):
             If None, dropout is not added
         activation_fn : nn.Module | None, optional
             non-linear Pytorch activation function, by default nn.ReLU. No activation if set to None
-        optimizer : torch.optim, optional
-            optimizer to use for training, by default torch.optim.Adam
         dtype : torch.dtype, optional
             datatype to store values in torch, by default torch.float32
         device : str
@@ -293,8 +290,6 @@ class CatDiscriminator(nn.Module):
             out_features = 1
         else:
             raise ValueError('There are no distinct classes.')
-
-        self.optimizer = optimizer
 
         
         cat_layers = []
