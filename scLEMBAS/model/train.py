@@ -285,8 +285,12 @@ class TrainSimple(TrainBase):
             self.stats = utils.update_progress(self.stats, iter = e, loss = cur_loss, eig = cur_eig, learning_rate = cur_lr, 
                                         n_sign_mismatches = self.mod.signaling_network.count_sign_mismatch())
             
-            if verbose and e % (self.hyper_params['max_epochs']/100) == 0:
-                utils.print_stats(self.stats, iter = e)
+            if e % (self.hyper_params['max_epochs']/100) == 0:
+                for param in mod.parameters():
+                    if torch.isnan(param).any():
+                        raise ValueError('NaN values found in model parameters at epoch {}'.format(e))
+                if verbose:
+                    utils.print_stats(self.stats, iter = e)
             
             if np.logical_and(e % self.hyper_params['reset_optimizer_epoch'] == 0, e>0):
                 self.prediction_optimizer.state = self.reset_state.copy()
@@ -406,8 +410,12 @@ class TrainCat(TrainBase):
             self.stats = utils.update_progress(self.stats, iter = e, loss = cur_loss, eig = cur_eig, learning_rate = cur_lr, 
                                         n_sign_mismatches = self.mod.signaling_network.count_sign_mismatch())
 
-            if verbose and e % (self.hyper_params['max_epochs']/100) == 0:
-                utils.print_stats(self.stats, iter = e)
+            if e % (self.hyper_params['max_epochs']/100) == 0:
+                for param in mod.parameters():
+                    if torch.isnan(param).any():
+                        raise ValueError('NaN values found in model parameters at epoch {}'.format(e))
+                if verbose:
+                    utils.print_stats(self.stats, iter = e)
 
             if np.logical_and(e % self.hyper_params['reset_optimizer_epoch'] == 0, e>0):
                 self.prediction_optimizer.state = self.reset_state.copy()
@@ -576,8 +584,12 @@ class TrainSC(TrainBase):
             self.stats = utils.update_progress(self.stats, iter = e, loss = cur_loss, eig = cur_eig, learning_rate = cur_lr, 
                                         n_sign_mismatches = self.mod.signaling_network.count_sign_mismatch())
 
-            if verbose and e % (self.hyper_params['max_epochs']/100) == 0:
-                utils.print_stats(self.stats, iter = e)
+            if e % (self.hyper_params['max_epochs']/100) == 0:
+                for param in mod.parameters():
+                    if torch.isnan(param).any():
+                        raise ValueError('NaN values found in model parameters at epoch {}'.format(e))
+                if verbose:
+                    utils.print_stats(self.stats, iter = e)
 
             if np.logical_and(e % self.hyper_params['reset_optimizer_epoch'] == 0, e>0):
                 self.prediction_optimizer.state = self.reset_state.copy()
