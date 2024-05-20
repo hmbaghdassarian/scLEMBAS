@@ -374,14 +374,16 @@ class BioNetSimple(BioNetBase):
         # or have an unknown mechanism of action masked (True)
         self.mask_MOA = self.weights_MOA == 0
 
-    def forward(self, X_full: torch.Tensor):
+    def forward(self, X_full: torch.Tensor, covariates_idx = None):
         """Learn the edeg weights within the signaling network topology.
 
         Parameters
         ----------
         X_full : torch.Tensor
             the linearly scaled ligand inputs. Shape is (samples x network nodes). Output of ProjectInput.
-
+        covariates_idx : None
+            no value required here and it will not be used, 
+            this simply serves as a placeholder to generically work with SignalingModel.forward
         Returns
         -------
         Y_full :  torch.Tensor
@@ -539,7 +541,7 @@ class BioNetCat(BioNetBase):
             the linearly scaled ligand inputs. Shape is (samples x network nodes). Output of ProjectInput.
         covariates_idx : torch.Tensor
             rows correspond to samples as in X_full. Each column represents one categorical covariate group. Values
-            in the columns represent the index mapping of the category label. Basically a rowsubset of `self.covariates_idx`.
+            in the columns represent the index mapping of the category label. This should be a row-wise subset of `self.covariates_idx`, which can also be obtained from `self.covariates_to_tensor()`
 
         Returns
         -------

@@ -198,7 +198,7 @@ class SignalingModel(torch.nn.Module):
         """Converts a pandas dataframe to the appropriate torch.tensor"""
         return torch.tensor(df.values.copy(), dtype=self.dtype, device = self.device)
 
-    def forward(self, X_in, categories: Optional[Dict[str, List[str]]] = None):
+    def forward(self, X_in, covariates_idx: torch.Tensor):
         """Forward pass of the model.Linearly scales ligand inputs, learns weights for signaling network interactions, 
         and transforms this to TF activity. See `forward` methods of each layer for details.
 
@@ -206,13 +206,12 @@ class SignalingModel(torch.nn.Module):
         ----------
         X_in : torch.tensor
             input ligand values 
-        categories : Optional[Dict[str, List[str]]], optional
-            a dictionary with keys as the category group and values as the 
-            category label for each corresponding sample in `X_in`, by default None
-            Only required if considering categorical covariates and using the autoencoder.
+        covariates_idx : torch.Tensor
+            rows correspond to samples as in X_full. Each column represents one categorical covariate group. Values
+            in the columns represent the index mapping of the category label. This should be a row-wise subset of `signaling_network.covariates_idx`, which can also be obtained from `signaling_network.covariates_to_tensor()`
         """
         X_full = self.input_layer(X_in) # input ligands to signaling network
-        Y_full = self.signaling_network(X_full) # RNN of full signaling network
+        Y_full = self.signaling_network(X_full, covariates_idx) # RNN of full signaling network
         Y_hat = self.output_layer(Y_full)
 
         return Y_hat, Y_full
