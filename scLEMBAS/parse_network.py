@@ -3,69 +3,216 @@ Appropriately format the signaling network topology to be used as input to the m
 """
 
 import itertools
-from typing import Literal, Union, List 
+from typing import Literal, Union, List, Any 
 from tqdm import tqdm
+import warnings
 
 import omnipath as op
 import pandas as pd
 import numpy as np
 import networkx as nx
 
-ppi_link = 'https://zenodo.org/records/10823116/files/organism_omnipath_ppi_03_15_24.csv'
+ppi_link = 'https://zenodo.org/records/11284465/files/organism_omnipath_ppi_05_24_24.csv'
 
 def load_network(network_type: str = 'omnipath', 
                  organism: Literal['human', 'rat', 'mouse'] = 'human',
-                static: bool = True):
+                static: bool = True, 
+                fill_na: bool = True):
     """Loads a full PPI network from Omnipath.
 
     Parameters
     ----------
     network_type : str, optional
-        _description_, by default 'omnipath'
+        resource from which to get network, by default 'omnipath'
     organism : Literal['human', 'rat', 'mouse'], optional
         which organism genes should be derived from, by default 'human'
     static : bool, optional
         whether to download a static (from 03/15/24) version of the Omnipath PPI DB or the most current, by default True
         for stable results and consistency with downstream analyses, recommended to use static = True
+    fill_na : bool, optional
+        whether to fill the "n_references" and "curation_effort" columns that have NA values with a minimum value. Useful for 
+        future thresholding, by default True. 
     
     Returns
     -------
     sn_ppis : pd.DataFrame
-        an edge list representing the signaling network
+        an edge list representing the signaling network (likely a superset of the signaling network, since considering all PPIs)
     """
 
     
     if network_type == 'omnipath': 
-        if not static:
-            sn_ppis = op.interactions.OmniPath().get(genesymbols = True, organisms = organism)
-        else:
-            sn_ppis = pd.read_csv(ppi_link.replace('organism', organism), index_col = 0) # static PPI as of 03/15/24
+        if not static: # from https://workflows.omnipathdb.org/networks-py.html
+            sn_ppis = op.interactions.PostTranslational.get(genesymbols = True, directed = True, organism = organism)
+        else: # same command as not static above, but generated on 05/24/24 (to ensure reproducibility)
+            sn_ppis = pd.read_csv(ppi_link.replace('organism', organism), index_col = 0) 
     else:
         raise ValueError('Only omnipath networks can be loaded right now')
+
+    # fill threshold values with less than the minimum
+    sn_ppis['n_references'] = sn_ppis.n_references.fillna(sn_ppis.n_references.min() - 1)
+    sn_ppis['curation_effort'] = sn_ppis.curation_effort.fillna(sn_ppis.curation_effort.min() - 1)
+    return sn_ppis
+
+def flatten_list(list1: List[List[Any]]) -> list:
+    """Create a single list from a  list of lists.
+
+    Parameters
+    ----------
+    list1 : List[List[Any]]
+        a list of lists
+
+    Returns
+    -------
+    list
+        a single list
+    """
+    # https://stackoverflow.com/questions/952914/how-to-make-a-flat-list-out-of-list-of-lists
+    return [item for sublist in list1 for item in sublist]
+
+def drop_duplicate_interactions(sn_ppis: pd.DataFrame, 
+                             source_label: str = 'source_genesymbol',
+                             target_label: str = 'target_genesymbol',
+                             stimulation_label: str = 'consensus_stimulation',
+                             inhibition_label: str = 'consensus_inhibition'):
+    """Systematically aggregate any duplicate interactions between the source and target node. 
+
+    Parameters
+    ----------
+    sn_ppis : pd.DataFrame
+        an edge list representing the signaling network, output of `scLEMBAS.parse_network.load_network`
+    source_label : str
+        the column label for source nodes in the graph, by default 'source_genesymbol'
+    target_label : str
+        the column label for the target node in the graph, by default 'target_genesymbol'
+    stimulation_label : str, optional
+        column name of stimulating interactions, see `sn_ppis`, by default 'consensus_stimulation'
+    inhibition_label : str, optional
+        column name of inhibitory interactions, see `sn_ppis`, by default 'consensus_inhibition'
+
+    Returns
+    -------
+    sn_ppis : pd.DataFrame
+        a copy of the input interaction network with duplicates aggregated
+    """
+
+    sn_ppis = sn_ppis.copy()
+    duplicated_interactions = sn_ppis[sn_ppis.duplicated(subset = [source_label, target_label], keep='first')].drop_duplicates(subset = [source_label, target_label])
+    unique_vals = pd.DataFrame(columns = sn_ppis.columns)
+    drop_indeces = []
+    for idx in duplicated_interactions.index:
+        source = duplicated_interactions.loc[idx, source_label]
+        target = duplicated_interactions.loc[idx, target_label]
+
+        dup_int = sn_ppis[(sn_ppis[source_label] == source) & (sn_ppis[target_label] == target)].copy()
+        drop_indeces += dup_int.index.tolist()
+        dup_int.reset_index(inplace = True, drop = True)
+
+        if (dup_int[[source_label, target_label, stimulation_label, inhibition_label, 'n_references', 'curation_effort', 'references' ]].nunique() == 1).all():
+            dup_int = pd.DataFrame(dup_int.iloc[0, :]).T
+        else:
+            # filter by n_references
+            dup_int = dup_int[dup_int.n_references == dup_int.n_references.max()]
+            # filter by curation effort
+            if dup_int.shape[0] > 1:
+                dup_int = dup_int[dup_int.curation_effort == dup_int.curation_effort.max()]
+            # merge remaining
+            if dup_int.shape[0] > 1:
+                if dup_int[stimulation_label].nunique() > 1:
+                    dup_int[stimulation_label] = False
+                if dup_int[inhibition_label].nunique() > 1:
+                    dup_int[stimulation_label] = False
+                references = sorted(set(flatten_list([ref.split(';') if not (type(ref) == float and np.isnan(ref)) else [ref] for ref in dup_int.references.tolist()])))
+                references = [ref for ref in references if not (type(ref) == float and np.isnan(ref))]
+                n_references = len(references)
+                dup_int = dup_int.iloc[0, :]
+                dup_int['n_references'] = n_references
+                dup_int['references'] = ';'.join(references) if len(references) > 0 else np.nan
+                dup_int = pd.DataFrame(dup_int).T
+        if dup_int.shape[0] != 1:
+            raise ValueError('There are still duplicated interactions')
+
+        unique_vals = pd.concat([unique_vals, dup_int], axis = 0)
+
+    sn_ppis.drop(index = drop_indeces, inplace = True)
+    sn_ppis = pd.concat([sn_ppis, unique_vals], axis = 0)
+    sn_ppis.reset_index(inplace = True, drop = True)
+    if sn_ppis.duplicated(subset = [source_label, target_label]).any():
+        raise ValueError('Interaction DB still has duplicates')
+
+    return sn_ppis
+
+def add_omnipath_interaction(interactions_to_add: str | List[str], sn_ppis: pd.DataFrame, 
+                             source_label: str = 'source_genesymbol',
+                             target_label: str = 'target_genesymbol',
+                             stimulation_label: str = 'consensus_stimulation',
+                             inhibition_label: str = 'consensus_inhibition'):
+    """Adds custom interactions to Omnipath PPI network output from `load_network`.
+    Note, Assumes the mode of action is unknown. 
+    Note, adds the resource type as "Custom", so must include this in the `resources` argument of `extract_network` to retain the interaction.
+
+    Parameters
+    ----------
+    interactions_to_add : str | List[str]
+        the source and target to add in the format "<source_id>-<target_id>"; can be a list of targets
+    sn_ppis : pd.DataFrame
+        output of `scLEMBAS.parse_network.load_network`
+    source_label : str
+        the column label for source nodes in the graph, by default 'source_genesymbol'
+    target_label : str
+        the column label for the target node in the graph, by default 'target_genesymbol'
+    stimulation_label : str, optional
+        column name of stimulating interactions, see `sn_ppis`, by default 'consensus_stimulation'
+    inhibition_label : str, optional
+        column name of inhibitory interactions, see `sn_ppis`, by default 'consensus_inhibition'
+    """
+    if type(interactions_to_add) == str:
+        interactions_to_add = [interactions_to_add]
+
+    for interaction in interactions_to_add:
+        source, target = interaction.split('-')
     
+        # add the interaction
+        init = [np.nan]*sn_ppis.shape[1]
+        init[sn_ppis.columns.tolist().index(source_label)] = source
+        init[sn_ppis.columns.tolist().index(target_label)] = target
+        init[sn_ppis.columns.tolist().index(stimulation_label)] = False
+        init[sn_ppis.columns.tolist().index(inhibition_label)] = False
+    
+        # ensure that these PPIs will not be filtered
+        init[sn_ppis.columns.tolist().index('sources')] = 'Custom'
+        init[sn_ppis.columns.tolist().index('curation_effort')] = np.inf
+        init[sn_ppis.columns.tolist().index('n_references')] = np.inf
+        init[sn_ppis.columns.tolist().index('is_directed')] = True
+    
+        sn_ppis.loc[sn_ppis.shape[0], :] = init
+
     return sn_ppis
 
 def extract_network(sn_ppis: pd.DataFrame, 
                               curation_effort_thresh: int = 5, n_references_thresh: int = 3,
-                              resources: Union[List, str] = ['HuRI','IntAct','KEGG-MEDICUS','NetPath','Reactome_SignaLink3','SPIKE','SignaLink3','SIGNOR', 
-                                                            'Baccin2019', 'Ramilowski2015', 'Reactome_LRdb', 'UniProt_LRdb', 'CellChatDB', 'CellPhoneDB', 'connectomeDB2020', 'scConnect'],
+                              resources: Union[List, str] = 'all',
                             drop_self: bool = True,
+                             source_label: str = 'source_genesymbol',
+                             target_label: str = 'target_genesymbol',
                              verbose: bool = True):
     """Various filters on the ppi network.
 
     Parameters
     ----------
     sn_ppis : pd.DataFrame
-        an edge list representing the signaling network, output of `load_signaling_network`
+        an edge list representing the signaling network
     curation_effort_thresh : int, optional
         threshold of curation effort to retain interaction, by default 5
     n_references_thresh : int, optional
         threshold of number of references to retain interaction, by default 3
     resources : Union[List, str], optional
-        resources from which to retain interactions, by default ['HuRI','IntAct','KEGG-MEDICUS','NetPath','Reactome_SignaLink3','SPIKE','SignaLink3','SIGNOR']
-        if None or 'all', will not filter for resources
-    verbose : bool, optional
+        resources from which to retain interactions, by default 'all' which won't filter out resources
+    drop_self : bool, optional
         get rid of self-interacting nodes, by default True
+    source_label : str
+        the column label for source nodes in the graph, by default 'source_genesymbol'
+    target_label : str
+        the column label for the target node in the graph, by default 'target_genesymbol'
     verbose : bool, optional
         print status of network extraction, by default True
 
@@ -89,13 +236,12 @@ def extract_network(sn_ppis: pd.DataFrame,
             n_int_c = sn_ppis.shape[0]
             print('The resources filtered {}  of {} interactions'.format(n_int_b - n_int_c, n_int_b))
 
-    sn_ppis.drop_duplicates(subset = ['source', 'target'], keep = False, inplace = True)
     if drop_self:
-        sn_ppis = sn_ppis[sn_ppis[['source', 'target']].apply(lambda x: x.nunique() == 2, axis = 1)]
+        sn_ppis = sn_ppis[sn_ppis[[source_label, target_label]].apply(lambda x: x.nunique() == 2, axis = 1)]
 
     return sn_ppis
 
-def fully_connected_network(sn_ppis: pd.DataFrame, ligand_labels: List[str], tf_labels: List[str], source_label: str, target_label: str, 
+def create_connected_network(sn_ppis: pd.DataFrame, ligand_labels: List[str], tf_labels: List[str], source_label: str, target_label: str, 
                            path_finder: Literal['all', 'shortest', 'connected'] = 'connected'):
     """Filter the input network for those interactions that provide full paths between ligands and transcription factors. 
 
@@ -164,6 +310,126 @@ def fully_connected_network(sn_ppis: pd.DataFrame, ligand_labels: List[str], tf_
         sn_ppis = sn_ppis[sn_ppis[[source_label, target_label]].apply(lambda row: row.isin(both_connected).all(), axis=1)]
         
     return sn_ppis
+
+import warnings
+
+def stringent_connected_network(all_ppis: pd.DataFrame,
+                                input_labels: List[str], 
+                                output_labels: List[str], 
+                                threshold_on: Literal['n_references', 'curation_effort']  = 'n_references',
+                                min_curation_effort: int = None, 
+                               min_references_thresh: int = None, 
+                               resources: str = 'all', 
+                               drop_self: bool = True,
+                                source_label: str = 'source_genesymbol',
+                                target_label: str = 'target_genesymbol', 
+                               path_finder: Literal['all', 'shortest', 'connected'] = 'connected'):
+
+    """
+    Creates the most "stringent" extracted network that still contains all input nodes connected to atleast one output node, 
+    if possible. Stringency is defined by thresholding on the number of references or curation effort. 
+
+    This can replace `extract_network` and `create_connected_network` .
+
+    Parameters
+    ----------
+    all_ppis : pd.DataFrame
+        the input signaling network 
+    input_labels : List[str]
+        the list of input nodes to the signaling network (e.g., ligands)
+    output_labels : List[str]
+        the list of output nodes to the signaling network (e.g., transcription factors)
+    threshold_on : Literal['n_references', 'curation_effort']
+        whether to threshold on the references or the curation threshold, by default 'n_references'
+        The two values are highly correlated and should give similar results. 
+    min_curation_effort : int, optional
+        the starting threshold for the curation effort, by default not thresholded
+    min_references_thresh : int, optional
+        the starting threshold for the number of references, by default not thresholded
+    resources : Union[List, str], optional
+        resources from which to retain interactions, by default 'all' which won't filter out resources
+    drop_self : bool, optional
+        whether to drop self-interacting nodes, by default True
+    source_label : str
+        the column label for source nodes in the graph, by default 'source_genesymbol'
+    target_label : str
+        the column label for the target node in the graph, by default 'target_genesymbol'
+    path_finder : Literal['all', 'shortest', 'connected']], optional
+        method by which to identify the interactions to retain, by default 'connected'. Options include: 
+            - 'all': filter interactions by finding all paths between the sources and targets (can be very slow)
+            - 'shortest': filter interactions by finding the shortest path between the sources and targets
+            - 'connected': filter interactions by finding those that contain nodes which are connected to both the sources and the targets
+
+    Returns
+    -------
+    sn_ppis : pd.DataFrame
+        an edge list representing the filtered signaling network at its most stringent threshold
+    n_references_thresh : int
+        the final threshold for the number of references
+    curation_effort_thresh : int
+        the final threshold for the curation effort
+    """
+                                   
+
+    ppi_list = []
+    if all_ppis.n_references.isna().any():
+        all_ppis['n_references'] = all_ppis.n_references.fillna(all_ppis.n_references.min() - 1)
+    if all_ppis.curation_effort.isna().any():
+        all_ppis['curation_effort'] = all_ppis.curation_effort.fillna(all_ppis.curation_effort.min() - 1)
+    
+    # setting to min is the same as no thresholds, so start at + 1
+    if not min_curation_effort: 
+        curation_effort_thresh = all_ppis.curation_effort.min() # this starts at no thresholding
+    else:
+        curation_effort_thresh = min_curation_effort
+    
+    if not min_references_thresh: 
+        n_references_thresh = all_ppis.n_references.min() # this starts at no thresholding
+    else:
+        n_references_thresh = min_references_thresh
+    
+    
+    all_nodes_ = sorted(set(all_ppis[source_label].tolist() + all_ppis[target_label].tolist()))
+    if len(set(input_labels).difference(all_nodes_)) != 0:
+        warnings.warn('Not all input_labels are in the starting network')
+    
+    counter = 0
+    # filter for most stringent n_references threshold
+    while len(set(input_labels).difference(all_nodes_)) == 0 and len(set(output_labels).intersection(all_nodes_)) >= 1: # while extracted network still has full paths for every ICD to atleast one TF
+        print('Iteration: {}'.format(counter))
+        sn_ppis = extract_network(all_ppis.copy(), curation_effort_thresh = curation_effort_thresh, 
+                                  n_references_thresh = n_references_thresh,
+                                  resources = resources, 
+                                  drop_self = drop_self, 
+                                  source_label = source_label, 
+                                  target_label = target_label,
+                                  verbose = False)
+        sn_ppis = create_connected_network(sn_ppis, input_labels, output_labels, source_label = source_label, target_label = target_label, 
+                               path_finder = path_finder)
+        all_nodes_ = sorted(set(sn_ppis[source_label].tolist() + sn_ppis[target_label].tolist()))
+        if counter == 0 and (len(set(input_labels).difference(all_nodes_)) != 0 or len(set(output_labels).intersection(all_nodes_)) == 0):
+            warnings.warn('There are disconnected input_labels in the starting signaling network with default thresholds')
+    
+        if threshold_on == 'n_references':
+            n_references_thresh += 1
+        elif threshold_on == 'curation_effort':
+            curation_effort_thresh += 1
+    
+        ppi_list.append(sn_ppis)
+    
+        counter += 1
+    
+    if threshold_on == 'n_references':
+        n_references_thresh -= 2
+    elif threshold_on == 'curation_effort':
+        curation_effort_thresh -= 2
+    
+    if len(ppi_list) > 1:
+        sn_ppis = ppi_list[-2]
+    else: # situation in which the first iteration already filtered out many nodes
+        sn_ppis = ppi_list[0]
+
+    return sn_ppis, n_references_thresh, curation_effort_thresh
 
 def format_network(sn_ppis: pd.DataFrame, 
                    weight_label: str = 'mode_of_action', 
