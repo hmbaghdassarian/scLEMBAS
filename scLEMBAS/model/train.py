@@ -5,6 +5,7 @@ from typing import Dict, List, Union, Optional
 import time
 from tqdm import trange
 import warnings
+import logging
 
 import numpy as np
 from sklearn.model_selection import train_test_split
@@ -17,6 +18,16 @@ import scLEMBAS.utilities as utils
 from .model_utilities import update_with_defaults
 from .bionetwork import BioNetSimple, BioNetCat
 from .model_components import CatDiscriminator
+
+# configure logger
+if not logging.getLogger().hasHandlers():
+    logging.basicConfig(filename='train.log', level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
+else:
+    handler = logging.FileHandler('train.log')
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    handler.setFormatter(formatter)
+    logging.getLogger().addHandler(handler)
+    logging.getLogger().setLevel(logging.ERROR)
 
 class ModelData(Dataset):
     def __init__(self, X_in: torch.tensor, y_out: torch.tensor, covariates_idx: Optional[torch.tensor] = None):
@@ -286,14 +297,20 @@ class TrainSimple(TrainBase):
                                         n_sign_mismatches = self.mod.signaling_network.count_sign_mismatch())
             
             if e % (self.hyper_params['max_epochs']/100) == 0:
-                for param in mod.parameters():
+                param_names = []
+                for name, param in self.mod.named_parameters():
                     if torch.isnan(param).any():
-                        raise ValueError('NaN values found in model parameters at epoch {}'.format(e))
+                        param_names.append(name)
+                if len(param_names) > 0:
+                    log_error = 'NaN values found in model parameters at epoch {}'.format(e)
+                    log_error += ' for layers ' + ', '.join(param_names)
+                    logging.error(log_error)
+                    raise ValueError('NaN values found in model parameters at epoch {}'.format(e))
                 if verbose:
                     utils.print_stats(self.stats, iter = e)
-            
-            if np.logical_and(e % self.hyper_params['reset_optimizer_epoch'] == 0, e>0):
-                self.prediction_optimizer.state = self.reset_state.copy()
+
+                if np.logical_and(e % self.hyper_params['reset_optimizer_epoch'] == 0, e>0):
+                    self.prediction_optimizer.state = self.reset_state.copy()
 
         if verbose:
             mins, secs = divmod(time.time() - start_time, 60)
@@ -411,14 +428,20 @@ class TrainCat(TrainBase):
                                         n_sign_mismatches = self.mod.signaling_network.count_sign_mismatch())
 
             if e % (self.hyper_params['max_epochs']/100) == 0:
-                for param in mod.parameters():
+                param_names = []
+                for name, param in self.mod.named_parameters():
                     if torch.isnan(param).any():
-                        raise ValueError('NaN values found in model parameters at epoch {}'.format(e))
+                        param_names.append(name)
+                if len(param_names) > 0:
+                    log_error = 'NaN values found in model parameters at epoch {}'.format(e)
+                    log_error += ' for layers ' + ', '.join(param_names)
+                    logging.error(log_error)
+                    raise ValueError('NaN values found in model parameters at epoch {}'.format(e))
                 if verbose:
                     utils.print_stats(self.stats, iter = e)
 
-            if np.logical_and(e % self.hyper_params['reset_optimizer_epoch'] == 0, e>0):
-                self.prediction_optimizer.state = self.reset_state.copy()
+                if np.logical_and(e % self.hyper_params['reset_optimizer_epoch'] == 0, e>0):
+                    self.prediction_optimizer.state = self.reset_state.copy()
 
         if verbose:
             mins, secs = divmod(time.time() - start_time, 60)
@@ -585,9 +608,15 @@ class TrainSC(TrainBase):
                                         n_sign_mismatches = self.mod.signaling_network.count_sign_mismatch())
 
             if e % (self.hyper_params['max_epochs']/100) == 0:
-                for param in mod.parameters():
+                param_names = []
+                for name, param in self.mod.named_parameters():
                     if torch.isnan(param).any():
-                        raise ValueError('NaN values found in model parameters at epoch {}'.format(e))
+                        param_names.append(name)
+                if len(param_names) > 0:
+                    log_error = 'NaN values found in model parameters at epoch {}'.format(e)
+                    log_error += ' for layers ' + ', '.join(param_names)
+                    logging.error(log_error)
+                    raise ValueError('NaN values found in model parameters at epoch {}'.format(e))
                 if verbose:
                     utils.print_stats(self.stats, iter = e)
 

@@ -13,6 +13,7 @@ from decoupler.pre import extract
 def get_tf_activity(adata, organism: str, grn = 'collectri', 
                     verbose: bool = True, min_n: int = 5, use_raw: bool = False,
                     filter_pvals: bool = False, pval_thresh: float = 0.05,
+                    hvg: bool = False, 
                     **kwargs):
     """Wrapper of decoupler to estimate TF activity from single-cell transcriptomics data.
 
@@ -35,17 +36,22 @@ def get_tf_activity(adata, organism: str, grn = 'collectri',
         whether to set TF activity estimates to 0 if it is insignificant according to pval_thresh
     pval_thresh : float
         significance threshold, by default 0.05. Used in conjunction with filter_pvals.
+    hvg : bool
+        whether to filter for HVGs (stored in `adata.var['highly_variable']`) prior to TF activity inference
     kwargs : 
         passed to  `decoupler.decouple`.
 
     Returns
     -------
     estimate : DataFrame
-        Consensus TF activity scores. Stored in `.obsm['consensus_estimate']`.
+        Consensus TF activity scores. Stored in `adata.obsm['consensus_estimate']`.
     pvals : DataFrame
-        Obtained TF activity p-values. Stored in `.obsm['consensus_pvals']`.
+        Obtained TF activity p-values. Stored in `adata.obsm['consensus_pvals']`.
     """
-
+    
+    if hvg:
+        adata = adata[:, adata.var['highly_variable']]
+    
     grn_map = {'collectri': dc.get_collectri, 'dorothea': dc.get_dorothea} # get_dorothea returns "A" confidence by default
     net = grn_map[grn](organism=organism, split_complexes=False) # builds on dorothea, used by Saez-Rodriguez lab
 
