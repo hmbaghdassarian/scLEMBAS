@@ -58,9 +58,10 @@ def write_tfad(tf_adata: anndata.AnnData, file_name: str):
     file_name : str
         full path and file name to write tf_adata
     """
-    if 'pca_mod' in tf_adata.uns['pca']:
-        write_pickled_object(tf_adata.uns['pca']['pca_mod'], file_name.replace('.h5ad', '.pickle'))
-    del tf_adata.uns['pca']['pca_mod']
+    if 'pca' in tf_adata.uns:
+        if 'pca_mod' in tf_adata.uns['pca']:
+            write_pickled_object(tf_adata.uns['pca']['pca_mod'], file_name.replace('.h5ad', '.pickle'))
+            del tf_adata.uns['pca']['pca_mod']
     tf_adata.write_h5ad(os.path.join(file_name))
 
 def read_tfad(file_name: str):

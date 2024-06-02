@@ -1,14 +1,29 @@
 """
 Preprocessing functions for single-cell AnnData objects.
 """
-import pandas as pd
+import itertools
+from itertools import repeat
+import multiprocessing
+from tqdm import tqdm
+import warnings
+from typing import Literal
+
+
 import numpy as np
-from anndata import AnnData
-import scanpy as sc
+import pandas as pd
+from scipy.stats import mannwhitneyu, ttest_ind
+from scipy import stats
+import statsmodels.stats.multitest as smm
+from cliffs_delta import cliffs_delta
+
 from sklearn.decomposition import PCA
 from kneed import KneeLocator
 import decoupler as dc
 from decoupler.pre import extract
+
+from anndata import AnnData
+import scanpy as sc
+
 
 def get_tf_activity(adata, organism: str, grn = 'collectri', 
                     verbose: bool = True, min_n: int = 5, use_raw: bool = False,
@@ -50,7 +65,9 @@ def get_tf_activity(adata, organism: str, grn = 'collectri',
     """
     
     if hvg:
-        adata = adata[:, adata.var['highly_variable']]
+        adata = adata[:, adata.var['highly_variable']].copy()
+    else:
+        adata = adata.copy()
     
     grn_map = {'collectri': dc.get_collectri, 'dorothea': dc.get_dorothea} # get_dorothea returns "A" confidence by default
     net = grn_map[grn](organism=organism, split_complexes=False) # builds on dorothea, used by Saez-Rodriguez lab
@@ -84,6 +101,34 @@ def get_tf_activity(adata, organism: str, grn = 'collectri',
             
         adata.obsm[estimate_key[0]][adata.obsm[pvals_key[0]] > pval_thresh] = 0
 
+    return adata
+
+def tf_to_adata(adata: AnnData, estimate_key: str = 'consensus_estimate'):
+    """Converts the TF activity results from `get_tf_activity` into its own AnnData object. 
+
+    Parameters
+    ----------
+    adata : AnnData
+        AnnData object with TF activity scores stored in `.obsm[estimate_key]`.
+    estimate_key : str, optional
+        `.obsm` key under which TF activity is stored, by default 'consensus_estimate'
+    Returns
+    -------
+    tf_adata : AnnData
+        AnnData object with input TF activity estimates stored in `.X`.
+    """
+
+    tf_adata = AnnData(X = adata.obsm[estimate_key], obs = adata.obs.copy())
+    
+    all_na = np.isnan(tf_adata.X).all(axis=0)
+    n_dropped = len(np.where(all_na)[0])
+    if n_dropped > 0:
+        tf_adata = tf_adata[:,np.where(~all_na)[0]]
+        warnings.warn('{} TFs with all NA scores were dropped'.format(n_dropped))
+    
+    return tf_adata        
+        
+        
 def _pca_simple(adata: AnnData, n_components: int = 50, random_state: int = 888):
     """Minimal re-implementation of scanpy's PCA with default parameters that returns the pca object.
 
@@ -146,31 +191,23 @@ def _compute_elbow(adata, curve='convex', direction='decreasing', **kwargs):
     rank = kneedle.elbow
     return rank
 
-def embed_tf_activity(adata: AnnData, estimate_key: str = 'consensus_estimate', scanpy_pca: bool = False):
+def embed_tf_activity(tf_adata: AnnData, scanpy_pca: bool = False):
     """Runs dimensionality reduction and clustering of cells from their TF activity using default scanpy parameters.
 
     Parameters
     ----------
     adata : AnnData
-        AnnData object with TF activity scores stored in `.obsm[estimate_key]`.
-    estimate_key : str, optional
-        `.obsm` key under which TF activity is stored, by default 'consensus_estimate'
-        if None, assumes that the anndata object contains the TF activity in `X` 
+        AnnData object with TF activity scores stored in `.X`
     scanpy_pca : bool, optional
-        whether to youse scanpy's PCA (True) or sklearn (False), by default False
+        whether to use scanpy's PCA (True) or sklearn (False), by default False
         Using scanpy's, sometimes projecting single vectors into PCA space causes issues which can be avoided with sklearn
 
     Returns
     -------
     tf_adata : AnnData
-        AnnData object with input TF activity estimates stored in `.X`, and dimensionality reduction and clustering outputs stored
-        in default scanpy locations. Cluster labels on TF activity space are stores in `adata.obs['TF_clusters']`
+        AnnData object with dimensionality reduction and clustering outputs stored in default scanpy locations. 
+        Cluster labels on TF activity space are stores in `adata.obs['TF_clusters']`
     """
-
-    if not estimate_key:
-        tf_adata = adata
-    else:
-        tf_adata = AnnData(adata.obsm[estimate_key])
 
     if scanpy_pca:
         sc.tl.pca(data = tf_adata)
@@ -189,7 +226,224 @@ def embed_tf_activity(adata: AnnData, estimate_key: str = 'consensus_estimate', 
 
     tf_adata.obs.rename(columns = {'leiden': 'TF_clusters'}, inplace = True)
 
-    if estimate_key:
-        tf_adata.obs = pd.concat([adata.obs, tf_adata.obs], axis = 1)
+def _get_pairwise_distance(X: pd.DataFrame, 
+                          md: pd.DataFrame, 
+                          label: str, 
+                         comb):
+    samples_1 = md[md[label] == comb[0]].index.tolist()
+    samples_2 = md[md[label] == comb[1]].index.tolist()
 
-    return tf_adata
+    pairwise_distances = np.sqrt(((X.loc[samples_1,:].values[:, np.newaxis] - X.loc[samples_2,:].values) ** 2).sum(axis=2))
+#     pairwise_distances = pd.DataFrame(pairwise_distances, index = samples_1, columns = samples_2)
+    
+    return pairwise_distances
+
+def cohen_d(vector_1, vector_2):
+    # Calculate the means of the two vectors
+    mean1 = np.mean(vector_1)
+    mean2 = np.mean(vector_2)
+
+    # Calculate the standard deviations of the two vectors
+    std1 = np.std(vector_1, ddof=1)
+    std2 = np.std(vector_2, ddof=1)
+
+    # Calculate the pooled standard deviation
+    n1 = len(vector_1)
+    n2 = len(vector_2)
+    pooled_std = np.sqrt(((n1 - 1) * std1**2 + (n2 - 1) * std2**2) / (n1 + n2 - 2))
+
+    return (mean1 - mean2) / pooled_std
+
+
+def calculate_confidence(mean, std, n, confidence_level = 0.95):
+    confidence_level = 0.95
+    alpha = 1 - confidence_level
+    t_score = stats.t.ppf(1 - alpha/2, df=n-1)
+    margin_of_error = t_score * (std / np.sqrt(n))
+    confidence_interval = (mean - margin_of_error, mean + margin_of_error)
+    return confidence_interval
+
+def _par_pairwisedistance(comb, X, obs, label, normal, seed, n_perm, null_samples, null_md, alternative):
+    pairwise_distances = _get_pairwise_distance(X = X, md = obs, label = label, comb = comb)
+    pdf = pairwise_distances.flatten()
+
+    if normal: 
+        central = np.mean(pdf)
+        std = np.std(pdf, ddof=1) 
+        cl, cu = calculate_confidence(central, std, n = pdf.shape[0], confidence_level = 0.95)
+    else:
+        central = np.median(pdf)
+        # boostrapped confidence
+        np.random.seed(seed)
+        cl, cu = np.percentile([np.median(np.random.choice(pdf, size=len(pdf), replace=True)) for _ in range(1000)], 
+                                    [2.5, 97.5])
+        
+    # generate the null distribution
+    null_centrals = []
+    cds = []
+    for i in range(n_perm):
+        null_md.index = null_samples[:, i]
+        null_distances = _get_pairwise_distance(X = X, md = null_md, label = label, comb = comb)
+  
+        distances = np.column_stack((pdf, null_distances.flatten()))
+        if normal:
+
+            nc = np.mean(distances[:, 1])
+            cd = cohen_d(distances[:, 0], distances[:, 1])  # positive if actual > null
+        else:
+            nc = np.median(distances[:, 1])
+            cd, _ = cliffs_delta(distances[:, 0], distances[:, 1])  # positive if actual > null
+
+        null_centrals.append(nc)
+        cds.append(cd)
+
+    # calculate the p-value
+    if alternative == 'greater': 
+        pval = np.sum(null_centrals <= central) / len(null_centrals)
+    elif alternative == 'two-sided':
+        pval = 2 * min((np.sum(null_centrals <= central) / len(null_centrals)),
+                          (np.sum(null_centrals >= central) / len(null_centrals)))
+    elif alternative == 'less':
+        pval = np.sum(null_centrals >= central) / len(null_centrals)
+
+    mean_cd = np.mean(cds)
+    cld, cud = calculate_confidence(mean_cd, np.std(cds, ddof=1), n = len(cds), confidence_level = 0.95)
+    
+    return central, pval, cl, cu, mean_cd, cld, cud
+
+
+def quantify_cluster_distance(tf_adata, label: str, normal: bool = True, rank: int = None, 
+                              n_perm: int = 100, 
+                              alternative: Literal['two-sided', 'less', 'greater'] = 'greater', 
+                              seed: int = 888, 
+                             n_cores: int = 1):
+    """Quantify the single-cell pairwise Euclidean distance between all pairs of cell labels (e.g. cluster). 
+
+    Parameters
+    ----------
+    tf_adata : AnnData
+        AnnData object with input TF activity estimates stored in `.X`, and dimensionality reduction and clustering outputs stored
+        output of `preprocess.embed_tf_activity`
+    label : str
+        the cell grouping label (e.g., cluster)
+    normal : bool, optional
+        whether to assume that pairwise distances are normally distributed or run non-parametric tests, by default True
+    rank : int, optional
+        # of PCs to use when calculating Euclidean distance, by default the one automatically selected in 
+        preprocess.embed_tf_activity
+    n_prem : int, optional
+        number of permutations from which to create the null distribution, by default 100
+    alternative : str, optional
+        specifies the comparison of the actual distance statistic to the null distribution, by default greater
+    seed : int, optional
+        random seed for numpy operations, by default 888, by default 888
+    n_cores : int, optional
+        parallelize using `n_cores` cores if n_cores > 1 , by default 1
+
+    Returns
+    -------
+    distances_df : pd.DataFrame
+        a dataframe with rows representing each pairwise group comparison and with the following columns:
+            - 'central_tendency': mean (normal = True) or median (normal = False) pairwise Euclidean distance between 
+            all cells in the two labels
+            - 'pval': the p-value of the central tendency with respect to the null distribution
+            - 'CL': the lower bound of the 95% confidence interval w.r.t. the central tendency 
+            - 'CU': the upper bound of the 95% confidence interval w.r.t. the central tendency
+            - 'mean_cd':  the mean Cohen's D (normal) or Cliff's Delta (not normal) across all comparisons of the 
+            actual pairwise distances with the null pairwise distances. Positive values indicate that the actual distribution > null distribution, negative indicate that the null distribution > actual distribution. 
+            - 'CL_cd': the lower bound of the 95% confidence interval w.r.t. the mean_cd
+            - 'CU_cd': the upper bound of the 95% confidence interval w.r.t. the mean_cd
+            - 'BH_FDR': the BH FDR corrected pvalues
+    """
+
+    if 'X_pca' not in tf_adata.obsm:
+        raise ValueError('Please run "preprocess.embed_tf_activity" first.')
+    if not rank:
+        if 'pca' in tf_adata.uns and 'pca_rank' in tf_adata.uns['pca']:
+            rank = tf_adata.uns['pca']['pca_rank']
+        else:
+            rank = tf_adata.obsm['X_pca'].shape[1] # use all PCs
+
+    X = pd.DataFrame(tf_adata.obsm['X_pca'][:, :rank], 
+                     index = tf_adata.obs.index, 
+                    columns = ['PC_{}'.format(i + 1) for i in range(rank)])
+
+    # permute labels for null distribution
+    null_md = tf_adata.obs.copy()
+    null_samples = []
+    for i in range(n_perm):
+        np.random.seed(seed + i)   
+        null_samples.append(np.random.permutation(X.index))
+    null_samples = np.column_stack(null_samples)
+
+    if isinstance(tf_adata.obs[label].dtype, pd.CategoricalDtype):
+        labels = tf_adata.obs[label].cat.categories.tolist()
+    else:
+        labels = sorted(set(tf_adata.obs[label]))
+    label_combinations = list(itertools.permutations(labels, 2))
+    if n_cores is None or n_cores <= 1:
+        distances_df = pd.DataFrame(columns = ['central_tendency', 'pval', 'CL', 'CU', 'mean_cd', 'CL_cd', 'CU_cd'])
+        # iterate through the pairwise cell label combinations
+        for comb in tqdm(label_combinations):    
+            # get actual value stats
+            pairwise_distances = _get_pairwise_distance(X = X, md = tf_adata.obs, label = label, comb = comb)
+            pdf = pairwise_distances.flatten()
+            if normal: 
+                central = np.mean(pdf)
+                std = np.std(pdf, ddof=1) 
+                cl, cu = calculate_confidence(central, std, n = pdf.shape[0], confidence_level = 0.95)
+            else:
+                central = np.median(pdf)
+                # boostrapped confidence
+                np.random.seed(seed)
+                cl, cu = np.percentile([np.median(np.random.choice(pdf, size=len(pdf), replace=True)) for _ in range(1000)], 
+                                            [2.5, 97.5])
+
+            # generate the null distribution
+            null_centrals = []
+            cds = []
+            for i in range(n_perm):
+                null_md.index = null_samples[:, i]
+                null_distances = _get_pairwise_distance(X = X, md = null_md, label = label, comb = comb)
+
+            #     distances = pd.DataFrame(np.column_stack((pairwise_distances.flatten(), null_distances.flatten())), 
+            #                              columns = ['actual', 'null'])   
+                distances = np.column_stack((pdf, null_distances.flatten()))
+                if normal:
+            #         pval = ttest_ind(distances[:, 0], distances[:, 1], equal_var = False, random_state = seed, alternative = 'greater').pvalue
+                    nc = np.mean(distances[:, 1])
+                    cd = cohen_d(distances[:, 0], distances[:, 1])  # positive if actual > null
+                else:
+            #         pval = mannwhitneyu(distances.actual, distances.null, alternative = 'greater').pvalue
+                    nc = np.median(distances[:, 1])
+                    cd, _ = cliffs_delta(distances[:, 0], distances[:, 1])  # positive if actual > null
+
+                null_centrals.append(nc)
+                cds.append(cd)
+
+            # calculate the p-value
+            if alternative == 'greater': 
+                pval = np.sum(null_centrals <= central) / len(null_centrals)
+            elif alternative == 'two-sided':
+                pval = 2 * min((np.sum(null_centrals <= central) / len(null_centrals)),
+                                  (np.sum(null_centrals >= central) / len(null_centrals)))
+            elif alternative == 'less':
+                pval = np.sum(null_centrals >= central) / len(null_centrals)
+
+            mean_cd = np.mean(cds)
+            cld, cud = calculate_confidence(mean_cd, np.std(cds, ddof=1), n = len(cds), confidence_level = 0.95)
+
+            distances_df.loc['-'.join(comb), :] = [central, pval, cl, cu, mean_cd, cld, cud]
+    else:
+        pool = multiprocessing.Pool(processes = n_cores)
+        res = pool.starmap(_par_pairwisedistance, zip(label_combinations, repeat(X), repeat(tf_adata.obs), repeat(label),
+                                                     repeat(normal), repeat(seed), repeat(n_perm), repeat(null_samples), 
+                                                      repeat(null_md),
+                                                     repeat(alternative)))
+        distances_df = pd.DataFrame(res,
+                                    columns = ['central_tendency', 'pval', 'CL', 'CU', 'mean_cd', 'CL_cd', 'CU_cd'],
+                                    index = ['-'.join(lc) for lc in label_combinations])
+        
+    distances_df['BH_FDR'] = smm.multipletests(distances_df.pval, alpha=0.1, method='fdr_bh')[1]
+
+    return distances_df   
