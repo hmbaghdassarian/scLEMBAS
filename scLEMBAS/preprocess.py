@@ -24,11 +24,12 @@ from decoupler.pre import extract
 from anndata import AnnData
 import scanpy as sc
 
+grn_link = ppi_link = 'https://zenodo.org/records/11477837/files/grn_organism_06_04_24.csv'
 
 def get_tf_activity(adata, organism: str, grn = 'collectri', 
                     verbose: bool = True, min_n: int = 5, use_raw: bool = False,
                     filter_pvals: bool = False, pval_thresh: float = 0.05,
-                    hvg: bool = False, 
+                    hvg: bool = False, static: bool = True,
                     **kwargs):
     """Wrapper of decoupler to estimate TF activity from single-cell transcriptomics data.
 
@@ -53,6 +54,10 @@ def get_tf_activity(adata, organism: str, grn = 'collectri',
         significance threshold, by default 0.05. Used in conjunction with filter_pvals.
     hvg : bool
         whether to filter for HVGs (stored in `adata.var['highly_variable']`) prior to TF activity inference
+    static : bool, optional
+        whether to download a static version of the GRN DB or the most current, by default True
+        for stable results and consistency with downstream analyses, recommended to use static = True
+        only organism 'human', 'rat', and 'mouse' available for static
     kwargs : 
         passed to  `decoupler.decouple`.
 
@@ -69,9 +74,11 @@ def get_tf_activity(adata, organism: str, grn = 'collectri',
     else:
         adata = adata.copy()
     
-    grn_map = {'collectri': dc.get_collectri, 'dorothea': dc.get_dorothea} # get_dorothea returns "A" confidence by default
-    net = grn_map[grn](organism=organism, split_complexes=False) # builds on dorothea, used by Saez-Rodriguez lab
-
+    if not static:
+        grn_map = {'collectri': dc.get_collectri, 'dorothea': dc.get_dorothea} # get_dorothea returns "A" confidence by default
+        net = grn_map[grn](organism=organism, split_complexes=False) # builds on dorothea, used by Saez-Rodriguez lab
+    else:
+        net = pd.read_csv(grn_link.replace('grn', grn).replace('organism', organism), index_col = 0)
     # # reimplementation of dc.run_consensus, allowing all options in dc.decouple to be passed
     # dc.run_consensus(mat=adata, net=net, source='source', target='target', weight='weight', **kwargs)
 
@@ -369,10 +376,15 @@ def _par_pairwisedistance(comb, X, obs, label, normal, seed, n_perm, null_sample
     elif alternative == 'less':
         pval = (np.sum(null_centrals <= central) + 1) / (len(null_centrals) + 1)
 
-    mean_cd = np.mean(cds)
-    cld, cud = calculate_confidence(mean_cd, np.std(cds, ddof=1), n = len(cds), confidence_level = 0.95)
+#     mean_cd = np.mean(cds)
+#     cld, cud = calculate_confidence(mean_cd, np.std(cds, ddof=1), n = len(cds), confidence_level = 0.95)
+    median_cd = np.median(cds)
+    np.random.seed(seed)
+    cld, cud = np.percentile([np.median(np.random.choice(cds, size=len(cds), replace=True)) for _ in range(n_perm)], 
+                                [2.5, 97.5])
     
-    return central, pval, cl, cu, mean_cd, cld, cud
+    
+    return central, pval, cl, cu, median_cd, cld, cud
 
 
 def quantify_cluster_distance(tf_adata, 
@@ -421,16 +433,16 @@ def quantify_cluster_distance(tf_adata,
             - 'pval': the p-value of the central tendency with respect to the null distribution
             - 'CL': the lower bound of the 95% confidence interval w.r.t. the central tendency 
             - 'CU': the upper bound of the 95% confidence interval w.r.t. the central tendency
-            - 'mean_cd':  the mean Cohen's D (normal) or Cliff's Delta (not normal) across all comparisons of the 
+            - 'median_cd':  the median Cohen's D (normal) or Cliff's Delta (not normal) across all comparisons of the 
             actual pairwise distances with the null pairwise distances. Positive values indicate that the actual distribution > null distribution, negative indicate that the null distribution > actual distribution. 
             - 'CL_cd': the lower bound of the 95% confidence interval w.r.t. the mean_cd
             - 'CU_cd': the upper bound of the 95% confidence interval w.r.t. the mean_cd
             - 'BH_FDR': the BH FDR corrected pvalues
     """
     if distance_metric in ['euclidean', 'manhattan'] and alternative != 'greater':
-        warnings.warn('Recommended to test that the real Euclidean distance is greater (more dissimilar) than that of the null')
+        warnings.warn('Recommended to test that the actual distance is greater than (more dissimilar) that of the null')
     if distance_metric in ['pearson', 'spearman'] and alternative != 'less':
-        warnings.warn('Recommended to test that the real Pearson distance is less (more dissimilar) than that of the null')
+        warnings.warn('Recommended to test that the actual distance is less than (more dissimilar) that of the null')
 
     if 'X_pca' not in tf_adata.obsm:
         raise ValueError('Please run "preprocess.embed_tf_activity" first.')
@@ -462,7 +474,7 @@ def quantify_cluster_distance(tf_adata,
         label_combinations = [comb for comb in label_combinations if comb[0] in label_subset or comb[1] in label_subset]
     
     if n_cores is None or n_cores <= 1:
-        distances_df = pd.DataFrame(columns = ['central_tendency', 'pval', 'CL', 'CU', 'mean_cd', 'CL_cd', 'CU_cd'])
+        distances_df = pd.DataFrame(columns = ['central_tendency', 'pval', 'CL', 'CU', 'median_cd', 'CL_cd', 'CU_cd'])
         # iterate through the pairwise cell label combinations
         for comb in tqdm(label_combinations):    
             # get actual value stats
@@ -477,7 +489,7 @@ def quantify_cluster_distance(tf_adata,
                 central = np.median(pdf)
                 # boostrapped confidence
                 np.random.seed(seed)
-                cl, cu = np.percentile([np.median(np.random.choice(pdf, size=len(pdf), replace=True)) for _ in range(1000)], 
+                cl, cu = np.percentile([np.median(np.random.choice(pdf, size=len(pdf), replace=True)) for _ in range(n_perm)], 
                                             [2.5, 97.5])
 
             # generate the null distribution
@@ -512,10 +524,14 @@ def quantify_cluster_distance(tf_adata,
             elif alternative == 'less':
                 pval = (np.sum(null_centrals <= central) + 1) / (len(null_centrals) + 1)
 
-            mean_cd = np.mean(cds)
-            cld, cud = calculate_confidence(mean_cd, np.std(cds, ddof=1), n = len(cds), confidence_level = 0.95)
-
-            distances_df.loc['-'.join(comb), :] = [central, pval, cl, cu, mean_cd, cld, cud]
+#             mean_cd = np.mean(cds)
+#             cld, cud = calculate_confidence(mean_cd, np.std(cds, ddof=1), n = len(cds), confidence_level = 0.95)
+            median_cd = np.median(cds)
+            np.random.seed(seed)
+            cld, cud = np.percentile([np.median(np.random.choice(cds, size=len(cds), replace=True)) for _ in range(n_perm)], 
+                                        [2.5, 97.5])
+            
+            distances_df.loc['-'.join(comb), :] = [central, pval, cl, cu, median_cd, cld, cud]
     else:
         pool = multiprocessing.Pool(processes = n_cores)
         res = pool.starmap(_par_pairwisedistance, zip(label_combinations, repeat(X), repeat(tf_adata.obs), repeat(label),
@@ -523,7 +539,7 @@ def quantify_cluster_distance(tf_adata,
                                                       repeat(null_md),
                                                      repeat(alternative), repeat(distance_metric)))
         distances_df = pd.DataFrame(res,
-                                    columns = ['central_tendency', 'pval', 'CL', 'CU', 'mean_cd', 'CL_cd', 'CU_cd'],
+                                    columns = ['central_tendency', 'pval', 'CL', 'CU', 'median_cd', 'CL_cd', 'CU_cd'],
                                     index = ['-'.join(lc) for lc in label_combinations])
         
     distances_df['BH_FDR'] = smm.multipletests(distances_df.pval, alpha=0.1, method='fdr_bh')[1]

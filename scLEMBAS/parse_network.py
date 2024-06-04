@@ -12,7 +12,7 @@ import pandas as pd
 import numpy as np
 import networkx as nx
 
-ppi_link = 'https://zenodo.org/records/11284465/files/organism_omnipath_ppi_05_24_24.csv'
+ppi_link = 'https://zenodo.org/records/11477837/files/organism_omnipath_ppi_05_24_24.csv'
 
 def load_network(network_type: str = 'omnipath', 
                  organism: Literal['human', 'rat', 'mouse'] = 'human',
@@ -49,8 +49,9 @@ def load_network(network_type: str = 'omnipath',
         raise ValueError('Only omnipath networks can be loaded right now')
 
     # fill threshold values with less than the minimum
-    sn_ppis['n_references'] = sn_ppis.n_references.fillna(sn_ppis.n_references.min() - 1)
-    sn_ppis['curation_effort'] = sn_ppis.curation_effort.fillna(sn_ppis.curation_effort.min() - 1)
+    if fill_na:
+        sn_ppis['n_references'] = sn_ppis.n_references.fillna(sn_ppis.n_references.min() - 1)
+        sn_ppis['curation_effort'] = sn_ppis.curation_effort.fillna(sn_ppis.curation_effort.min() - 1)
     return sn_ppis
 
 def flatten_list(list1: List[List[Any]]) -> list:
@@ -68,6 +69,31 @@ def flatten_list(list1: List[List[Any]]) -> list:
     """
     # https://stackoverflow.com/questions/952914/how-to-make-a-flat-list-out-of-list-of-lists
     return [item for sublist in list1 for item in sublist]
+
+def correct_moa(sn_ppis: pd.DataFrame,
+                stimulation_label: str = 'consensus_stimulation',
+                inhibition_label: str = 'consensus_inhibition'):
+    """In the case where mode of action is True for both stimulating and inhibiting, make this an unknown MOA.
+
+    Parameters
+    ----------
+    sn_ppis : pd.DataFrame
+        an edge list representing the signaling network, output of `scLEMBAS.parse_network.load_network`
+    stimulation_label : str, optional
+        column name of stimulating interactions, see `sn_ppis`, by default 'consensus_stimulation'
+    inhibition_label : str, optional
+        column name of inhibitory interactions, see `sn_ppis`, by default 'consensus_inhibition'
+
+    Returns
+    -------
+    sn_ppis : pd.DataFrame
+        a copy of the input interaction network with duplicates aggregated
+    """
+    sn_ppis = sn_ppis.copy()
+    sn_ppis.loc[sn_ppis[(sn_ppis[stimulation_label] == 1) & (sn_ppis[inhibition_label] == 1)].index, 
+    [stimulation_label, inhibition_label]] = [False, False]
+    
+    return sn_ppis
 
 def drop_duplicate_interactions(sn_ppis: pd.DataFrame, 
                              source_label: str = 'source_genesymbol',
@@ -140,8 +166,44 @@ def drop_duplicate_interactions(sn_ppis: pd.DataFrame,
         raise ValueError('Interaction DB still has duplicates')
 
     return sn_ppis
+    
+def correct_network(sn_ppis: pd.DataFrame,
+                     source_label: str = 'source_genesymbol',
+                     target_label: str = 'target_genesymbol',
+                     stimulation_label: str = 'consensus_stimulation',
+                     inhibition_label: str = 'consensus_inhibition'):
+    """
+    Corrects mode of action: In the case where MOA is positive for both stimulating and inhibiting, make this an
+    unknown MOA.
+    Drops duplicates: systematically aggregate any duplicate interactions between the source and target node. 
 
-def add_omnipath_interaction(interactions_to_add: str | List[str], sn_ppis: pd.DataFrame, 
+    Parameters
+    ----------
+    sn_ppis : pd.DataFrame
+        an edge list representing the signaling network, output of `scLEMBAS.parse_network.load_network`
+    source_label : str
+        the column label for source nodes in the graph, by default 'source_genesymbol'
+    target_label : str
+        the column label for the target node in the graph, by default 'target_genesymbol'
+    stimulation_label : str, optional
+        column name of stimulating interactions, see `sn_ppis`, by default 'consensus_stimulation'
+    inhibition_label : str, optional
+        column name of inhibitory interactions, see `sn_ppis`, by default 'consensus_inhibition'
+
+    Returns
+    -------
+    sn_ppis : pd.DataFrame
+        a copy of the input interaction network with duplicates aggregated
+    """
+    sn_ppis = correct_moa(sn_ppis, stimulation_label, inhibition_label)
+    sn_ppis = drop_duplicate_interactions(sn_ppis, source_label, target_label, stimulation_label, inhibition_label)
+
+    return sn_ppis
+
+def add_omnipath_interaction(sn_ppis: pd.DataFrame, 
+                             interactions_to_add: str | List[str], 
+                             moa: List[Literal[1, 0, -1, None]] = None,
+                             delim: str = '-',
                              source_label: str = 'source_genesymbol',
                              target_label: str = 'target_genesymbol',
                              stimulation_label: str = 'consensus_stimulation',
@@ -152,10 +214,18 @@ def add_omnipath_interaction(interactions_to_add: str | List[str], sn_ppis: pd.D
 
     Parameters
     ----------
-    interactions_to_add : str | List[str]
-        the source and target to add in the format "<source_id>-<target_id>"; can be a list of targets
     sn_ppis : pd.DataFrame
         output of `scLEMBAS.parse_network.load_network`
+    interactions_to_add : str | List[str]
+        the source and target to add in the format "<source_id><delim><target_id>"
+    moa: List[Literal[1, 0, -1, None]]
+        each element corresponds to the mechanism of action for the interaction in `interactions_to_add`, 
+        by default None (will set all values to 0)
+            - 1: stimulating interaction
+            - 0 or None: unknown mechanism of action
+            - -1: inhibiting interaction
+    delim: str, optional;
+        the character separating the source and target for each element in the `interactions_to_add`
     source_label : str
         the column label for source nodes in the graph, by default 'source_genesymbol'
     target_label : str
@@ -167,18 +237,28 @@ def add_omnipath_interaction(interactions_to_add: str | List[str], sn_ppis: pd.D
     """
     if type(interactions_to_add) == str:
         interactions_to_add = [interactions_to_add]
+    if moa is None:
+        moa = [0]*len(interactions_to_add)
 
-    for interaction in interactions_to_add:
-        source, target = interaction.split('-')
-    
+    for idx, interaction in enumerate(interactions_to_add):
+        source, target = interaction.split(delim)
+        moa_ = moa[idx]
+        
         # add the interaction
         init = [np.nan]*sn_ppis.shape[1]
         init[sn_ppis.columns.tolist().index(source_label)] = source
         init[sn_ppis.columns.tolist().index(target_label)] = target
-        init[sn_ppis.columns.tolist().index(stimulation_label)] = False
-        init[sn_ppis.columns.tolist().index(inhibition_label)] = False
+        if moa is None or moa == 0:
+            init[sn_ppis.columns.tolist().index(stimulation_label)] = False
+            init[sn_ppis.columns.tolist().index(inhibition_label)] = False
+        elif moa == 1:
+            init[sn_ppis.columns.tolist().index(stimulation_label)] = True
+            init[sn_ppis.columns.tolist().index(inhibition_label)] = False
+        elif moa == -1:
+            init[sn_ppis.columns.tolist().index(stimulation_label)] = False
+            init[sn_ppis.columns.tolist().index(inhibition_label)] = True
     
-        # ensure that these PPIs will not be filtered
+        # ensure that these PPIs will not be excluded during thresholding
         init[sn_ppis.columns.tolist().index('sources')] = 'Custom'
         init[sn_ppis.columns.tolist().index('curation_effort')] = np.inf
         init[sn_ppis.columns.tolist().index('n_references')] = np.inf
