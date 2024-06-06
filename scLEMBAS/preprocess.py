@@ -389,6 +389,7 @@ def _par_pairwisedistance(comb, X, obs, label, normal, seed, n_perm, null_sample
 
 def quantify_cluster_distance(tf_adata, 
                               label: str, 
+                              comparison_subset: Optional[List[str]] = None,
                               label_subset: Optional[List[str]] = None,
                               distance_metric: Literal['euclidean', 'manhattan', 'pearson', 'spearman'] = 'euclidean',
                               normal: bool = True, 
@@ -406,8 +407,10 @@ def quantify_cluster_distance(tf_adata,
         output of `preprocess.embed_tf_activity`
     label : str
         the cell grouping label (e.g., cluster)
+    comparison_subset : Optional[List[str]], optional
+        this will only make comparisons if atleast one of the two labels is in `comparison_subset`, by default all comparisons
     label_subset : Optional[List[str]], optional
-        this will subset the label pairwise comparisons to those that are present in `label_subset`
+        this will subset dataset to those with the labels in `label_subset`, by default all labels
     distance_metric : Literal['euclidean', 'pearson']
         the distance metric to calculate between cell labels, by default euclidean 
     normal : bool, optional
@@ -444,6 +447,21 @@ def quantify_cluster_distance(tf_adata,
     if distance_metric in ['pearson', 'spearman'] and alternative != 'less':
         warnings.warn('Recommended to test that the actual distance is less than (more dissimilar) that of the null')
 
+    tf_adata = tf_adata.copy()
+    if label_subset is not None and len(label_subset) > 0:
+        tf_adata = tf_adata[tf_adata.obs[tf_adata.obs[label].isin(label_subset)].index, :]
+        
+    # permute labels for null distribution, independent of specific combinations
+    null_md = tf_adata.obs.copy()
+    null_samples = []
+    for i in range(n_perm):
+        np.random.seed(seed + i)   
+        ns = np.random.permutation(null_md.index)
+        if label_subset:
+            null_md[null_md[label].isin(label_subset)].index
+        null_samples.append(np.random.permutation(null_md.index))
+    null_samples = np.column_stack(null_samples)
+
     if 'X_pca' not in tf_adata.obsm:
         raise ValueError('Please run "preprocess.embed_tf_activity" first.')
     if not rank:
@@ -455,14 +473,6 @@ def quantify_cluster_distance(tf_adata,
     X = pd.DataFrame(tf_adata.obsm['X_pca'][:, :rank], 
                      index = tf_adata.obs.index, 
                     columns = ['PC_{}'.format(i + 1) for i in range(rank)])
-
-    # permute labels for null distribution
-    null_md = tf_adata.obs.copy()
-    null_samples = []
-    for i in range(n_perm):
-        np.random.seed(seed + i)   
-        null_samples.append(np.random.permutation(X.index))
-    null_samples = np.column_stack(null_samples)
     
     # create the label combinations
     if isinstance(tf_adata.obs[label].dtype, pd.CategoricalDtype):
@@ -470,8 +480,8 @@ def quantify_cluster_distance(tf_adata,
     else:
         labels = sorted(set(tf_adata.obs[label]))
     label_combinations = list(itertools.combinations(labels, 2))
-    if label_subset is not None and len(label_subset) > 0:
-        label_combinations = [comb for comb in label_combinations if comb[0] in label_subset or comb[1] in label_subset]
+    if comparison_subset is not None and len(comparison_subset) > 0:
+        label_combinations = [comb for comb in label_combinations if comb[0] in comparison_subset or comb[1] in comparison_subset]
     
     if n_cores is None or n_cores <= 1:
         distances_df = pd.DataFrame(columns = ['central_tendency', 'pval', 'CL', 'CU', 'median_cd', 'CL_cd', 'CU_cd'])
@@ -544,5 +554,4 @@ def quantify_cluster_distance(tf_adata,
         
     distances_df['BH_FDR'] = smm.multipletests(distances_df.pval, alpha=0.1, method='fdr_bh')[1]
 
-    return distances_df   
-
+    return distances_df
