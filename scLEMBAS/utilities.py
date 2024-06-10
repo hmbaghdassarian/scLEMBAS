@@ -80,77 +80,78 @@ def get_lr(iter: int, max_iter: int, max_height: float = 1e-3,
         lr = end_height
     return lr
 
-def initialize_progress(max_iter: int):
-    """Track various stats of the progress of training the model.
+# def initialize_progress(max_iter: int):
+#     """Track various stats of the progress of training the model.
 
-    Parameters
-    ----------
-    max_iter : int
-        the maximum number of training iterations
+#     Parameters
+#     ----------
+#     max_iter : int
+#         the maximum number of training iterations
 
-    Returns
-    -------
-    stats : dict
-        a dictionary of progress statistics
-    """
-    stats = {}
-    stats['start_time'] = time.time()
-    stats['end_time'] = 0
-    stats['iter_time'] = np.nan*np.ones(max_iter)
+#     Returns
+#     -------
+#     stats : dict
+#         a dictionary of progress statistics
+#     """
+#     stats = {}
+#     stats['start_time'] = time.time()
+#     stats['end_time'] = 0
+#     stats['iter_time'] = np.nan*np.ones(max_iter)
     
-    stats['loss_mean'] = np.nan*np.ones(max_iter)
-    stats['loss_sigma'] = np.nan*np.ones(max_iter)
-    stats['eig_mean'] = np.nan*np.ones(max_iter)
-    stats['eig_sigma'] = np.nan*np.ones(max_iter)
+#     stats['loss_mean'] = np.nan*np.ones(max_iter)
+#     stats['loss_sigma'] = np.nan*np.ones(max_iter)
+#     stats['eig_mean'] = np.nan*np.ones(max_iter)
+#     stats['eig_sigma'] = np.nan*np.ones(max_iter)
 
-    stats['test'] = np.nan*np.ones(max_iter)
-    stats['learning_rate'] = np.nan*np.ones(max_iter)
-    stats['violations'] = np.nan*np.ones(max_iter)
+#     stats['test'] = np.nan*np.ones(max_iter)
+#     stats['learning_rate'] = np.nan*np.ones(max_iter)
+#     stats['violations'] = np.nan*np.ones(max_iter)
 
-    return stats
+#     return stats
 
-def update_progress(stats : dict, iter: int, 
-                  loss: List[float]=None, eig: List[float]=None, 
-                  learning_rate: float=None, n_sign_mismatches: float=None):
-    """Updates various stats of the progress of training the model.
+# def update_progress(stats : dict, iter: int, 
+#                   loss: List[float]=None, eig: List[float]=None, 
+#                   learning_rate: float=None, n_sign_mismatches: float=None):
+#     """Updates various stats of the progress of training the model.
 
-    Parameters
-    ----------
-    stats : dict
-        a dictionary of progress statistics
-    iter : int
-        the current training iteration
-    loss : List[float], optional
-        a list of the loss (excluding regularizations) up to `iter` , by default None
-    eig : List[float], optional
-        a list of the spectral_radius up to `iter` , by default None
-    learning_rate : float, optional
-        the model learning rate at `iter`, by default None
-    n_sign_mismatches : float, optional
-        the total number of sign mismatches at `iter`, 
-        output of `SignalingModel.signaling_network.count_sign_mismatch()`, by default None
+#     Parameters
+#     ----------
+#     stats : dict
+#         a dictionary of progress statistics
+#     iter : int
+#         the current training iteration
+#     loss : List[float], optional
+#         a list of the loss (excluding regularizations) up to `iter` , by default None
+#     eig : List[float], optional
+#         a list of the spectral_radius up to `iter` , by default None
+#     learning_rate : float, optional
+#         the model learning rate at `iter`, by default None
+#     n_sign_mismatches : float, optional
+#         the total number of sign mismatches at `iter`, 
+#         output of `SignalingModel.signaling_network.count_sign_mismatch()`, by default None
 
-    Returns
-    -------
-    stats : dict
-        updated dictionary of progress statistics
-    """
-    if loss != None:
-        stats['loss_mean'][iter] = np.mean(np.array(loss))
-        stats['loss_sigma'][iter] = np.std(np.array(loss))
-    if eig != None:
-        stats['eig_mean'][iter] = np.mean(np.array(eig))
-        stats['eig_sigma'][iter] = np.std(np.array(eig))
-    if learning_rate != None:
-        stats['learning_rate'][iter] = learning_rate
-    if n_sign_mismatches != None:
-        stats['violations'][iter] = n_sign_mismatches
+#     Returns
+#     -------
+#     stats : dict
+#         updated dictionary of progress statistics
+#     """
+#     if loss != None:
+#         stats['loss_mean'][iter] = np.mean(np.array(loss))
+#         stats['loss_sigma'][iter] = np.std(np.array(loss))
+#     if eig != None:
+#         stats['eig_mean'][iter] = np.mean(np.array(eig))
+#         stats['eig_sigma'][iter] = np.std(np.array(eig))
+#     if learning_rate != None:
+#         stats['learning_rate'][iter] = learning_rate
+#     if n_sign_mismatches != None:
+#         stats['violations'][iter] = n_sign_mismatches
     
-    stats['iter_time'][iter] = time.time()
+#     stats['iter_time'][iter] = time.time()
 
-    return stats
+#     return stats
 
-def print_stats(stats, iter):
+
+def print_stats(stats_df):
     """Prints various stats of the progress of training the model.
 
     Parameters
@@ -160,17 +161,39 @@ def print_stats(stats, iter):
     iter : int
         the current training iteration
     """
-    msg = 'i={:.0f}'.format(iter)
-    if not np.isnan(stats['loss_mean'][iter]):
-        msg += ', l={:.5f}'.format(stats['loss_mean'][iter])
-    # if not np.isnan(stats['test'][iter]):
-    #     msg += ', t={:.5f}'.format(stats['test'][iter])
-    if not np.isnan(stats['eig_mean'][iter]):
-        msg += ', s={:.3f}'.format(stats['eig_mean'][iter])
-    if not np.isnan(stats['learning_rate'][iter]):
-        msg += ', r={:.5f}'.format(stats['learning_rate'][iter])
-    if not np.isnan(stats['violations'][iter]):
-        msg += ', v={:.0f}'.format(stats['violations'][iter])
+    epoch = stats_df.shape[0] - 1
+    msg = 'i={:.0f}'.format(epoch)
+    msg += ', l(tr)={:.5f}'.format(stats_df.loc[e, 'train_loss_mean'])
+    if 'loss_train' in stats_df.columns:
+        msg += ', l(te)={:.5f}'.format(stats_df.loc[e, 'loss_test'])
+    if 'loss_validation' in stats_df.columns:
+        msg += ', l(v)={:.5f}'.format(stats_df.loc[e, 'loss_validation'])
+    msg += ', s={:.5f}'.format(stats_df.loc[e, 'eig_mean'])
+    msg += ', r={:.5f}'.format(stats_df.loc[e, 'learning_rate'])
+    msg += ', v={:.5f}'.format(stats_df.loc[e, 'n_moa_violations'])
+    print(msg)
+    
+# def print_stats(stats, iter):
+#     """Prints various stats of the progress of training the model.
+
+#     Parameters
+#     ----------
+#     stats : dict
+#         a dictionary of progress statistics
+#     iter : int
+#         the current training iteration
+#     """
+#     msg = 'i={:.0f}'.format(iter)
+#     if not np.isnan(stats['loss_mean'][iter]):
+#         msg += ', l={:.5f}'.format(stats['loss_mean'][iter])
+#     # if not np.isnan(stats['test'][iter]):
+#     #     msg += ', t={:.5f}'.format(stats['test'][iter])
+#     if not np.isnan(stats['eig_mean'][iter]):
+#         msg += ', s={:.3f}'.format(stats['eig_mean'][iter])
+#     if not np.isnan(stats['learning_rate'][iter]):
+#         msg += ', r={:.5f}'.format(stats['learning_rate'][iter])
+#     if not np.isnan(stats['violations'][iter]):
+#         msg += ', v={:.0f}'.format(stats['violations'][iter])
         
     print(msg)
 

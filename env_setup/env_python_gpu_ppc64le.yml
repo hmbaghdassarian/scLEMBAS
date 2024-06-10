@@ -14,8 +14,10 @@ dependencies:
     - conda-forge::plotnine<=0.12.3
     - conda-forge::patchworklib
     # - conda-forge::graphviz
+    - conda-forge::annotated-types
     - pip:
         - decoupler==1.5.0
+        - annotated-types
         # - torchviz
 
 # replace pytorch with this on OS other than ppc64le

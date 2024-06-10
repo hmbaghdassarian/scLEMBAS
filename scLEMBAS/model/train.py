@@ -8,6 +8,7 @@ import warnings
 import logging
 
 import numpy as np
+import pandas as pd
 from sklearn.model_selection import train_test_split
 import torch
 import torch.nn as nn
@@ -77,8 +78,12 @@ class TrainBase:
                  prediction_optimizer: torch.optim, 
                  prediction_loss_fn: torch.nn.modules.loss,
                  hyper_params: Dict[str, Union[int, float]] = None,
-                 train_split_frac: Dict = {'train': 0.8, 'test': 0.2, 'validation': None},
-                 train_seed: int = None):
+                 # train_samples: Optional[List[str]] = None, 
+                 train_split: Optional[Dict[str, Union[float, List[str]]]] = {'train': 0.8, 'test': 0.2, 'validation': None},
+                 train_seed: int = None, 
+                 track_test: bool = False,
+                 track_validation: bool = False
+                ):
         """Trains the signaling model
 
         Parameters
@@ -107,15 +112,18 @@ class TrainBase:
                 - 'n_probes_spectral' : 
                 - 'power_steps_spectral' : 
                 - 'subset_n_spectral' : 
-        train_split_frac : Dict, optional
-            fraction of samples to be assigned to each of train, test and split, by default 0.8, 0.2, and 0 respectively
+        train_split : Optional[Dict[str, Union[float, List[str]]]], optional
+            dictionary with values as either a float representing the fraction of samples ot be assigned to each of train, test, 
+            and validation OR a list of the sample IDs representing each split, by default 0.8, 0.2, and 0 respectively
         train_seed : int, optional
             seed value, by default mod.seed. By explicitly making this an argument, it allows different train-test splits even 
             with the same mod.seed, e.g., for cross-validation
+        track_test : bool, optional
+            whether to run the predictions on the test model for at each epoch
+        track_validation : bool, optional
+            whether to run the predictions on the validation model for at each epoch
         verbose : bool, optional
             whether to print various progress stats across training epochs
-
-
         Returns
         -------
         split_data_dict : Dict[str, pd.DataFrame]
@@ -129,13 +137,15 @@ class TrainBase:
         self.prediction_loss_fn = prediction_loss_fn
         self.prediction_optimizer = prediction_optimizer(self.mod.parameters(), lr=1, weight_decay=0)
         self.reset_state = self.prediction_optimizer.state.copy()
+        self.track_test = track_test
+        self.track_validation = track_validation
 
         if not hyper_params:
             self.hyper_params = self.HYPER_PARAMS.copy()
         else:
             self.hyper_params = {k: v for k,v in {**self.HYPER_PARAMS, **hyper_params}.items() if k in self.HYPER_PARAMS} # give user input 
 
-        self.stats = utils.initialize_progress(hyper_params['max_epochs'])
+        # self.stats = utils.initialize_progress(hyper_params['max_epochs'])
 
         # set up data objects
         if not train_seed:
@@ -143,17 +153,53 @@ class TrainBase:
         else:
              self.train_seed = train_seed
 
-        self.X_train, X_test, X_val, self.y_train, y_test, y_val = self.split_data(self.mod.X_in, self.mod.y_out, train_split_frac, train_seed)
-        self.split_data_dict = {'X_train': self.X_train, 'X_test': X_test, 'X_val': X_val, 
-                        'y_train': self.y_train, 'y_test': y_test, 'y_val': y_val}
-        
+        if isinstance(train_split['train'], float):
+            self.X_train, self.X_test, self.X_val, self.y_train, self.y_test, self.y_val = self.split_data(self.mod.X_in, 
+                                                                                                           self.mod.y_out, 
+                                                                                                           train_split, 
+                                                                                                           train_seed)
+        elif isinstance(train_split['train'], list):
+            self.X_train = self.mod.X_in.loc[train_split['train'], :]
+            self.y_train = self.mod.y_out.loc[train_split['train'], :]
+            if 'test' in train_split and train_split['test'] is not None:
+                # for storing
+                self.X_train = self.mod.X_in.loc[train_split['test'], :]
+                self.y_train = self.mod.y_out.loc[train_split['test'], :]
+                # for running through model
+                self._X_test = self.mod.df_to_tensor(self.X_test)
+                self._y_test = self.mod.df_to_tensor(self.y_test)
+            if 'validation' in train_split and train_split['validation'] is not None:
+                # for storing
+                self.X_val = self.mod.X_in.loc[train_split['validation'], :]
+                self.y_val = self.mod.y_out.loc[train_split['validation'], :]
+                # for running through model
+                self._X_val = self.mod.df_to_tensor(self.X_val)
+                self._y_val = self.mod.df_to_tensor(self.y_val)
+                
+        stats_df_cols = ['learning_rate', 'iter_time', 'eig_mean', 'eig_sigma', 'n_moa_violations',
+                         'train_loss_with_reg', 'train_loss_mean', 'train_loss_sigma']
+
+        if self.track_test: 
+            self._X_test = self.mod.df_to_tensor(self.X_test)
+            self._y_test = self.mod.df_to_tensor(self.y_test)
+            stats_df_cols.append('test_loss')
+        if self.track_validation:
+            self._X_val = self.mod.df_to_tensor(self.X_val)
+            self._y_val = self.mod.df_to_tensor(self.y_val)
+            stats_df_cols.append('validation_loss')
+        self.stats_df = pd.DataFrame(columns = stats_df_cols)
+
+
+        # self.split_data_dict = {'X_train': self.X_train, 'X_test': X_test, 'X_val': X_val, 
+        #         'y_train': self.y_train, 'y_test': y_test, 'y_val': y_val}
+
     def create_data_loader(self, train_data):
-            self.train_dataloader = DataLoader(dataset=train_data,
-                                  batch_size=self.hyper_params['batch_size'],
-                                  # num_workers=n_cores_train,
-                                  drop_last = False,
-                                  pin_memory = False,#pin_memory,
-                                  shuffle=True) 
+        self.train_dataloader = DataLoader(dataset=train_data,
+                              batch_size=self.hyper_params['batch_size'],
+                              # num_workers=n_cores_train,
+                              drop_last = False,
+                              pin_memory = False,#pin_memory,
+                              shuffle=True) 
  
     @staticmethod
     def split_data(X_in: torch.Tensor, 
@@ -204,8 +250,10 @@ class TrainSimple(TrainBase):
                  prediction_optimizer: torch.optim, 
                  prediction_loss_fn: torch.nn.modules.loss,
                  hyper_params: Dict[str, Union[int, float]] = None,
-                 train_split_frac: Dict = {'train': 0.8, 'test': 0.2, 'validation': None},
-                 train_seed: int = None):
+                 train_split: Optional[Dict[str, Union[float, List[str]]]] = {'train': 0.8, 'test': 0.2, 'validation': None},
+                 train_seed: int = None,
+                 track_test: bool = False,
+                 track_validation: bool = False):
         """See `TrainBase` for parameters."""
         
         if not (type(mod.signaling_network) is BioNetSimple):
@@ -216,15 +264,23 @@ class TrainSimple(TrainBase):
                            prediction_optimizer = prediction_optimizer, 
                            prediction_loss_fn = prediction_loss_fn, 
                            hyper_params=hyper_params, 
-                           train_split_frac=train_split_frac, 
-                           train_seed = train_seed)
+                           train_split=train_split, 
+                           train_seed = train_seed, 
+                        track_test = track_test, 
+                        track_validation = track_validation)
         
         train_data = ModelData(X_in = self.mod.df_to_tensor(self.X_train).to('cpu'), 
                            y_out = self.mod.df_to_tensor(self.y_train).to('cpu'),
                            covariates_idx = None)
         self.create_data_loader(train_data)
+
+        if self.track_validation:
+            self._covariates_idx_val = torch.full(self._X_val.shape, torch.nan, device='cpu')
+        if self.track_test: 
+            self._covariates_idx_test = torch.full(self._X_test.shape, torch.nan, device='cpu')
   
-    def train_model(self, verbose: bool = True):
+    def train_model(self,
+                    verbose: bool = True):
         """Train the model
 
         Parameters
@@ -249,6 +305,7 @@ class TrainSimple(TrainBase):
             self.prediction_optimizer.param_groups[0]['lr'] = cur_lr
             
             cur_loss = []
+            cur_loss_with_reg = []
             cur_eig = []
             
             # iterate through batches
@@ -257,9 +314,9 @@ class TrainSimple(TrainBase):
             for batch, (X_in_, y_out_, covariates_idx_) in enumerate(self.train_dataloader):
                 self.mod.train()
                 self.prediction_optimizer.zero_grad()
-
+        
                 X_in_, y_out_, covariates_idx_ = X_in_.to(self.mod.device), y_out_.to(self.mod.device), covariates_idx_.to(self.mod.device)
-
+        
                 # forward pass
                 X_full = self.mod.input_layer(X_in_) # transform to full network with ligand input concentrations
                 utils.set_seeds(self.mod.seed + self.mod._gradient_seed_counter)
@@ -283,18 +340,33 @@ class TrainSimple(TrainBase):
                 
         #             total_loss = fit_loss + sign_reg + ligand_reg + param_reg + stability_loss + uniform_reg
                 total_loss = fit_loss + sign_reg + param_reg + stability_loss + uniform_reg
-
+        
                 # gradient
                 total_loss.backward()
                 self.mod.add_gradient_noise(noise_level = self.hyper_params['gradient_noise_scale'])
                 self.prediction_optimizer.step()
-
+        
                 # store
                 cur_eig.append(spectral_radius)
                 cur_loss.append(fit_loss.item())
-
-            self.stats = utils.update_progress(self.stats, iter = e, loss = cur_loss, eig = cur_eig, learning_rate = cur_lr, 
-                                        n_sign_mismatches = self.mod.signaling_network.count_sign_mismatch())
+                cur_loss_with_reg.append(total_loss.item())
+            
+            # test/validation
+            if track_validation or track_test:
+                self.mod.eval()
+                if self.track_validation:
+                    y_pred_val, _ = self.mod(X_in = self._X_val, covariates_idx = self._covariates_idx_val)
+                    loss_val = self.prediction_loss_fn(self._y_val, y_pred_val).detach().item()
+                if self.track_test:
+                    y_pred_test, _ = self.mod(X_in = self._X_test, covariates_idx = self._covariates_idx_test)
+                    loss_test = self.prediction_loss_fn(self._y_test, y_pred_test).detach().item()
+        
+            # tracking
+            sv = [cur_lr, time.time() - start_time, np.mean(cur_eig), np.std(cur_eig),
+                  self.mod.signaling_network.count_sign_mismatch(), np.mean(cur_loss_with_reg), np.mean(cur_loss), np.std(cur_loss)]
+            sv += [loss_test] if self.track_test else []
+            sv += [loss_val] if self.track_val else []
+            self.stats_df.loc[e, :] = sv
             
             if e % (self.hyper_params['max_epochs']/100) == 0:
                 param_names = []
@@ -307,16 +379,15 @@ class TrainSimple(TrainBase):
                     logging.error(log_error)
                     raise ValueError('NaN values found in model parameters at epoch {}'.format(e))
                 if verbose:
-                    utils.print_stats(self.stats, iter = e)
-
-                if np.logical_and(e % self.hyper_params['reset_optimizer_epoch'] == 0, e>0):
-                    self.prediction_optimizer.state = self.reset_state.copy()
-
+                    utils.print_stats(stats_df)
+            if np.logical_and(e % self.hyper_params['reset_optimizer_epoch'] == 0, e>0):
+                self.prediction_optimizer.state = self.reset_state.copy()
+        
         if verbose:
             mins, secs = divmod(time.time() - start_time, 60)
             print("Training ran in: {:.0f} min {:.2f} sec".format(mins, secs))
 
-        return self.mod, cur_loss, cur_eig, self.split_data_dict, self.stats
+        return self.mod, cur_loss, cur_eig, self.stats_df
 
 class TrainCat(TrainBase):
     """Training the signaling model for bulk data, accounting for categorical covariates of the samples (e.g. cell line, genetic background, etc.)."""
@@ -328,8 +399,10 @@ class TrainCat(TrainBase):
                  prediction_optimizer: torch.optim, 
                  prediction_loss_fn: torch.nn.modules.loss,
                  hyper_params: Dict[str, Union[int, float]] = None,
-                 train_split_frac: Dict = {'train': 0.8, 'test': 0.2, 'validation': None},
-                 train_seed: int = None
+                 train_split: Optional[Dict[str, Union[float, List[str]]]] = {'train': 0.8, 'test': 0.2, 'validation': None},
+                 train_seed: int = None,
+                 track_test: bool = False,
+                 track_validation: bool = False
                  ):
         """See `TrainBase` for parameters. Additional parameters include:
         
@@ -347,13 +420,20 @@ class TrainCat(TrainBase):
                            prediction_optimizer = prediction_optimizer, 
                            prediction_loss_fn = prediction_loss_fn, 
                            hyper_params=hyper_params, 
-                           train_split_frac=train_split_frac, 
-                           train_seed = train_seed)
+                           train_split=train_split, 
+                           train_seed = train_seed, 
+                        track_validation = track_validation, 
+                        track_test = track_test)
 
         train_data = ModelData(X_in = self.mod.df_to_tensor(self.X_train).to('cpu'), 
                            y_out = self.mod.df_to_tensor(self.y_train).to('cpu'),
                            covariates_idx = self.mod.signaling_network.covariates_to_tensor(sample_ids = self.X_train.index))
         self.create_data_loader(train_data)
+
+        if self.track_validation:
+            self._covariates_idx_val = self.mod.signaling_network.covariates_to_tensor(sample_ids = self.X_val.index)
+        if self.track_test: 
+            self._covariates_idx_test = self.mod.signaling_network.covariates_to_tensor(sample_ids = self.X_test.index)
 
     def train_model(self, verbose: bool = True):
         """Train the model
@@ -381,6 +461,7 @@ class TrainCat(TrainBase):
 
             cur_loss = []
             cur_eig = []
+            cur_loss_with_reg = []
 
             # iterate through batches
             if self.mod.seed:
@@ -423,9 +504,24 @@ class TrainCat(TrainBase):
                 # store
                 cur_eig.append(spectral_radius)
                 cur_loss.append(prediction_loss.item())
+                cur_loss_with_reg.append(total_loss.item())
 
-            self.stats = utils.update_progress(self.stats, iter = e, loss = cur_loss, eig = cur_eig, learning_rate = cur_lr, 
-                                        n_sign_mismatches = self.mod.signaling_network.count_sign_mismatch())
+            # test/validation
+            if track_validation or track_test:
+                self.mod.eval()
+                if self.track_validation:
+                    y_pred_val, _ = self.mod(X_in = self._X_val, covariates_idx = self._covariates_idx_val)
+                    loss_val = self.prediction_loss_fn(self._y_val, y_pred_val).detach().item()
+                if self.track_test:
+                    y_pred_test, _ = self.mod(X_in = self._X_test, covariates_idx = self._covariates_idx_test)
+                    loss_test = self.prediction_loss_fn(self._y_test, y_pred_test).detach().item()
+        
+            # tracking
+            sv = [cur_lr, time.time() - start_time, np.mean(cur_eig), np.std(cur_eig),
+                  self.mod.signaling_network.count_sign_mismatch(), np.mean(cur_loss_with_reg), np.mean(cur_loss), np.std(cur_loss)]
+            sv += [loss_test] if self.track_test else []
+            sv += [loss_val] if self.track_val else []
+            self.stats_df.loc[e, :] = sv
 
             if e % (self.hyper_params['max_epochs']/100) == 0:
                 param_names = []
@@ -440,14 +536,14 @@ class TrainCat(TrainBase):
                 if verbose:
                     utils.print_stats(self.stats, iter = e)
 
-                if np.logical_and(e % self.hyper_params['reset_optimizer_epoch'] == 0, e>0):
-                    self.prediction_optimizer.state = self.reset_state.copy()
+            if np.logical_and(e % self.hyper_params['reset_optimizer_epoch'] == 0, e>0):
+                self.prediction_optimizer.state = self.reset_state.copy()
 
         if verbose:
             mins, secs = divmod(time.time() - start_time, 60)
             print("Training ran in: {:.0f} min {:.2f} sec".format(mins, secs))
 
-        return self.mod, cur_loss, cur_eig, self.split_data_dict, self.stats    
+        return self.mod, cur_loss, cur_eig, self.stats_df    
     
     
 
@@ -463,8 +559,10 @@ class TrainSC(TrainBase):
                  discriminator_optimizer: torch.optim,
                  discriminator_params: Dict = CatDiscriminator.DEFAULT_HYPER_PARAMS,
                  hyper_params: Dict[str, Union[int, float]] = None,
-                 train_split_frac: Dict = {'train': 0.8, 'test': 0.2, 'validation': None},
-                 train_seed: int = None
+                 train_split: Optional[Dict[str, Union[float, List[str]]]] = {'train': 0.8, 'test': 0.2, 'validation': None},
+                 train_seed: int = None,
+                 track_test: bool = False,
+                 track_validation: bool = False
                  ):
         """See `TrainBase` for parameters. Additional parameters include:
         
@@ -481,15 +579,22 @@ class TrainSC(TrainBase):
         super().__init__(mod = mod, 
                            prediction_optimizer = prediction_optimizer, 
                            prediction_loss_fn = prediction_loss_fn, 
-                           hyper_params=hyper_params, 
-                           train_split_frac=train_split_frac, 
-                           train_seed = train_seed)
+                           hyper_params=hyper_params,
+                           train_split=train_split, 
+                           train_seed = train_seed,
+                         track_validation = track_validation,
+                         track_test = track_test)
 
         train_data = ModelData(X_in = self.mod.df_to_tensor(self.X_train).to('cpu'), 
                            y_out = self.mod.df_to_tensor(self.y_train).to('cpu'),
                            covariates_idx = self.mod.signaling_network.covariates_to_tensor(sample_ids = self.X_train.index))
         self.create_data_loader(train_data)
         self.initialize_discriminator(discriminator_params, discriminator_optimizer)
+
+        if self.track_validation:
+            self._covariates_idx_val = self.mod.signaling_network.covariates_to_tensor(sample_ids = self.X_val.index)
+        if self.track_test: 
+            self._covariates_idx_test = self.mod.signaling_network.covariates_to_tensor(sample_ids = self.X_test.index)
 
     def initialize_discriminator(self, discriminator_params, discriminator_optimizer):
         discriminator_params['batch_momentum'] = None # bias is a vector in bulk; this should be eliminated in single-cell
@@ -538,6 +643,7 @@ class TrainSC(TrainBase):
 
             cur_loss = []
             cur_eig = []
+            cur_loss_with_reg = []
 
             # iterate through batches
             if self.mod.seed:
@@ -603,9 +709,24 @@ class TrainSC(TrainBase):
                 # store
                 cur_eig.append(spectral_radius)
                 cur_loss.append(prediction_loss.item())
+                cur_loss_with_reg.append(total_loss.item())
 
-            self.stats = utils.update_progress(self.stats, iter = e, loss = cur_loss, eig = cur_eig, learning_rate = cur_lr, 
-                                        n_sign_mismatches = self.mod.signaling_network.count_sign_mismatch())
+            # test/validation
+            if track_validation or track_test:
+                self.mod.eval()
+                if self.track_validation:
+                    y_pred_val, _ = self.mod(X_in = self._X_val, covariates_idx = self._covariates_idx_val)
+                    loss_val = self.prediction_loss_fn(self._y_val, y_pred_val).detach().item()
+                if self.track_test:
+                    y_pred_test, _ = self.mod(X_in = self._X_test, covariates_idx = self._covariates_idx_test)
+                    loss_test = self.prediction_loss_fn(self._y_test, y_pred_test).detach().item()
+        
+            # tracking
+            sv = [cur_lr, time.time() - start_time, np.mean(cur_eig), np.std(cur_eig),
+                  self.mod.signaling_network.count_sign_mismatch(), np.mean(cur_loss_with_reg), np.mean(cur_loss), np.std(cur_loss)]
+            sv += [loss_test] if self.track_test else []
+            sv += [loss_val] if self.track_val else []
+            self.stats_df.loc[e, :] = sv
 
             if e % (self.hyper_params['max_epochs']/100) == 0:
                 param_names = []
@@ -628,5 +749,5 @@ class TrainSC(TrainBase):
             mins, secs = divmod(time.time() - start_time, 60)
             print("Training ran in: {:.0f} min {:.2f} sec".format(mins, secs))
 
-        return self.mod, cur_loss, cur_eig, self.split_data_dict, self.stats
+        return self.mod, cur_loss, cur_eig, self.stats_df
     
