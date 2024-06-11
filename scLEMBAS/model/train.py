@@ -66,7 +66,8 @@ class ModelData(Dataset):
 class TrainBase:
     """Base class for training the signaling model."""
 
-    LR_PARAMS = {'max_epochs': 5000, 'learning_rate': 2e-3, 'reset_optimizer_epoch': 200}
+    LR_PARAMS = {'max_epochs': 5000, 'maximum_learning_rate': 2e-3, 'minimum_learning_rate': 2e-4,
+                 'lr_restart_epoch': 1000, 'reset_optimizer_epoch': 200}
     OTHER_PARAMS = {'batch_size': 32, 'network_noise_scale': 10, 'gradient_noise_scale': 1e-9}
     REGULARIZATION_PARAMS = {'param_lambda_L2': 1e-6, 'moa_lambda_L1': 0.1, #'ligand_lambda_L2': 1e-5, 
                             'uniform_lambda_L2': 1e-4, 'uniform_max': (1/1.2), 'spectral_loss_factor': 1e-5}
@@ -300,8 +301,8 @@ class TrainSimple(TrainBase):
         start_time = time.time()
         for e in trange(self.hyper_params['max_epochs']):
             # set learning rate
-            cur_lr = utils.get_lr(e, self.hyper_params['max_epochs'], max_height = self.hyper_params['learning_rate'],
-                                start_height=self.hyper_params['learning_rate']/10, end_height=1e-6, peak = 1000)
+            cur_lr = utils.get_lr(e, self.hyper_params['max_epochs'], max_height = self.hyper_params['maximum_learning_rate'],
+                                start_height=self.hyper_params['minimum_learning_rate'], end_height=1e-6, peak = self.hyper_params['lr_restart_epoch'])
             self.prediction_optimizer.param_groups[0]['lr'] = cur_lr
             
             cur_loss = []
@@ -350,22 +351,29 @@ class TrainSimple(TrainBase):
                 cur_eig.append(spectral_radius)
                 cur_loss.append(fit_loss.item())
                 cur_loss_with_reg.append(total_loss.item())
+                
+                # free up CUDA mem
+                del sign_reg, stability_loss, uniform_reg, param_reg, fit_loss
+                del X_in_, y_out_, covariates_idx_, X_full, Y_full, Y_hat
             
             # test/validation
-            if track_validation or track_test:
+            if self.track_validation or self.track_test:
                 self.mod.eval()
-                if self.track_validation:
-                    y_pred_val, _ = self.mod(X_in = self._X_val, covariates_idx = self._covariates_idx_val)
-                    loss_val = self.prediction_loss_fn(self._y_val, y_pred_val).detach().item()
-                if self.track_test:
-                    y_pred_test, _ = self.mod(X_in = self._X_test, covariates_idx = self._covariates_idx_test)
-                    loss_test = self.prediction_loss_fn(self._y_test, y_pred_test).detach().item()
+                with torch.inference_mode(): 
+                    if self.track_validation:
+                        y_pred_val, _ = self.mod(X_in = self._X_val, covariates_idx = self._covariates_idx_val)
+                        loss_val = self.prediction_loss_fn(self._y_val, y_pred_val).detach().item()
+                        del y_pred_val, _
+                    if self.track_test:
+                        y_pred_test, _ = self.mod(X_in = self._X_test, covariates_idx = self._covariates_idx_test)
+                        loss_test = self.prediction_loss_fn(self._y_test, y_pred_test).detach().item()
+                        del y_pred_test, _
         
             # tracking
             sv = [cur_lr, time.time() - start_time, np.mean(cur_eig), np.std(cur_eig),
                   self.mod.signaling_network.count_sign_mismatch(), np.mean(cur_loss_with_reg), np.mean(cur_loss), np.std(cur_loss)]
             sv += [loss_test] if self.track_test else []
-            sv += [loss_val] if self.track_val else []
+            sv += [loss_val] if self.track_validation else []
             self.stats_df.loc[e, :] = sv
             
             if e % (self.hyper_params['max_epochs']/100) == 0:
@@ -379,7 +387,7 @@ class TrainSimple(TrainBase):
                     logging.error(log_error)
                     raise ValueError('NaN values found in model parameters at epoch {}'.format(e))
                 if verbose:
-                    utils.print_stats(stats_df)
+                    utils.print_stats(self.stats_df)
             if np.logical_and(e % self.hyper_params['reset_optimizer_epoch'] == 0, e>0):
                 self.prediction_optimizer.state = self.reset_state.copy()
         
@@ -455,8 +463,8 @@ class TrainCat(TrainBase):
         start_time = time.time()
         for e in trange(self.hyper_params['max_epochs']):
             # set learning rate
-            cur_lr = utils.get_lr(e, self.hyper_params['max_epochs'], max_height = self.hyper_params['learning_rate'],
-                                start_height=self.hyper_params['learning_rate']/10, end_height=1e-6, peak = 1000)
+            cur_lr = utils.get_lr(e, self.hyper_params['max_epochs'], max_height = self.hyper_params['maximum_learning_rate'],
+                                start_height=self.hyper_params['minimum_learning_rate'], end_height=1e-6, peak = self.hyper_params['lr_restart_epoch'])
             self.prediction_optimizer.param_groups[0]['lr'] = cur_lr
 
             cur_loss = []
@@ -504,23 +512,30 @@ class TrainCat(TrainBase):
                 # store
                 cur_eig.append(spectral_radius)
                 cur_loss.append(prediction_loss.item())
-                cur_loss_with_reg.append(total_loss.item())
-
+                cur_loss_with_reg.append(tot_pred_loss.item())
+                
+                # free up CUDA mem
+                del sign_reg, stability_loss, uniform_reg, param_reg, fit_loss
+                del X_in_, y_out_, covariates_idx_, X_full, Y_full, Y_hat
+                
             # test/validation
-            if track_validation or track_test:
+            if self.track_validation or self.track_test:
                 self.mod.eval()
-                if self.track_validation:
-                    y_pred_val, _ = self.mod(X_in = self._X_val, covariates_idx = self._covariates_idx_val)
-                    loss_val = self.prediction_loss_fn(self._y_val, y_pred_val).detach().item()
-                if self.track_test:
-                    y_pred_test, _ = self.mod(X_in = self._X_test, covariates_idx = self._covariates_idx_test)
-                    loss_test = self.prediction_loss_fn(self._y_test, y_pred_test).detach().item()
+                with torch.inference_mode(): 
+                    if self.track_validation:
+                        y_pred_val, _ = self.mod(X_in = self._X_val, covariates_idx = self._covariates_idx_val)
+                        loss_val = self.prediction_loss_fn(self._y_val, y_pred_val).detach().item()
+                        del y_pred_val, _
+                    if self.track_test:
+                        y_pred_test, _ = self.mod(X_in = self._X_test, covariates_idx = self._covariates_idx_test)
+                        loss_test = self.prediction_loss_fn(self._y_test, y_pred_test).detach().item()
+                        del y_pred_test, _
         
             # tracking
             sv = [cur_lr, time.time() - start_time, np.mean(cur_eig), np.std(cur_eig),
                   self.mod.signaling_network.count_sign_mismatch(), np.mean(cur_loss_with_reg), np.mean(cur_loss), np.std(cur_loss)]
             sv += [loss_test] if self.track_test else []
-            sv += [loss_val] if self.track_val else []
+            sv += [loss_val] if self.track_validation else []
             self.stats_df.loc[e, :] = sv
 
             if e % (self.hyper_params['max_epochs']/100) == 0:
@@ -534,7 +549,7 @@ class TrainCat(TrainBase):
                     logging.error(log_error)
                     raise ValueError('NaN values found in model parameters at epoch {}'.format(e))
                 if verbose:
-                    utils.print_stats(self.stats, iter = e)
+                    utils.print_stats(self.stats_df)
 
             if np.logical_and(e % self.hyper_params['reset_optimizer_epoch'] == 0, e>0):
                 self.prediction_optimizer.state = self.reset_state.copy()
@@ -636,8 +651,8 @@ class TrainSC(TrainBase):
         start_time = time.time()
         for e in trange(self.hyper_params['max_epochs']):
             # set learning rate
-            cur_lr = utils.get_lr(e, self.hyper_params['max_epochs'], max_height = self.hyper_params['learning_rate'],
-                                start_height=self.hyper_params['learning_rate']/10, end_height=1e-6, peak = 1000)
+            cur_lr = utils.get_lr(e, self.hyper_params['max_epochs'], max_height = self.hyper_params['maximum_learning_rate'],
+                                start_height=self.hyper_params['minimum_learning_rate'], end_height=1e-6, peak = self.hyper_params['lr_restart_epoch'])
             self.prediction_optimizer.param_groups[0]['lr'] = cur_lr
             self.discriminator_optimizer.param_groups[0]['lr'] = cur_lr
 
@@ -709,23 +724,30 @@ class TrainSC(TrainBase):
                 # store
                 cur_eig.append(spectral_radius)
                 cur_loss.append(prediction_loss.item())
-                cur_loss_with_reg.append(total_loss.item())
+                cur_loss_with_reg.append(tot_pred_loss.item())
+                
+                # free up CUDA mem
+                del sign_reg, stability_loss, uniform_reg, param_reg, fit_loss
+                del X_in_, y_out_, covariates_idx_, X_full, Y_full, Y_hat
 
             # test/validation
-            if track_validation or track_test:
+            if self.track_validation or self.track_test:
                 self.mod.eval()
-                if self.track_validation:
-                    y_pred_val, _ = self.mod(X_in = self._X_val, covariates_idx = self._covariates_idx_val)
-                    loss_val = self.prediction_loss_fn(self._y_val, y_pred_val).detach().item()
-                if self.track_test:
-                    y_pred_test, _ = self.mod(X_in = self._X_test, covariates_idx = self._covariates_idx_test)
-                    loss_test = self.prediction_loss_fn(self._y_test, y_pred_test).detach().item()
+                with torch.inference_mode(): 
+                    if self.track_validation:
+                        y_pred_val, _ = self.mod(X_in = self._X_val, covariates_idx = self._covariates_idx_val)
+                        loss_val = self.prediction_loss_fn(self._y_val, y_pred_val).detach().item()
+                        del y_pred_val, _
+                    if self.track_test:
+                        y_pred_test, _ = self.mod(X_in = self._X_test, covariates_idx = self._covariates_idx_test)
+                        loss_test = self.prediction_loss_fn(self._y_test, y_pred_test).detach().item()
+                        del y_pred_test, _
         
             # tracking
             sv = [cur_lr, time.time() - start_time, np.mean(cur_eig), np.std(cur_eig),
                   self.mod.signaling_network.count_sign_mismatch(), np.mean(cur_loss_with_reg), np.mean(cur_loss), np.std(cur_loss)]
             sv += [loss_test] if self.track_test else []
-            sv += [loss_val] if self.track_val else []
+            sv += [loss_val] if self.track_validation else []
             self.stats_df.loc[e, :] = sv
 
             if e % (self.hyper_params['max_epochs']/100) == 0:
@@ -739,7 +761,7 @@ class TrainSC(TrainBase):
                     logging.error(log_error)
                     raise ValueError('NaN values found in model parameters at epoch {}'.format(e))
                 if verbose:
-                    utils.print_stats(self.stats, iter = e)
+                    utils.print_stats(self.stats_df)
 
             if np.logical_and(e % self.hyper_params['reset_optimizer_epoch'] == 0, e>0):
                 self.prediction_optimizer.state = self.reset_state.copy()
@@ -750,4 +772,3 @@ class TrainSC(TrainBase):
             print("Training ran in: {:.0f} min {:.2f} sec".format(mins, secs))
 
         return self.mod, cur_loss, cur_eig, self.stats_df
-    
