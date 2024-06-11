@@ -19,6 +19,7 @@ import scLEMBAS.utilities as utils
 from .model_utilities import update_with_defaults
 from .bionetwork import BioNetSimple, BioNetCat
 from .model_components import CatDiscriminator
+from .lr_schedulers import WarmupCosineAnnealingWarmRestarts
 
 # configure logger
 if not logging.getLogger().hasHandlers():
@@ -67,8 +68,10 @@ class TrainBase:
     """Base class for training the signaling model."""
 
     LR_PARAMS = {'max_epochs': 5000, 'maximum_learning_rate': 2e-3, 'minimum_learning_rate': 2e-4,
-                 'lr_restart_epoch': 1000, 'reset_optimizer_epoch': 200}
-    OTHER_PARAMS = {'batch_size': 32, 'network_noise_scale': 10, 'gradient_noise_scale': 1e-9}
+                 'lr_restart_epoch': 1000, 'reset_optimizer_epoch': 200, 
+                'lr_decay': 0.9, 'lr_restart_factor': 1, 'warmup_epochs': 500}
+    OTHER_PARAMS = {'train_batch_size': 512, 'test_batch_size': 512, 'validation_batch_size': 512, 
+                    'network_noise_scale': 10, 'gradient_noise_scale': 1e-9}
     REGULARIZATION_PARAMS = {'param_lambda_L2': 1e-6, 'moa_lambda_L1': 0.1, #'ligand_lambda_L2': 1e-5, 
                             'uniform_lambda_L2': 1e-4, 'uniform_max': (1/1.2), 'spectral_loss_factor': 1e-5}
     SPECTRAL_RADIUS_PARAMS = {'n_probes_spectral': 5, 'power_steps_spectral': 50, 'subset_n_spectral': 10}
@@ -99,10 +102,16 @@ class TrainBase:
             various hyper parameter inputs for training
                 - 'max_epochs' : the number of epochs, by default 5000
                 - 'maximum_learning_rate' : the maximum learning rate for cosine annealing, by default 2e-3
-                - 'minimum_learning_rate' : the minimum learning rate for cosine annealing, by default 2e-4
-                - 'lr_restart_epoch' : epoch at which to conduct a warm restart, by default 1000
+                - 'minimum_learning_rate' : the minimum learning rate for cosine annealing, by default 2e-4. Equivalent to `eta_min` argument in `CosineAnnealingWarmRestarts`
+                - 'lr_restart_epoch' : epoch at which to conduct a warm restart, by default 1000. Equivalent to `T_0` argument in `CosineAnnealingWarmRestarts`
+                - 'lr_decay': amount to change the range in LR during warm restarts, by default 0.9
+                - 'lr_restart_factor': amount to change the frequency of warm restarts, by default 1. Equivalent to `T_mult` argument in `CosineAnnealingWarmRestarts`
+                - 'warmup_epochs' : number of epochs to linearly increase LR up to `maximum_learning_rate` prior to beginning
+                cosine annealing with warm restarts, by default 500
                 - 'reset_optimizer_epoch' : number of epochs upon which to reset the optimizer state, by default 200
-                - 'batch_size' : number of samples per batch, by default 8
+                - 'train_batch_size' : number of samples/cells per batch for training data, by default 512
+                - 'test_batch_size' : number of samples/cells per batch for test data, by default 512
+                - 'validation_batch_size' : number of samples/cells per batch for test data, by default 512
                 - 'network_noise_scale' : noise added to signaling network input, by default 10. Set to 0 for no noise. Makes model more robust. 
                 - 'gradient_noise_scale' : noise added to gradient after backward pass. Makes model more robust. 
                 - 'reset_epoch' : number of epochs upon which to reset the optimizer state, by default 200
@@ -135,18 +144,34 @@ class TrainBase:
         
         if not mod.signaling_network._prescaled_weights:
             warnings.warn('Recommended to run `self.mod.signaling_network.prescale_weights()` prior to training')
-        
-        self.mod = mod
-        self.prediction_loss_fn = prediction_loss_fn
-        self.prediction_optimizer = prediction_optimizer(self.mod.parameters(), lr=1, weight_decay=0)
-        self.reset_state = self.prediction_optimizer.state.copy()
-        self.track_test = track_test
-        self.track_validation = track_validation
 
         if not hyper_params:
             self.hyper_params = self.HYPER_PARAMS.copy()
         else:
-            self.hyper_params = {k: v for k,v in {**self.HYPER_PARAMS, **hyper_params}.items() if k in self.HYPER_PARAMS} # give user input 
+            self.hyper_params = {k: v for k,v in {**self.HYPER_PARAMS, **hyper_params}.items() if k in self.HYPER_PARAMS}
+        
+#         if torch.cuda.is_available() and mod.device == 'cuda' and torch.cuda.device_count() > 1:
+#             self.mod = nn.DataParallel(mod)
+#         else:
+#             self.mod = mod
+        self.mod = mod
+        self.prediction_loss_fn = prediction_loss_fn
+        self.prediction_optimizer = prediction_optimizer(self.mod.parameters(), 
+                                                 lr=self.hyper_params['minimum_learning_rate'], 
+                                                 weight_decay=0)
+        self.lr_scheduler = WarmupCosineAnnealingWarmRestarts(optimizer = self.prediction_optimizer,
+                                                              T_0 = self.hyper_params['lr_restart_epoch'],
+                                                              T_mul = self.hyper_params['lr_restart_factor'], 
+                                                              gamma = self.hyper_params['lr_decay'],
+                                                              eta_min = self.hyper_params['minimum_learning_rate'],
+                                                              max_lr=self.hyper_params['maximum_learning_rate'],
+                                                              warmup_steps = self.hyper_params['warmup_epochs'],
+                                                              last_epoch = -1)
+        self.reset_state = self.prediction_optimizer.state.copy()
+        self.track_test = track_test
+        self.track_validation = track_validation
+
+ # give user input 
 
         # self.stats = utils.initialize_progress(hyper_params['max_epochs'])
 
@@ -166,43 +191,65 @@ class TrainBase:
             self.y_train = self.mod.y_out.loc[train_split['train'], :]
             if 'test' in train_split and train_split['test'] is not None:
                 # for storing
-                self.X_train = self.mod.X_in.loc[train_split['test'], :]
-                self.y_train = self.mod.y_out.loc[train_split['test'], :]
-                # for running through model
-                self._X_test = self.mod.df_to_tensor(self.X_test)
-                self._y_test = self.mod.df_to_tensor(self.y_test)
+                self.X_test = self.mod.X_in.loc[train_split['test'], :]
+                self.y_test = self.mod.y_out.loc[train_split['test'], :]
+#                 # for running through model
+#                 self._X_test = self.mod.df_to_tensor(self.X_test)
+#                 self._y_test = self.mod.df_to_tensor(self.y_test)
             if 'validation' in train_split and train_split['validation'] is not None:
                 # for storing
                 self.X_val = self.mod.X_in.loc[train_split['validation'], :]
                 self.y_val = self.mod.y_out.loc[train_split['validation'], :]
-                # for running through model
-                self._X_val = self.mod.df_to_tensor(self.X_val)
-                self._y_val = self.mod.df_to_tensor(self.y_val)
+#                 # for running through model
+#                 self._X_val = self.mod.df_to_tensor(self.X_val)
+#                 self._y_val = self.mod.df_to_tensor(self.y_val)
                 
         stats_df_cols = ['learning_rate', 'iter_time', 'eig_mean', 'eig_sigma', 'n_moa_violations',
                          'train_loss_with_reg', 'train_loss_mean', 'train_loss_sigma']
 
         if self.track_test: 
-            self._X_test = self.mod.df_to_tensor(self.X_test)
-            self._y_test = self.mod.df_to_tensor(self.y_test)
-            stats_df_cols.append('test_loss')
+            stats_df_cols.append('test_loss_mean')
+            stats_df_cols.append('test_loss_sigma')
         if self.track_validation:
-            self._X_val = self.mod.df_to_tensor(self.X_val)
-            self._y_val = self.mod.df_to_tensor(self.y_val)
             stats_df_cols.append('validation_loss')
+            stats_df_cols.append('validation_loss_sigma')
         self.stats_df = pd.DataFrame(columns = stats_df_cols)
 
+    def create_data_loader(self, include_covariates = True):
+        covariates_idx = None
 
-        # self.split_data_dict = {'X_train': self.X_train, 'X_test': X_test, 'X_val': X_val, 
-        #         'y_train': self.y_train, 'y_test': y_test, 'y_val': y_val}
-
-    def create_data_loader(self, train_data):
-        self.train_dataloader = DataLoader(dataset=train_data,
-                              batch_size=self.hyper_params['batch_size'],
-                              # num_workers=n_cores_train,
-                              drop_last = False,
-                              pin_memory = False,#pin_memory,
-                              shuffle=True) 
+        if include_covariates:
+            covariates_idx = self.mod.signaling_network.covariates_to_tensor(sample_ids = self.X_train.index)
+        model_data = ModelData(X_in = self.mod.df_to_tensor(self.X_train).to('cpu'), 
+                           y_out = self.mod.df_to_tensor(self.y_train).to('cpu'),
+                           covariates_idx = covariates_idx)
+        self.train_dataloader = DataLoader(dataset=model_data,
+                                           batch_size=self.hyper_params['train_batch_size'],
+                                           drop_last = False,
+                                           pin_memory = False,#pin_memory,
+                                           shuffle=True) 
+        if self.track_test:
+            if include_covariates:
+                covariates_idx = self.mod.signaling_network.covariates_to_tensor(sample_ids = self.X_test.index)
+            model_data = ModelData(X_in = self.mod.df_to_tensor(self.X_test).to('cpu'), 
+                               y_out = self.mod.df_to_tensor(self.y_test).to('cpu'),
+                               covariates_idx = covariates_idx)
+            self.validation_dataloader = DataLoader(dataset=model_data,
+                                               batch_size=self.hyper_params['test_batch_size'],
+                                               drop_last = False,
+                                               pin_memory = False,#pin_memory,
+                                               shuffle=False)
+        if self.track_validation:
+            if include_covariates:
+                covariates_idx = self.mod.signaling_network.covariates_to_tensor(sample_ids = self.X_val.index)
+            model_data = ModelData(X_in = self.mod.df_to_tensor(self.X_val).to('cpu'), 
+                               y_out = self.mod.df_to_tensor(self.y_val).to('cpu'),
+                               covariates_idx = covariates_idx)
+            self.validation_dataloader = DataLoader(dataset=model_data,
+                                               batch_size=self.hyper_params['validation_batch_size'],
+                                               drop_last = False,
+                                               pin_memory = False,#pin_memory,
+                                               shuffle=False)
  
     @staticmethod
     def split_data(X_in: torch.Tensor, 
@@ -272,15 +319,7 @@ class TrainSimple(TrainBase):
                         track_test = track_test, 
                         track_validation = track_validation)
         
-        train_data = ModelData(X_in = self.mod.df_to_tensor(self.X_train).to('cpu'), 
-                           y_out = self.mod.df_to_tensor(self.y_train).to('cpu'),
-                           covariates_idx = None)
-        self.create_data_loader(train_data)
-
-        if self.track_validation:
-            self._covariates_idx_val = torch.full(self._X_val.shape, torch.nan, device='cpu')
-        if self.track_test: 
-            self._covariates_idx_test = torch.full(self._X_test.shape, torch.nan, device='cpu')
+        self.create_data_loader(include_covariates = False)
   
     def train_model(self,
                     verbose: bool = True):
@@ -302,10 +341,11 @@ class TrainSimple(TrainBase):
         """
         start_time = time.time()
         for e in trange(self.hyper_params['max_epochs']):
+            cur_lr = self.prediction_optimizer.param_groups[0]['lr']
             # set learning rate
-            cur_lr = utils.get_lr(e, self.hyper_params['max_epochs'], max_height = self.hyper_params['maximum_learning_rate'],
-                                start_height=self.hyper_params['minimum_learning_rate'], end_height=1e-6, peak = self.hyper_params['lr_restart_epoch'])
-            self.prediction_optimizer.param_groups[0]['lr'] = cur_lr
+#             cur_lr = utils.get_lr(e, self.hyper_params['max_epochs'], max_height = self.hyper_params['maximum_learning_rate'],
+#                                 start_height=self.hyper_params['minimum_learning_rate'], end_height=1e-6, peak = self.hyper_params['lr_restart_epoch'])
+#             self.prediction_optimizer.param_groups[0]['lr'] = cur_lr
             
             cur_loss = []
             cur_loss_with_reg = []
@@ -348,6 +388,8 @@ class TrainSimple(TrainBase):
                 total_loss.backward()
                 self.mod.add_gradient_noise(noise_level = self.hyper_params['gradient_noise_scale'])
                 self.prediction_optimizer.step()
+                self.lr_scheduler.step()
+#                 cur_lr = lr_scheduler.get_lr()[0]
         
                 # store
                 cur_eig.append(spectral_radius)
@@ -363,19 +405,27 @@ class TrainSimple(TrainBase):
                 self.mod.eval()
                 with torch.inference_mode(): 
                     if self.track_validation:
-                        y_pred_val, _ = self.mod(X_in = self._X_val, covariates_idx = self._covariates_idx_val)
-                        loss_val = self.prediction_loss_fn(self._y_val, y_pred_val).detach().item()
-                        del y_pred_val, _
+                        loss_val_all = []
+                        for batch, (X_in_val, y_out_val, covariates_idx_val) in enumerate(self.validation_dataloader):
+                            X_in_val, y_out_val, covariates_idx_val = X_in_val.to(self.mod.device), y_out_val.to(self.mod.device), covariates_idx_val.to(self.mod.device)
+                            y_pred_val, _ = self.mod(X_in = X_in_val, covariates_idx = covariates_idx_val)
+                            loss_val = self.prediction_loss_fn(y_out_val, y_pred_val).detach().item()
+                            loss_val_all.append(loss_val)
+                            del y_pred_val, _
                     if self.track_test:
-                        y_pred_test, _ = self.mod(X_in = self._X_test, covariates_idx = self._covariates_idx_test)
-                        loss_test = self.prediction_loss_fn(self._y_test, y_pred_test).detach().item()
-                        del y_pred_test, _
+                        loss_test_all = []
+                        for batch, (X_in_test, y_out_test, covariates_idx_test) in enumerate(self.test_dataloader):
+                            X_in_test, y_out_test, covariates_idx_test = X_in_test.to(self.mod.device), y_out_test.to(self.mod.device), covariates_idx_test.to(self.mod.device)
+                            y_pred_test, _ = self.mod(X_in = X_in_test, covariates_idx = covariates_idx_test)
+                            loss_test = self.prediction_loss_fn(y_out_test, y_pred_test).detach().item()
+                            loss_test_all.append(loss_test)
+                            del y_pred_test, _
         
             # tracking
             sv = [cur_lr, time.time() - start_time, np.mean(cur_eig), np.std(cur_eig),
                   self.mod.signaling_network.count_sign_mismatch(), np.mean(cur_loss_with_reg), np.mean(cur_loss), np.std(cur_loss)]
-            sv += [loss_test] if self.track_test else []
-            sv += [loss_val] if self.track_validation else []
+            sv += [np.mean(loss_test_all), np.std(loss_test_all)] if self.track_test else []
+            sv += [np.mean(loss_val_all), np.std(loss_val_all)] if self.track_validation else []
             self.stats_df.loc[e, :] = sv
             
             if e % (self.hyper_params['max_epochs']/100) == 0:
@@ -435,15 +485,7 @@ class TrainCat(TrainBase):
                         track_validation = track_validation, 
                         track_test = track_test)
 
-        train_data = ModelData(X_in = self.mod.df_to_tensor(self.X_train).to('cpu'), 
-                           y_out = self.mod.df_to_tensor(self.y_train).to('cpu'),
-                           covariates_idx = self.mod.signaling_network.covariates_to_tensor(sample_ids = self.X_train.index))
-        self.create_data_loader(train_data)
-
-        if self.track_validation:
-            self._covariates_idx_val = self.mod.signaling_network.covariates_to_tensor(sample_ids = self.X_val.index)
-        if self.track_test: 
-            self._covariates_idx_test = self.mod.signaling_network.covariates_to_tensor(sample_ids = self.X_test.index)
+        self.create_data_loader(include_covariates = True)
 
     def train_model(self, verbose: bool = True):
         """Train the model
@@ -465,9 +507,11 @@ class TrainCat(TrainBase):
         start_time = time.time()
         for e in trange(self.hyper_params['max_epochs']):
             # set learning rate
-            cur_lr = utils.get_lr(e, self.hyper_params['max_epochs'], max_height = self.hyper_params['maximum_learning_rate'],
-                                start_height=self.hyper_params['minimum_learning_rate'], end_height=1e-6, peak = self.hyper_params['lr_restart_epoch'])
-            self.prediction_optimizer.param_groups[0]['lr'] = cur_lr
+            cur_lr = self.prediction_optimizer.param_groups[0]['lr']
+
+#             cur_lr = utils.get_lr(e, self.hyper_params['max_epochs'], max_height = self.hyper_params['maximum_learning_rate'],
+#                                 start_height=self.hyper_params['minimum_learning_rate'], end_height=1e-6, peak = self.hyper_params['lr_restart_epoch'])
+#             self.prediction_optimizer.param_groups[0]['lr'] = cur_lr
 
             cur_loss = []
             cur_eig = []
@@ -510,6 +554,8 @@ class TrainCat(TrainBase):
                 tot_pred_loss.backward()
                 self.mod.add_gradient_noise(noise_level = self.hyper_params['gradient_noise_scale'])
                 self.prediction_optimizer.step()
+                self.lr_scheduler.step()
+#                 cur_lr = lr_scheduler.get_lr()[0]
 
                 # store
                 cur_eig.append(spectral_radius)
@@ -517,7 +563,7 @@ class TrainCat(TrainBase):
                 cur_loss_with_reg.append(tot_pred_loss.item())
                 
                 # free up CUDA mem
-                del sign_reg, stability_loss, uniform_reg, param_reg, fit_loss
+                del sign_reg, stability_loss, uniform_reg, param_reg, prediction_loss
                 del X_in_, y_out_, covariates_idx_, X_full, Y_full, Y_hat
                 
             # test/validation
@@ -602,16 +648,8 @@ class TrainSC(TrainBase):
                          track_validation = track_validation,
                          track_test = track_test)
 
-        train_data = ModelData(X_in = self.mod.df_to_tensor(self.X_train).to('cpu'), 
-                           y_out = self.mod.df_to_tensor(self.y_train).to('cpu'),
-                           covariates_idx = self.mod.signaling_network.covariates_to_tensor(sample_ids = self.X_train.index))
-        self.create_data_loader(train_data)
+        self.create_data_loader(include_covariates = True)
         self.initialize_discriminator(discriminator_params, discriminator_optimizer)
-
-        if self.track_validation:
-            self._covariates_idx_val = self.mod.signaling_network.covariates_to_tensor(sample_ids = self.X_val.index)
-        if self.track_test: 
-            self._covariates_idx_test = self.mod.signaling_network.covariates_to_tensor(sample_ids = self.X_test.index)
 
     def initialize_discriminator(self, discriminator_params, discriminator_optimizer):
         discriminator_params['batch_momentum'] = None # bias is a vector in bulk; this should be eliminated in single-cell
@@ -652,10 +690,13 @@ class TrainSC(TrainBase):
        """
         start_time = time.time()
         for e in trange(self.hyper_params['max_epochs']):
+            cur_lr = self.prediction_optimizer.param_groups[0]['lr']
+
             # set learning rate
-            cur_lr = utils.get_lr(e, self.hyper_params['max_epochs'], max_height = self.hyper_params['maximum_learning_rate'],
-                                start_height=self.hyper_params['minimum_learning_rate'], end_height=1e-6, peak = self.hyper_params['lr_restart_epoch'])
+#             cur_lr = utils.get_lr(e, self.hyper_params['max_epochs'], max_height = self.hyper_params['maximum_learning_rate'],
+#                                 start_height=self.hyper_params['minimum_learning_rate'], end_height=1e-6, peak = self.hyper_params['lr_restart_epoch'])
             self.prediction_optimizer.param_groups[0]['lr'] = cur_lr
+            raise ValueError('Need to change the discriminator optimizer with lr scheduler')
             self.discriminator_optimizer.param_groups[0]['lr'] = cur_lr
 
             cur_loss = []
@@ -722,6 +763,8 @@ class TrainSC(TrainBase):
                 self.mod.add_gradient_noise(noise_level = self.hyper_params['gradient_noise_scale'])
                 self.prediction_optimizer.step()
                 self.discriminator_optimizer.step()
+                self.lr_scheduler.step()
+#                 cur_lr = lr_scheduler.get_lr()[0]
 
                 # store
                 cur_eig.append(spectral_radius)
@@ -729,7 +772,7 @@ class TrainSC(TrainBase):
                 cur_loss_with_reg.append(tot_pred_loss.item())
                 
                 # free up CUDA mem
-                del sign_reg, stability_loss, uniform_reg, param_reg, fit_loss
+                del sign_reg, stability_loss, uniform_reg, param_reg, prediction_loss
                 del X_in_, y_out_, covariates_idx_, X_full, Y_full, Y_hat
 
             # test/validation
