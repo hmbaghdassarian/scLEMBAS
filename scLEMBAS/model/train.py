@@ -98,7 +98,9 @@ class TrainBase:
         hyper_params : Dict[str, Union[int, float]], optional
             various hyper parameter inputs for training
                 - 'max_epochs' : the number of epochs, by default 5000
-                - 'learning_rate' : the starting learning rate, by default 2e-3
+                - 'maximum_learning_rate' : the maximum learning rate for cosine annealing, by default 2e-3
+                - 'minimum_learning_rate' : the minimum learning rate for cosine annealing, by default 2e-4
+                - 'lr_restart_epoch' : epoch at which to conduct a warm restart, by default 1000
                 - 'reset_optimizer_epoch' : number of epochs upon which to reset the optimizer state, by default 200
                 - 'batch_size' : number of samples per batch, by default 8
                 - 'network_noise_scale' : noise added to signaling network input, by default 10. Set to 0 for no noise. Makes model more robust. 
