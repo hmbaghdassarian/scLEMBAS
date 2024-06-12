@@ -328,7 +328,7 @@ class BioNetSimple(BioNetBase):
         super().__init__(edge_list = edge_list, edge_MOA = edge_MOA, input_node_idx = input_node_idx, 
                      n_network_nodes = n_network_nodes, activation_function = activation_function, 
                      bionet_params = bionet_params, dtype = dtype, device = device, seed = seed)
-#         self.make_mask()
+        self.make_mask()
 
     def initialize_weight_values(self):
         """Initialize the RNN weight_values for all interactions in the signaling network.
@@ -356,14 +356,8 @@ class BioNetSimple(BioNetBase):
         self.bias_basal = nn.Parameter(bias_basal)
 
         return weight_values 
-    
-    def get_device(self):
-        if self.device == 'cuda':
-            device = next(self.parameters()).device
-            return device.type + ':{}'.format(device.index)
-        else:
-            return self.device
-    def make_mask(self, device):
+
+    def make_mask(self):
         """Generates a mask for adjacency matrix for non-interacting nodes, for the mechanism of action (unknown weights), 
         and ligand nodes. 
 
@@ -373,14 +367,14 @@ class BioNetSimple(BioNetBase):
             a boolean adjacency matrix of all nodes in the signaling network, masking (True) interactions that are not present
         """
 
-        weights_mask = torch.zeros(self.n_network_nodes, self.n_network_nodes, dtype=bool, device = device) # adjacency list format (targets (rows)--> sources (columns))
+        weights_mask = torch.zeros(self.n_network_nodes, self.n_network_nodes, dtype=bool, device = self.device) # adjacency list format (targets (rows)--> sources (columns))
         weights_mask[self.edge_list] = True # if interaction is present, do not mask
         weights_mask = torch.logical_not(weights_mask) # make non-interacting edges False and vice-vesa
         self.mask = weights_mask
         
         # mask ligand bias terms -- ensures bias terms are context-specific (e.g. categorical covariates) in a 
         # manner that is independent of the ligand information
-        self.bias_mask = torch.zeros((self.n_network_nodes_in, 1), dtype = bool, device = device)
+        self.bias_mask = torch.zeros((self.n_network_nodes_in, 1), dtype = bool, device = self.device)
         self.bias_mask[self.input_node_idx] = True
 
         # a boolean adjacency matrix of all nodes in the signaling network, with interactions that do not exist 
@@ -403,7 +397,6 @@ class BioNetSimple(BioNetBase):
             the signaling network scaled by learned interaction weights. Shape is (samples x network nodes).
         """
         # implement masks
-        self.make_mask(device = X_full.device) # moved from init to work with nn.DataParallel
         self.weights.data.masked_fill_(mask = self.mask, value = 0.0) # fill non-interacting edges with 0
         self.bias_basal.data.masked_fill_(mask = self.bias_mask, value = 0.0)
 
@@ -448,7 +441,7 @@ class BioNetCat(BioNetBase):
                          bionet_params = bionet_params, dtype = dtype, device = device, seed = seed)
         self.covariates = covariates[categorical_covariate_keys]
         self.embed_covariates()
-#         self.make_mask()
+        self.make_mask()
 
 
     def initialize_weight_values(self):
@@ -474,7 +467,7 @@ class BioNetCat(BioNetBase):
 
         return weight_values
 
-    def make_mask(self, device):
+    def make_mask(self):
         """Generates a mask for adjacency matrix for non-interacting nodes, for the mechanism of action (unknown weights), 
         and ligand nodes. 
 
@@ -484,14 +477,14 @@ class BioNetCat(BioNetBase):
             a boolean adjacency matrix of all nodes in the signaling network, masking (True) interactions that are not present
         """
 
-        weights_mask = torch.zeros(self.n_network_nodes, self.n_network_nodes, dtype=bool, device = device) # adjacency list format (targets (rows)--> sources (columns))
+        weights_mask = torch.zeros(self.n_network_nodes, self.n_network_nodes, dtype=bool, device = self.device) # adjacency list format (targets (rows)--> sources (columns))
         weights_mask[self.edge_list] = True # if interaction is present, do not mask
         weights_mask = torch.logical_not(weights_mask) # make non-interacting edges False and vice-vesa
         self.mask = weights_mask
         
         # mask ligand bias terms -- ensures bias terms are context-specific (e.g. categorical covariates) in a 
         # manner that is independent of the ligand information
-        self.bias_mask = torch.zeros((self.n_network_nodes_in, 1), dtype = bool, device = device)
+        self.bias_mask = torch.zeros((self.n_network_nodes_in, 1), dtype = bool, device = self.device)
         self.bias_mask[self.input_node_idx] = True
         self.cat_embeddings_mask = {covariate_cat: torch.cat([self.bias_mask.T] * embedding.weight.shape[0], dim=0)
                             for covariate_cat, embedding in self.cat_embeddings.items()}
@@ -563,7 +556,6 @@ class BioNetCat(BioNetBase):
             the signaling network scaled by learned interaction weights. Shape is (samples x network nodes).
         """
         # implement masks
-        self.make_mask(device = X_full.device) # moved from init to work with nn.DataParallel
         self.weights.data.masked_fill_(mask = self.mask, value = 0.0) # fill non-interacting edges with 0
 #         self.bias_basal.data.masked_fill_(mask = self.bias_mask, value = 0.0)
 

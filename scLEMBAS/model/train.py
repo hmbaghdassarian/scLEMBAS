@@ -30,16 +30,6 @@ else:
     handler.setFormatter(formatter)
     logging.getLogger().addHandler(handler)
     logging.getLogger().setLevel(logging.ERROR)
-
-class ModDataParallel(nn.DataParallel):
-    def __getattr__(self, name):
-        try:
-            return super().__getattr__(name)
-        except AttributeError:
-            return getattr(self.module, name) 
-    def get_device(self):
-        device = next(self.parameters()).device
-        return device.type + ':{}'.format(device.index)
         
     
 class ModelData(Dataset):
@@ -161,10 +151,7 @@ class TrainBase:
         else:
             self.hyper_params = {k: v for k,v in {**self.HYPER_PARAMS, **hyper_params}.items() if k in self.HYPER_PARAMS}
         
-        if torch.cuda.is_available() and mod.device == 'cuda' and torch.cuda.device_count() > 1:
-            self.mod = ModDataParallel(mod)
-        else:
-            self.mod = mod
+        self.mod = mod
 
         self.prediction_loss_fn = prediction_loss_fn
         self.prediction_optimizer = prediction_optimizer(self.mod.parameters(), 
@@ -369,7 +356,7 @@ class TrainSimple(TrainBase):
                 self.mod.train()
                 self.prediction_optimizer.zero_grad()
         
-                X_in_, y_out_, covariates_idx_ = X_in_.to(self.mod.get_device()), y_out_.to(self.mod.get_device()), covariates_idx_.to(self.mod.get_device())
+                X_in_, y_out_, covariates_idx_ = X_in_.to(self.mod.device), y_out_.to(self.mod.device), covariates_idx_.to(self.mod.device)
         
                 # forward pass
                 X_full = self.mod.input_layer(X_in_) # transform to full network with ligand input concentrations
@@ -418,7 +405,7 @@ class TrainSimple(TrainBase):
                     if self.track_validation:
                         loss_val_all = []
                         for batch, (X_in_val, y_out_val, covariates_idx_val) in enumerate(self.validation_dataloader): 
-                            X_in_val, y_out_val, covariates_idx_val = X_in_val.to(self.mod.get_device()), y_out_val.to(self.mod.get_device()), covariates_idx_val.to(self.mod.get_device())
+                            X_in_val, y_out_val, covariates_idx_val = X_in_val.to(self.mod.device), y_out_val.to(self.mod.device), covariates_idx_val.to(self.mod.device)
                             self.mod.signaling_network.mask = self.mod.signaling_network.mask.to(X_in_val.device)
                             y_pred_val, _ = self.mod(X_in = X_in_val, covariates_idx = covariates_idx_val)
                             loss_val = self.prediction_loss_fn(y_out_val, y_pred_val).detach().item()
@@ -427,7 +414,7 @@ class TrainSimple(TrainBase):
                     if self.track_test:
                         loss_test_all = []
                         for batch, (X_in_test, y_out_test, covariates_idx_test) in enumerate(self.test_dataloader):
-                            X_in_test, y_out_test, covariates_idx_test = X_in_test.to(self.mod.get_device()), y_out_test.to(self.mod.get_device()), covariates_idx_test.to(self.mod.get_device())
+                            X_in_test, y_out_test, covariates_idx_test = X_in_test.to(self.mod.device), y_out_test.to(self.mod.device), covariates_idx_test.to(self.mod.device)
                             y_pred_test, _ = self.mod(X_in = X_in_test, covariates_idx = covariates_idx_test)
                             loss_test = self.prediction_loss_fn(y_out_test, y_pred_test).detach().item()
                             loss_test_all.append(loss_test)
@@ -537,7 +524,7 @@ class TrainCat(TrainBase):
                 
                 self.prediction_optimizer.zero_grad()
 
-                X_in_, y_out_, covariates_idx_ = X_in_.to(self.mod.get_device()), y_out_.to(self.mod.get_device()), covariates_idx_.to(self.mod.get_device())
+                X_in_, y_out_, covariates_idx_ = X_in_.to(self.mod.device), y_out_.to(self.mod.device), covariates_idx_.to(self.mod.device)
 
                 # forward pass
                 X_full = self.mod.input_layer(X_in_) # transform to full network with ligand input concentrations
@@ -724,7 +711,7 @@ class TrainSC(TrainBase):
                 self.prediction_optimizer.zero_grad()
                 self.discriminator_optimizer.zero_grad()
 
-                X_in_, y_out_, covariates_idx_ = X_in_.to(self.mod.get_device()), y_out_.to(self.mod.get_device()), covariates_idx_.to(self.mod.get_device())
+                X_in_, y_out_, covariates_idx_ = X_in_.to(self.mod.device), y_out_.to(self.mod.device), covariates_idx_.to(self.mod.device)
 
                 # forward pass
                 X_full = self.mod.input_layer(X_in_) # transform to full network with ligand input concentrations
