@@ -128,7 +128,7 @@ class ProjectOutput(nn.Module):
         Y_hat :  torch.Tensor
             the linearly scaled TF outputs. Shape is (samples x TFs)
         """
-        Y_hat = self.weights * Y_full[:, self.output_node_order]
+        Y_hat = self.weights * Y_full[:, self.output_node_order.to(Y_full.device)] # to for nn.DataParallel
         return Y_hat
 
     def L2_reg(self, lambda_L2: Annotated[float, Ge(0)] = 0):

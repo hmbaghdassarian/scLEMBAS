@@ -137,7 +137,13 @@ class SignalingModel(torch.nn.Module):
                                           output_labels = self.y_out.columns.values, 
                                           projection_amplitude = self.projection_amplitude_out, 
                                           dtype = self.dtype, device = self.device)
-
+    def get_device(self):
+        if self.device == 'cuda':
+            device = next(self.parameters()).device
+            return device.type + ':{}'.format(device.index)
+        else:
+            return self.device
+       
     def parse_network(self, net: pd.DataFrame, ban_list: List[str] = None, 
                  weight_label: str = 'mode_of_action', source_label: str = 'source', target_label: str = 'target'):
         """Parse adjacency network.

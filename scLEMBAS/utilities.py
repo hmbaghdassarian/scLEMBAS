@@ -163,39 +163,17 @@ def print_stats(stats_df):
     """
     epoch = stats_df.shape[0] - 1
     msg = 'i={:.0f}'.format(epoch)
-    msg += ', l(tr)={:.5f}'.format(stats_df.loc[e, 'train_loss_mean'])
-    if 'loss_train' in stats_df.columns:
-        msg += ', l(te)={:.5f}'.format(stats_df.loc[e, 'loss_test'])
-    if 'loss_validation' in stats_df.columns:
-        msg += ', l(v)={:.5f}'.format(stats_df.loc[e, 'loss_validation'])
-    msg += ', s={:.5f}'.format(stats_df.loc[e, 'eig_mean'])
-    msg += ', r={:.5f}'.format(stats_df.loc[e, 'learning_rate'])
-    msg += ', v={:.5f}'.format(stats_df.loc[e, 'n_moa_violations'])
+    msg += ', l(tr)={:.5f}'.format(stats_df.loc[epoch, 'train_loss_mean'])
+    if 'test_loss' in stats_df.columns:
+        msg += ', l(te)={:.5f}'.format(stats_df.loc[epoch, 'test_loss'])
+    if 'validation_loss' in stats_df.columns:
+        msg += ', l(v)={:.5f}'.format(stats_df.loc[epoch, 'validation_loss'])
+    msg += ', s={:.5f}'.format(stats_df.loc[epoch, 'eig_mean'])
+    msg += ', r={:.5f}'.format(stats_df.loc[epoch, 'learning_rate'])
+    msg += ', v={:.5f}'.format(stats_df.loc[epoch, 'n_moa_violations'])
     print(msg)
     
-# def print_stats(stats, iter):
-#     """Prints various stats of the progress of training the model.
 
-#     Parameters
-#     ----------
-#     stats : dict
-#         a dictionary of progress statistics
-#     iter : int
-#         the current training iteration
-#     """
-#     msg = 'i={:.0f}'.format(iter)
-#     if not np.isnan(stats['loss_mean'][iter]):
-#         msg += ', l={:.5f}'.format(stats['loss_mean'][iter])
-#     # if not np.isnan(stats['test'][iter]):
-#     #     msg += ', t={:.5f}'.format(stats['test'][iter])
-#     if not np.isnan(stats['eig_mean'][iter]):
-#         msg += ', s={:.3f}'.format(stats['eig_mean'][iter])
-#     if not np.isnan(stats['learning_rate'][iter]):
-#         msg += ', r={:.5f}'.format(stats['learning_rate'][iter])
-#     if not np.isnan(stats['violations'][iter]):
-#         msg += ', v={:.0f}'.format(stats['violations'][iter])
-        
-    print(msg)
 
 def get_moving_average(values: np.array, n_steps: int):
     """Get the moving average of a tracked state across n_steps. Serves to smooth value. 
