@@ -63,8 +63,8 @@ class ModelData(Dataset):
     def __getitem__(self, idx: int):
         "Returns one sample of data, data and label (X, y)."
         return self.X_in[idx, :], self.y_out[idx, :], self.covariates_idx[idx,:]
-
-
+    
+    
 class TrainBase:
     """Base class for training the signaling model."""
 
@@ -155,7 +155,7 @@ class TrainBase:
 
         self.prediction_loss_fn = prediction_loss_fn
         self.prediction_optimizer = prediction_optimizer(self.mod.parameters(), 
-                                                 lr=self.hyper_params['minimum_learning_rate'], 
+                                                 lr=self.hyper_params['maximum_learning_rate'], 
                                                  weight_decay=0)
         self.lr_scheduler = WarmupCosineAnnealingWarmRestarts(optimizer = self.prediction_optimizer,
                                                               T_0 = self.hyper_params['lr_restart_epoch'],
@@ -203,14 +203,14 @@ class TrainBase:
 #                 self._y_val = self.mod.df_to_tensor(self.y_val)
                 
         stats_df_cols = ['learning_rate', 'iter_time', 'eig_mean', 'eig_sigma', 'n_moa_violations',
-                         'train_loss_with_reg', 'train_loss_mean', 'train_loss_sigma']
+                         'train_loss_with_reg', 'train_loss_mean', 'train_loss_sigma', 
+                         'train_pearson_mean', 'train_pearson_sigma']
 
         if self.track_test: 
-            stats_df_cols.append('test_loss_mean')
-            stats_df_cols.append('test_loss_sigma')
+            stats_df_cols += ['test_loss_mean', 'test_loss_sigma', 'test_pearson_mean', 'test_pearson_sigma']
         if self.track_validation:
-            stats_df_cols.append('validation_loss')
-            stats_df_cols.append('validation_loss_sigma')
+            stats_df_cols += ['validation_loss_mean', 'validation_loss_sigma', 'validation_pearson_mean', 'validation_pearson_sigma']
+
         self.stats_df = pd.DataFrame(columns = stats_df_cols)
 
     def create_data_loader(self, include_covariates = True):
@@ -288,6 +288,29 @@ class TrainBase:
                                                         random_state=seed)
 
         return X_train, X_test, X_val, y_train, y_test, y_val
+    
+    @staticmethod
+    def rowwise_pearson(tensor_a, tensor_b, return_mean = True):
+        with torch.no_grad():
+            # Subtract the mean from each row
+            mean_a = tensor_a.mean(dim=1, keepdim=True)
+            mean_b = tensor_b.mean(dim=1, keepdim=True)
+
+            a_centered = tensor_a - mean_a
+            b_centered = tensor_b - mean_b
+
+            # Compute the covariance between corresponding rows
+            cov = (a_centered * b_centered).sum(dim=1) / (tensor_a.size(1) - 1)
+
+            # Compute the standard deviations
+            std_a = a_centered.std(dim=1, unbiased=False)
+            std_b = b_centered.std(dim=1, unbiased=False)
+
+            # Compute the Pearson correlation coefficient for each row
+            correlation = cov / (std_a * std_b)
+            if return_mean:
+                correlation = torch.mean(correlation).item()
+        return correlation
 
 
 class TrainSimple(TrainBase):
@@ -346,8 +369,9 @@ class TrainSimple(TrainBase):
 #             self.prediction_optimizer.param_groups[0]['lr'] = cur_lr
             
             cur_loss = []
-            cur_loss_with_reg = []
             cur_eig = []
+            cur_loss_with_reg = []
+            cur_pearson = []
             
             # iterate through batches
             if self.mod.seed:
@@ -368,6 +392,7 @@ class TrainSimple(TrainBase):
                 
                 # get prediction loss
                 fit_loss = self.prediction_loss_fn(y_out_, Y_hat)
+                train_pearson_r = self.rowwise_pearson(y_out_, Y_hat, return_mean = True)
                 
                 # get regularization losses
                 sign_reg = self.mod.signaling_network.sign_regularization(lambda_L1 = self.hyper_params['moa_lambda_L1']) # incorrect MoA
@@ -393,9 +418,10 @@ class TrainSimple(TrainBase):
                 cur_eig.append(spectral_radius)
                 cur_loss.append(fit_loss.item())
                 cur_loss_with_reg.append(total_loss.item())
+                cur_pearson.append(train_pearson_r)
                 
                 # free up CUDA mem
-                del sign_reg, stability_loss, uniform_reg, param_reg, fit_loss
+                del sign_reg, stability_loss, uniform_reg, param_reg, fit_loss, train_pearson_r
                 del X_in_, y_out_, covariates_idx_, X_full, Y_full, Y_hat
             
             # test/validation
@@ -404,27 +430,35 @@ class TrainSimple(TrainBase):
                 with torch.inference_mode(): 
                     if self.track_validation:
                         loss_val_all = []
+                        pearson_val_all = []
                         for batch, (X_in_val, y_out_val, covariates_idx_val) in enumerate(self.validation_dataloader): 
                             X_in_val, y_out_val, covariates_idx_val = X_in_val.to(self.mod.device), y_out_val.to(self.mod.device), covariates_idx_val.to(self.mod.device)
                             self.mod.signaling_network.mask = self.mod.signaling_network.mask.to(X_in_val.device)
                             y_pred_val, _ = self.mod(X_in = X_in_val, covariates_idx = covariates_idx_val)
                             loss_val = self.prediction_loss_fn(y_out_val, y_pred_val).detach().item()
+                            pearson_val = self.rowwise_pearson(y_out_val,  y_pred_val)
                             loss_val_all.append(loss_val)
+                            pearson_val_all.append(pearson_val)
                             del y_pred_val, _
                     if self.track_test:
                         loss_test_all = []
+                        pearson_test_all = []
                         for batch, (X_in_test, y_out_test, covariates_idx_test) in enumerate(self.test_dataloader):
                             X_in_test, y_out_test, covariates_idx_test = X_in_test.to(self.mod.device), y_out_test.to(self.mod.device), covariates_idx_test.to(self.mod.device)
                             y_pred_test, _ = self.mod(X_in = X_in_test, covariates_idx = covariates_idx_test)
                             loss_test = self.prediction_loss_fn(y_out_test, y_pred_test).detach().item()
+                            pearson_test = self.rowwise_pearson(y_out_test, y_pred_test)
                             loss_test_all.append(loss_test)
+                            pearson_test_all.append(pearson_test)
                             del y_pred_test, _
         
             # tracking
             sv = [cur_lr, time.time() - start_time, np.mean(cur_eig), np.std(cur_eig),
-                  self.mod.signaling_network.count_sign_mismatch(), np.mean(cur_loss_with_reg), np.mean(cur_loss), np.std(cur_loss)]
-            sv += [np.mean(loss_test_all), np.std(loss_test_all)] if self.track_test else []
-            sv += [np.mean(loss_val_all), np.std(loss_val_all)] if self.track_validation else []
+                  self.mod.signaling_network.count_sign_mismatch(), 
+                  np.mean(cur_loss_with_reg), np.mean(cur_loss), np.std(cur_loss), 
+                  np.mean(cur_pearson), np.std(cur_pearson)]
+            sv += [np.mean(loss_test_all), np.std(loss_test_all), np.mean(pearson_test_all), np.std(pearson_test_all)] if self.track_test else []
+            sv += [np.mean(loss_val_all), np.std(loss_val_all), np.mean(pearson_val_all), np.std(pearson_val_all)] if self.track_validation else []
             self.stats_df.loc[e, :] = sv
             
             if e % (self.hyper_params['max_epochs']/100) == 0:
@@ -515,6 +549,8 @@ class TrainCat(TrainBase):
             cur_loss = []
             cur_eig = []
             cur_loss_with_reg = []
+            cur_pearson = []
+
 
             # iterate through batches
             if self.mod.seed:
@@ -536,6 +572,7 @@ class TrainCat(TrainBase):
 
                 # get prediction loss
                 prediction_loss = self.prediction_loss_fn(y_out_, Y_hat)
+                train_pearson_r = self.rowwise_pearson(y_out_, Y_hat, return_mean = True)
 
                 # regularization
                 sign_reg = self.mod.signaling_network.sign_regularization(lambda_L1 = self.hyper_params['moa_lambda_L1']) # incorrect MoA
@@ -560,9 +597,10 @@ class TrainCat(TrainBase):
                 cur_eig.append(spectral_radius)
                 cur_loss.append(prediction_loss.item())
                 cur_loss_with_reg.append(tot_pred_loss.item())
+                cur_pearson.append(train_pearson_r)
                 
                 # free up CUDA mem
-                del sign_reg, stability_loss, uniform_reg, param_reg, prediction_loss
+                del sign_reg, stability_loss, uniform_reg, param_reg, prediction_loss, train_pearson_r
                 del X_in_, y_out_, covariates_idx_, X_full, Y_full, Y_hat
                 
             # test/validation
@@ -570,19 +608,37 @@ class TrainCat(TrainBase):
                 self.mod.eval()
                 with torch.inference_mode(): 
                     if self.track_validation:
-                        y_pred_val, _ = self.mod(X_in = self._X_val, covariates_idx = self._covariates_idx_val)
-                        loss_val = self.prediction_loss_fn(self._y_val, y_pred_val).detach().item()
-                        del y_pred_val, _
+                        loss_val_all = []
+                        pearson_val_all = []
+                        for batch, (X_in_val, y_out_val, covariates_idx_val) in enumerate(self.validation_dataloader): 
+                            X_in_val, y_out_val, covariates_idx_val = X_in_val.to(self.mod.device), y_out_val.to(self.mod.device), covariates_idx_val.to(self.mod.device)
+                            self.mod.signaling_network.mask = self.mod.signaling_network.mask.to(X_in_val.device)
+                            y_pred_val, _ = self.mod(X_in = X_in_val, covariates_idx = covariates_idx_val)
+                            loss_val = self.prediction_loss_fn(y_out_val, y_pred_val).detach().item()
+                            pearson_val = self.rowwise_pearson(y_out_val,  y_pred_val)
+                            loss_val_all.append(loss_val)
+                            pearson_val_all.append(pearson_val)
+                            del y_pred_val, _
                     if self.track_test:
-                        y_pred_test, _ = self.mod(X_in = self._X_test, covariates_idx = self._covariates_idx_test)
-                        loss_test = self.prediction_loss_fn(self._y_test, y_pred_test).detach().item()
-                        del y_pred_test, _
+                        loss_test_all = []
+                        pearson_test_all = []
+                        for batch, (X_in_test, y_out_test, covariates_idx_test) in enumerate(self.test_dataloader):
+                            X_in_test, y_out_test, covariates_idx_test = X_in_test.to(self.mod.device), y_out_test.to(self.mod.device), covariates_idx_test.to(self.mod.device)
+                            y_pred_test, _ = self.mod(X_in = X_in_test, covariates_idx = covariates_idx_test)
+                            loss_test = self.prediction_loss_fn(y_out_test, y_pred_test).detach().item()
+                            pearson_test = self.rowwise_pearson(y_out_test, y_pred_test)
+                            loss_test_all.append(loss_test)
+                            pearson_test_all.append(pearson_test)
+                            del y_pred_test, _
         
             # tracking
+            # tracking
             sv = [cur_lr, time.time() - start_time, np.mean(cur_eig), np.std(cur_eig),
-                  self.mod.signaling_network.count_sign_mismatch(), np.mean(cur_loss_with_reg), np.mean(cur_loss), np.std(cur_loss)]
-            sv += [loss_test] if self.track_test else []
-            sv += [loss_val] if self.track_validation else []
+                  self.mod.signaling_network.count_sign_mismatch(), 
+                  np.mean(cur_loss_with_reg), np.mean(cur_loss), np.std(cur_loss), 
+                  np.mean(cur_pearson), np.std(cur_pearson)]
+            sv += [np.mean(loss_test_all), np.std(loss_test_all), np.mean(pearson_test_all), np.std(pearson_test_all)] if self.track_test else []
+            sv += [np.mean(loss_val_all), np.std(loss_val_all), np.mean(pearson_val_all), np.std(pearson_val_all)] if self.track_validation else []
             self.stats_df.loc[e, :] = sv
 
             if e % (self.hyper_params['max_epochs']/100) == 0:
@@ -701,6 +757,8 @@ class TrainSC(TrainBase):
             cur_loss = []
             cur_eig = []
             cur_loss_with_reg = []
+            cur_pearson = []
+
 
             # iterate through batches
             if self.mod.seed:
@@ -723,6 +781,7 @@ class TrainSC(TrainBase):
 
                 # get prediction loss
                 prediction_loss = self.prediction_loss_fn(y_out_, Y_hat)
+                train_pearson_r = self.rowwise_pearson(y_out_, Y_hat, return_mean = True)
 
                 # discriminator prediction and loss
                 discriminator_loss = torch.tensor([0], device = self.mod.device, dtype = self.mod.dtype)
@@ -769,9 +828,10 @@ class TrainSC(TrainBase):
                 cur_eig.append(spectral_radius)
                 cur_loss.append(prediction_loss.item())
                 cur_loss_with_reg.append(tot_pred_loss.item())
+                cur_pearson.append(train_pearson_r)
                 
                 # free up CUDA mem
-                del sign_reg, stability_loss, uniform_reg, param_reg, prediction_loss
+                del sign_reg, stability_loss, uniform_reg, param_reg, prediction_loss, train_pearson_r
                 del X_in_, y_out_, covariates_idx_, X_full, Y_full, Y_hat
 
             # test/validation
@@ -779,19 +839,37 @@ class TrainSC(TrainBase):
                 self.mod.eval()
                 with torch.inference_mode(): 
                     if self.track_validation:
-                        y_pred_val, _ = self.mod(X_in = self._X_val, covariates_idx = self._covariates_idx_val)
-                        loss_val = self.prediction_loss_fn(self._y_val, y_pred_val).detach().item()
-                        del y_pred_val, _
+                        loss_val_all = []
+                        pearson_val_all = []
+                        for batch, (X_in_val, y_out_val, covariates_idx_val) in enumerate(self.validation_dataloader): 
+                            X_in_val, y_out_val, covariates_idx_val = X_in_val.to(self.mod.device), y_out_val.to(self.mod.device), covariates_idx_val.to(self.mod.device)
+                            self.mod.signaling_network.mask = self.mod.signaling_network.mask.to(X_in_val.device)
+                            y_pred_val, _ = self.mod(X_in = X_in_val, covariates_idx = covariates_idx_val)
+                            loss_val = self.prediction_loss_fn(y_out_val, y_pred_val).detach().item()
+                            pearson_val = self.rowwise_pearson(y_out_val,  y_pred_val)
+                            loss_val_all.append(loss_val)
+                            pearson_val_all.append(pearson_val)
+                            del y_pred_val, _
                     if self.track_test:
-                        y_pred_test, _ = self.mod(X_in = self._X_test, covariates_idx = self._covariates_idx_test)
-                        loss_test = self.prediction_loss_fn(self._y_test, y_pred_test).detach().item()
-                        del y_pred_test, _
+                        loss_test_all = []
+                        pearson_test_all = []
+                        for batch, (X_in_test, y_out_test, covariates_idx_test) in enumerate(self.test_dataloader):
+                            X_in_test, y_out_test, covariates_idx_test = X_in_test.to(self.mod.device), y_out_test.to(self.mod.device), covariates_idx_test.to(self.mod.device)
+                            y_pred_test, _ = self.mod(X_in = X_in_test, covariates_idx = covariates_idx_test)
+                            loss_test = self.prediction_loss_fn(y_out_test, y_pred_test).detach().item()
+                            pearson_test = self.rowwise_pearson(y_out_test, y_pred_test)
+                            loss_test_all.append(loss_test)
+                            pearson_test_all.append(pearson_test)
+                            del y_pred_test, _
         
             # tracking
+            # tracking
             sv = [cur_lr, time.time() - start_time, np.mean(cur_eig), np.std(cur_eig),
-                  self.mod.signaling_network.count_sign_mismatch(), np.mean(cur_loss_with_reg), np.mean(cur_loss), np.std(cur_loss)]
-            sv += [loss_test] if self.track_test else []
-            sv += [loss_val] if self.track_validation else []
+                  self.mod.signaling_network.count_sign_mismatch(), 
+                  np.mean(cur_loss_with_reg), np.mean(cur_loss), np.std(cur_loss), 
+                  np.mean(cur_pearson), np.std(cur_pearson)]
+            sv += [np.mean(loss_test_all), np.std(loss_test_all), np.mean(pearson_test_all), np.std(pearson_test_all)] if self.track_test else []
+            sv += [np.mean(loss_val_all), np.std(loss_val_all), np.mean(pearson_val_all), np.std(pearson_val_all)] if self.track_validation else []
             self.stats_df.loc[e, :] = sv
 
             if e % (self.hyper_params['max_epochs']/100) == 0:
