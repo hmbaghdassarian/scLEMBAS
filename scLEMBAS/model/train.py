@@ -290,27 +290,31 @@ class TrainBase:
         return X_train, X_test, X_val, y_train, y_test, y_val
     
     @staticmethod
-    def rowwise_pearson(tensor_a, tensor_b, return_mean = True):
+    def get_pearson_correlation(tensor_a, tensor_b, axis=0, return_mean=True):
+        """Takes the row- or column-wise Pearson correlation between two torch tensors
+
+        Parameters
+        ----------
+        tensor_a : _type_
+            _description_
+        tensor_b : _type_
+            _description_
+        axis : int, optional
+            row-wise if 0, column-wise if 1, by default 0
+        return_mean : bool, optional
+            whether to take the mean across all correlations, by default True
+        """
         with torch.no_grad():
-            # Subtract the mean from each row
-            mean_a = tensor_a.mean(dim=1, keepdim=True)
-            mean_b = tensor_b.mean(dim=1, keepdim=True)
+            if axis == 1:
+                tensor_a = tensor_a.T
+                tensor_b = tensor_b.T
 
-            a_centered = tensor_a - mean_a
-            b_centered = tensor_b - mean_b
+                correlations = np.array([np.corrcoef(tensor_a[i], tensor_b[i])[0, 1] for i in range(tensor_a.shape[0])])
 
-            # Compute the covariance between corresponding rows
-            cov = (a_centered * b_centered).sum(dim=1) / (tensor_a.size(1) - 1)
-
-            # Compute the standard deviations
-            std_a = a_centered.std(dim=1, unbiased=False)
-            std_b = b_centered.std(dim=1, unbiased=False)
-
-            # Compute the Pearson correlation coefficient for each row
-            correlation = cov / (std_a * std_b)
-            if return_mean:
-                correlation = torch.mean(correlation).item()
-        return correlation
+                if return_mean:
+                    return np.nanmean(correlations)
+                else:
+                    return correlations
 
 
 class TrainSimple(TrainBase):
@@ -392,7 +396,7 @@ class TrainSimple(TrainBase):
                 
                 # get prediction loss
                 fit_loss = self.prediction_loss_fn(y_out_, Y_hat)
-                train_pearson_r = self.rowwise_pearson(y_out_, Y_hat, return_mean = True)
+                train_pearson_r = self.get_pearson_correlation(y_out_, Y_hat, axis = 0, return_mean = True)
                 
                 # get regularization losses
                 sign_reg = self.mod.signaling_network.sign_regularization(lambda_L1 = self.hyper_params['moa_lambda_L1']) # incorrect MoA
@@ -436,7 +440,7 @@ class TrainSimple(TrainBase):
                             self.mod.signaling_network.mask = self.mod.signaling_network.mask.to(X_in_val.device)
                             y_pred_val, _ = self.mod(X_in = X_in_val, covariates_idx = covariates_idx_val)
                             loss_val = self.prediction_loss_fn(y_out_val, y_pred_val).detach().item()
-                            pearson_val = self.rowwise_pearson(y_out_val,  y_pred_val)
+                            pearson_val = self.get_pearson_correlation(y_out_val,  y_pred_val)
                             loss_val_all.append(loss_val)
                             pearson_val_all.append(pearson_val)
                             del y_pred_val, _
@@ -447,7 +451,7 @@ class TrainSimple(TrainBase):
                             X_in_test, y_out_test, covariates_idx_test = X_in_test.to(self.mod.device), y_out_test.to(self.mod.device), covariates_idx_test.to(self.mod.device)
                             y_pred_test, _ = self.mod(X_in = X_in_test, covariates_idx = covariates_idx_test)
                             loss_test = self.prediction_loss_fn(y_out_test, y_pred_test).detach().item()
-                            pearson_test = self.rowwise_pearson(y_out_test, y_pred_test)
+                            pearson_test = self.get_pearson_correlation(y_out_test, y_pred_test)
                             loss_test_all.append(loss_test)
                             pearson_test_all.append(pearson_test)
                             del y_pred_test, _
@@ -572,7 +576,7 @@ class TrainCat(TrainBase):
 
                 # get prediction loss
                 prediction_loss = self.prediction_loss_fn(y_out_, Y_hat)
-                train_pearson_r = self.rowwise_pearson(y_out_, Y_hat, return_mean = True)
+                train_pearson_r = self.get_pearson_correlation(y_out_, Y_hat, axis = 0, return_mean = True)
 
                 # regularization
                 sign_reg = self.mod.signaling_network.sign_regularization(lambda_L1 = self.hyper_params['moa_lambda_L1']) # incorrect MoA
@@ -615,7 +619,7 @@ class TrainCat(TrainBase):
                             self.mod.signaling_network.mask = self.mod.signaling_network.mask.to(X_in_val.device)
                             y_pred_val, _ = self.mod(X_in = X_in_val, covariates_idx = covariates_idx_val)
                             loss_val = self.prediction_loss_fn(y_out_val, y_pred_val).detach().item()
-                            pearson_val = self.rowwise_pearson(y_out_val,  y_pred_val)
+                            pearson_val = self.get_pearson_correlation(y_out_val,  y_pred_val)
                             loss_val_all.append(loss_val)
                             pearson_val_all.append(pearson_val)
                             del y_pred_val, _
@@ -626,7 +630,7 @@ class TrainCat(TrainBase):
                             X_in_test, y_out_test, covariates_idx_test = X_in_test.to(self.mod.device), y_out_test.to(self.mod.device), covariates_idx_test.to(self.mod.device)
                             y_pred_test, _ = self.mod(X_in = X_in_test, covariates_idx = covariates_idx_test)
                             loss_test = self.prediction_loss_fn(y_out_test, y_pred_test).detach().item()
-                            pearson_test = self.rowwise_pearson(y_out_test, y_pred_test)
+                            pearson_test = self.get_pearson_correlation(y_out_test, y_pred_test)
                             loss_test_all.append(loss_test)
                             pearson_test_all.append(pearson_test)
                             del y_pred_test, _
@@ -781,7 +785,7 @@ class TrainSC(TrainBase):
 
                 # get prediction loss
                 prediction_loss = self.prediction_loss_fn(y_out_, Y_hat)
-                train_pearson_r = self.rowwise_pearson(y_out_, Y_hat, return_mean = True)
+                train_pearson_r = self.get_pearson_correlation(y_out_, Y_hat, axis = 0, return_mean = True)
 
                 # discriminator prediction and loss
                 discriminator_loss = torch.tensor([0], device = self.mod.device, dtype = self.mod.dtype)
@@ -846,7 +850,7 @@ class TrainSC(TrainBase):
                             self.mod.signaling_network.mask = self.mod.signaling_network.mask.to(X_in_val.device)
                             y_pred_val, _ = self.mod(X_in = X_in_val, covariates_idx = covariates_idx_val)
                             loss_val = self.prediction_loss_fn(y_out_val, y_pred_val).detach().item()
-                            pearson_val = self.rowwise_pearson(y_out_val,  y_pred_val)
+                            pearson_val = self.get_pearson_correlation(y_out_val,  y_pred_val)
                             loss_val_all.append(loss_val)
                             pearson_val_all.append(pearson_val)
                             del y_pred_val, _
@@ -857,7 +861,7 @@ class TrainSC(TrainBase):
                             X_in_test, y_out_test, covariates_idx_test = X_in_test.to(self.mod.device), y_out_test.to(self.mod.device), covariates_idx_test.to(self.mod.device)
                             y_pred_test, _ = self.mod(X_in = X_in_test, covariates_idx = covariates_idx_test)
                             loss_test = self.prediction_loss_fn(y_out_test, y_pred_test).detach().item()
-                            pearson_test = self.rowwise_pearson(y_out_test, y_pred_test)
+                            pearson_test = self.get_pearson_correlation(y_out_test, y_pred_test)
                             loss_test_all.append(loss_test)
                             pearson_test_all.append(pearson_test)
                             del y_pred_test, _
