@@ -309,12 +309,13 @@ class TrainBase:
                 tensor_a = tensor_a.T
                 tensor_b = tensor_b.T
 
-                correlations = np.array([np.corrcoef(tensor_a[i], tensor_b[i])[0, 1] for i in range(tensor_a.shape[0])])
+    #         correlations = np.array([np.corrcoef(tensor_a[i], tensor_b[i])[0, 1] for i in range(tensor_a.shape[0])])
+            correlations = torch.tensor([torch.corrcoef(torch.stack([tensor_a[i], tensor_b[i]]))[0, 1] for i in range(tensor_a.shape[0])])
 
-                if return_mean:
-                    return np.nanmean(correlations)
-                else:
-                    return correlations
+            if return_mean:
+                return torch.nanmean(correlations).item()
+            else:
+                return correlations
 
 
 class TrainSimple(TrainBase):
@@ -415,8 +416,6 @@ class TrainSimple(TrainBase):
                 total_loss.backward()
                 self.mod.add_gradient_noise(noise_level = self.hyper_params['gradient_noise_scale'])
                 self.prediction_optimizer.step()
-                self.lr_scheduler.step()
-#                 cur_lr = lr_scheduler.get_lr()[0]
         
                 # store
                 cur_eig.append(spectral_radius)
@@ -427,7 +426,9 @@ class TrainSimple(TrainBase):
                 # free up CUDA mem
                 del sign_reg, stability_loss, uniform_reg, param_reg, fit_loss, train_pearson_r
                 del X_in_, y_out_, covariates_idx_, X_full, Y_full, Y_hat
-            
+                
+            self.lr_scheduler.step()
+#            cur_lr = lr_scheduler.get_lr()[0]
             # test/validation
             if self.track_validation or self.track_test:
                 self.mod.eval()
@@ -594,8 +595,6 @@ class TrainCat(TrainBase):
                 tot_pred_loss.backward()
                 self.mod.add_gradient_noise(noise_level = self.hyper_params['gradient_noise_scale'])
                 self.prediction_optimizer.step()
-                self.lr_scheduler.step()
-#                 cur_lr = lr_scheduler.get_lr()[0]
 
                 # store
                 cur_eig.append(spectral_radius)
@@ -606,7 +605,9 @@ class TrainCat(TrainBase):
                 # free up CUDA mem
                 del sign_reg, stability_loss, uniform_reg, param_reg, prediction_loss, train_pearson_r
                 del X_in_, y_out_, covariates_idx_, X_full, Y_full, Y_hat
-                
+
+            self.lr_scheduler.step()
+#            cur_lr = lr_scheduler.get_lr()[0]                
             # test/validation
             if self.track_validation or self.track_test:
                 self.mod.eval()
@@ -825,8 +826,6 @@ class TrainSC(TrainBase):
                 self.mod.add_gradient_noise(noise_level = self.hyper_params['gradient_noise_scale'])
                 self.prediction_optimizer.step()
                 self.discriminator_optimizer.step()
-                self.lr_scheduler.step()
-#                 cur_lr = lr_scheduler.get_lr()[0]
 
                 # store
                 cur_eig.append(spectral_radius)
@@ -838,6 +837,8 @@ class TrainSC(TrainBase):
                 del sign_reg, stability_loss, uniform_reg, param_reg, prediction_loss, train_pearson_r
                 del X_in_, y_out_, covariates_idx_, X_full, Y_full, Y_hat
 
+            self.lr_scheduler.step()
+#            cur_lr = lr_scheduler.get_lr()[0]
             # test/validation
             if self.track_validation or self.track_test:
                 self.mod.eval()
