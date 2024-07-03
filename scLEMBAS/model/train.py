@@ -142,7 +142,11 @@ class TrainBase:
         split_data_dict : Dict[str, pd.DataFrame]
             key value pairs represent the output of the `TrainBase.split_data` function
         """
-        
+        if track_validation and not train_split['validation']:
+            raise ValueError('Specified to track validation statistics, but there is no validation data specified')
+        if track_test and not train_split['test']:
+            raise ValueError('Specified to track test statistics, but there is no test data specified')
+            
         if not mod.signaling_network._prescaled_weights:
             warnings.warn('Recommended to run `self.mod.signaling_network.prescale_weights()` prior to training')
 
@@ -232,7 +236,7 @@ class TrainBase:
             model_data = ModelData(X_in = self.mod.df_to_tensor(self.X_test).to('cpu'), 
                                y_out = self.mod.df_to_tensor(self.y_test).to('cpu'),
                                covariates_idx = covariates_idx)
-            self.validation_dataloader = DataLoader(dataset=model_data,
+            self.test_dataloader = DataLoader(dataset=model_data,
                                                batch_size=self.hyper_params['test_batch_size'],
                                                drop_last = False,
                                                pin_memory = False,#pin_memory,
