@@ -30,6 +30,7 @@ def get_tf_activity(adata, organism: str, grn = 'collectri',
                     verbose: bool = True, min_n: int = 5, use_raw: bool = False,
                     filter_pvals: bool = False, pval_thresh: float = 0.05,
                     hvg: bool = False, static: bool = True,
+                    consensus: bool = True, 
                     **kwargs):
     """Wrapper of decoupler to estimate TF activity from single-cell transcriptomics data.
 
@@ -58,6 +59,8 @@ def get_tf_activity(adata, organism: str, grn = 'collectri',
         whether to download a static version of the GRN DB or the most current, by default True
         for stable results and consistency with downstream analyses, recommended to use static = True
         only organism 'human', 'rat', and 'mouse' available for static
+    consensus: bool, optional 
+        whether to calculate the consensus score across methods, by default True
     kwargs : 
         passed to  `decoupler.decouple`.
 
@@ -84,7 +87,7 @@ def get_tf_activity(adata, organism: str, grn = 'collectri',
 
     # m, r, c = extract(adata, use_raw=use_raw, verbose=verbose)
     if verbose:
-        print('Running consensus.')
+        print('Running scores.')
     
     # # unnecessary, this is the default behavior    
     # if not kwargs:
@@ -96,7 +99,7 @@ def get_tf_activity(adata, organism: str, grn = 'collectri',
     #     if 'cns_methods' not in kwargs and kwargs['methods'] == ['lm', 'ulm', 'wsum']:
     #         kwargs['cns_metds'] = ['lm', 'ulm', 'wsum_norm']
 
-    dc.decouple(mat=adata, net=net, source='source', target='target', weight='weight', consensus = True,
+    dc.decouple(mat=adata, net=net, source='source', target='target', weight='weight', consensus = consensus,
                       min_n=min_n, verbose=verbose, use_raw=use_raw, **kwargs)
 
     if filter_pvals:
