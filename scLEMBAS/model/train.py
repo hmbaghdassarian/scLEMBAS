@@ -1,7 +1,7 @@
 """
 Train the signaling model.
 """
-from typing import Dict, List, Union, Optional
+from typing import Dict, List, Literal, Union, Optional
 import time
 from tqdm import trange
 import warnings
@@ -82,6 +82,7 @@ class TrainBase:
                  mod, 
                  prediction_optimizer: torch.optim, 
                  prediction_loss_fn: torch.nn.modules.loss,
+                 loss_reduction: Literal['mean', 'sum', 'none'] = 'mean',
                  hyper_params: Dict[str, Union[int, float]] = None,
                  # train_samples: Optional[List[str]] = None, 
                  train_split: Optional[Dict[str, Union[float, List[str]]]] = {'train': 0.8, 'test': 0.2, 'validation': None},
@@ -156,8 +157,8 @@ class TrainBase:
             self.hyper_params = {k: v for k,v in {**self.HYPER_PARAMS, **hyper_params}.items() if k in self.HYPER_PARAMS}
         
         self.mod = mod
-
-        self.prediction_loss_fn = prediction_loss_fn
+        self.loss_reduction = loss_reduction
+        self.prediction_loss_fn = prediction_loss_fn(reduction = self.loss_reduction)
         self.prediction_optimizer = prediction_optimizer(self.mod.parameters(), 
                                                  lr=self.hyper_params['maximum_learning_rate'], 
                                                  weight_decay=0)
@@ -329,6 +330,7 @@ class TrainSimple(TrainBase):
                   mod, 
                  prediction_optimizer: torch.optim, 
                  prediction_loss_fn: torch.nn.modules.loss,
+                 loss_reduction: Literal['mean', 'sum', 'none'] = 'mean',
                  hyper_params: Dict[str, Union[int, float]] = None,
                  train_split: Optional[Dict[str, Union[float, List[str]]]] = {'train': 0.8, 'test': 0.2, 'validation': None},
                  train_seed: int = None,
@@ -343,6 +345,7 @@ class TrainSimple(TrainBase):
         super().__init__(mod = mod, 
                            prediction_optimizer = prediction_optimizer, 
                            prediction_loss_fn = prediction_loss_fn, 
+                         loss_reduction = loss_reduction,
                            hyper_params=hyper_params, 
                            train_split=train_split, 
                            train_seed = train_seed, 
@@ -401,6 +404,8 @@ class TrainSimple(TrainBase):
                 
                 # get prediction loss
                 fit_loss = self.prediction_loss_fn(y_out_, Y_hat)
+                if self.loss_reduction == 'none':
+                    fit_loss = torch.median(fit_loss)
                 train_pearson_r = self.get_pearson_correlation(y_out_, Y_hat, axis = 0, return_mean = True)
                 
                 # get regularization losses
@@ -444,9 +449,11 @@ class TrainSimple(TrainBase):
                             X_in_val, y_out_val, covariates_idx_val = X_in_val.to(self.mod.device), y_out_val.to(self.mod.device), covariates_idx_val.to(self.mod.device)
                             self.mod.signaling_network.mask = self.mod.signaling_network.mask.to(X_in_val.device)
                             y_pred_val, _ = self.mod(X_in = X_in_val, covariates_idx = covariates_idx_val)
-                            loss_val = self.prediction_loss_fn(y_out_val, y_pred_val).detach().item()
+                            loss_val = self.prediction_loss_fn(y_out_val, y_pred_val).detach()
+                            if self.loss_reduction == 'none':
+                                loss_val = torch.median(loss_val)
                             pearson_val = self.get_pearson_correlation(y_out_val,  y_pred_val)
-                            loss_val_all.append(loss_val)
+                            loss_val_all.append(loss_val.item())
                             pearson_val_all.append(pearson_val)
                             del y_pred_val, _
                     if self.track_test:
@@ -455,9 +462,11 @@ class TrainSimple(TrainBase):
                         for batch, (X_in_test, y_out_test, covariates_idx_test) in enumerate(self.test_dataloader):
                             X_in_test, y_out_test, covariates_idx_test = X_in_test.to(self.mod.device), y_out_test.to(self.mod.device), covariates_idx_test.to(self.mod.device)
                             y_pred_test, _ = self.mod(X_in = X_in_test, covariates_idx = covariates_idx_test)
-                            loss_test = self.prediction_loss_fn(y_out_test, y_pred_test).detach().item()
+                            loss_test = self.prediction_loss_fn(y_out_test, y_pred_test).detach()
+                            if self.loss_reduction == 'none':
+                                loss_test = torch.median(loss_test)
                             pearson_test = self.get_pearson_correlation(y_out_test, y_pred_test)
-                            loss_test_all.append(loss_test)
+                            loss_test_all.append(loss_test.item())
                             pearson_test_all.append(pearson_test)
                             del y_pred_test, _
         
