@@ -222,7 +222,11 @@ class SignalingModel(torch.nn.Module):
 
         return Y_hat, Y_full
 
-    def L2_reg(self, lambda_L2: Annotated[float, Ge(0)] = 0):
+    def L2_reg(self,
+               input_lambda_L2: Annotated[float, Ge(0)] = 0, 
+              hidden_state_lambda_L2: Annotated[float, Ge(0)] = 0, 
+              bias_lambda_L2: Annotated[float, Ge(0)] = 0, 
+              output_lambda_L2: Annotated[float, Ge(0)] = 0):
         """Get the L2 regularization term for the neural network parameters.
         
         Parameters
@@ -235,7 +239,11 @@ class SignalingModel(torch.nn.Module):
          : torch.Tensor
             the regularization term (as the sum of the regularization terms for each layer)
         """
-        return self.input_layer.L2_reg(lambda_L2) + self.signaling_network.L2_reg(lambda_L2) + self.output_layer.L2_reg(lambda_L2)
+        l2_loss = self.input_layer.L2_reg(input_lambda_L2) 
+        l2_loss += self.signaling_network.L2_reg(weights_lambda_L2 = hidden_state_lambda_L2, 
+                                                bias_lambda_L2 = bias_lambda_L2) 
+        l2_loss += self.output_layer.L2_reg(output_lambda_L2)
+        return l2_loss
 
     def ligand_regularization(self, lambda_L2: Annotated[float, Ge(0)] = 0):
         """DEPRECATED: now setting bias term to 0 and masking directly during forward pass        

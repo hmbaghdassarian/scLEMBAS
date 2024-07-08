@@ -73,7 +73,9 @@ class TrainBase:
                 'lr_decay': 0.9, 'lr_restart_factor': 1, 'warmup_epochs': 500}
     OTHER_PARAMS = {'train_batch_size': 512, 'test_batch_size': 512, 'validation_batch_size': 512, 
                     'network_noise_scale': 10, 'gradient_noise_scale': 1e-9}
-    REGULARIZATION_PARAMS = {'param_lambda_L2': 1e-6, 'moa_lambda_L1': 0.1, #'ligand_lambda_L2': 1e-5, 
+    REGULARIZATION_PARAMS = {'input_lambda_L2': 1e-6, 'hidden_state_lambda_L2': 1e-6, 'bias_lambda_L2': 1e-6, 
+                             'output_lambda_L2': 1e-6,
+                             'moa_lambda_L1': 0.1, #'ligand_lambda_L2': 1e-5, 
                             'uniform_lambda_L2': 1e-4, 'uniform_max': (1/1.2), 'spectral_loss_factor': 1e-5}
     SPECTRAL_RADIUS_PARAMS = {'n_probes_spectral': 5, 'power_steps_spectral': 50, 'subset_n_spectral': 10}
     HYPER_PARAMS = {**LR_PARAMS, **OTHER_PARAMS, **REGULARIZATION_PARAMS, **SPECTRAL_RADIUS_PARAMS}
@@ -370,6 +372,19 @@ class TrainSimple(TrainBase):
             a list of the spectral_radius across training iterations
         """
         start_time = time.time()
+        
+        #TODELETE:
+        with torch.no_grad():
+            self.sn_weights = {'mean': [np.mean(self.mod.signaling_network.weights.to('cpu').detach().numpy().flatten())], 
+                      'median': [np.median(self.mod.signaling_network.weights.to('cpu').detach().numpy().flatten())], 
+                      'std': [np.std(self.mod.signaling_network.weights.to('cpu').detach().numpy().flatten())]}
+            self.sn_bias = {'mean': [np.mean(self.mod.signaling_network.bias_basal.to('cpu').detach().numpy().flatten())], 
+                          'median': [np.median(self.mod.signaling_network.bias_basal.to('cpu').detach().numpy().flatten())], 
+                          'std': [np.std(self.mod.signaling_network.bias_basal.to('cpu').detach().numpy().flatten())]}
+        
+    
+        
+        
         for e in trange(self.hyper_params['max_epochs']):
             cur_lr = self.prediction_optimizer.param_groups[0]['lr']
             # set learning rate
@@ -411,8 +426,10 @@ class TrainSimple(TrainBase):
                                                                                     power_steps = self.hyper_params['power_steps_spectral'])
                 uniform_reg = self.mod.uniform_regularization(lambda_L2 = self.hyper_params['uniform_lambda_L2']*cur_lr, Y_full = Y_full, 
                                                         target_min = 0, target_max = self.hyper_params['uniform_max']) # uniform distribution
-                param_reg = self.mod.L2_reg(self.hyper_params['param_lambda_L2']) # all model weights and signaling network biases
-                
+                param_reg = self.mod.L2_reg(input_lambda_L2=self.hyper_params['input_lambda_L2'],
+                                            hidden_state_lambda_L2=self.hyper_params['hidden_state_lambda_L2'], 
+                                            bias_lambda_L2=self.hyper_params['bias_lambda_L2'], 
+                                            output_lambda_L2=self.hyper_params['output_lambda_L2'])
         #             total_loss = fit_loss + sign_reg + ligand_reg + param_reg + stability_loss + uniform_reg
                 total_loss = fit_loss + sign_reg + param_reg + stability_loss + uniform_reg
         
@@ -432,6 +449,17 @@ class TrainSimple(TrainBase):
                 del X_in_, y_out_, covariates_idx_, X_full, Y_full, Y_hat
                 
             self.lr_scheduler.step()
+            
+            #TO DELETE:
+            with torch.no_grad():
+                self.sn_weights['mean'] += [np.mean(self.mod.signaling_network.weights.to('cpu').detach().numpy().flatten())]
+                self.sn_weights['median'] += [np.median(self.mod.signaling_network.weights.to('cpu').detach().numpy().flatten())]
+                self.sn_weights['std'] += [np.std(self.mod.signaling_network.weights.to('cpu').detach().numpy().flatten())]
+
+                self.sn_bias['mean'] += [np.mean(self.mod.signaling_network.bias_basal.to('cpu').detach().numpy().flatten())]
+                self.sn_bias['median'] += [np.median(self.mod.signaling_network.bias_basal.to('cpu').detach().numpy().flatten())]
+                self.sn_bias['std'] += [np.std(self.mod.signaling_network.bias_basal.to('cpu').detach().numpy().flatten())]
+            
 #            cur_lr = lr_scheduler.get_lr()[0]
             # test/validation
             if self.track_validation or self.track_test:
@@ -488,7 +516,7 @@ class TrainSimple(TrainBase):
         if verbose:
             mins, secs = divmod(time.time() - start_time, 60)
             print("Training ran in: {:.0f} min {:.2f} sec".format(mins, secs))
-
+            
         return self.mod, cur_loss, cur_eig, self.stats_df
 
 class TrainCat(TrainBase):
@@ -591,8 +619,10 @@ class TrainCat(TrainBase):
                                                                                     power_steps = self.hyper_params['power_steps_spectral'])
                 uniform_reg = self.mod.uniform_regularization(lambda_L2 = self.hyper_params['uniform_lambda_L2']*cur_lr, Y_full = Y_full, 
                                                         target_min = 0, target_max = self.hyper_params['uniform_max']) # uniform distribution
-                param_reg = self.mod.L2_reg(self.hyper_params['param_lambda_L2']) # all model weights and signaling network biases
-
+                param_reg = self.mod.L2_reg(input_lambda_L2=self.hyper_params['input_lambda_L2'],
+                                            hidden_state_lambda_L2=self.hyper_params['hidden_state_lambda_L2'], 
+                                            bias_lambda_L2=self.hyper_params['bias_lambda_L2'], 
+                                            output_lambda_L2=self.hyper_params['output_lambda_L2'])
                 tot_pred_loss = prediction_loss + sign_reg + param_reg + stability_loss + uniform_reg
                 
                 # gradient
@@ -816,8 +846,10 @@ class TrainSC(TrainBase):
                                                                                     power_steps = self.hyper_params['power_steps_spectral'])
                 uniform_reg = self.mod.uniform_regularization(lambda_L2 = self.hyper_params['uniform_lambda_L2']*cur_lr, Y_full = Y_full, 
                                                         target_min = 0, target_max = self.hyper_params['uniform_max']) # uniform distribution
-                param_reg = self.mod.L2_reg(self.hyper_params['param_lambda_L2']) # all model weights and signaling network biases
-
+                param_reg = self.mod.L2_reg(input_lambda_L2=self.hyper_params['input_lambda_L2'],
+                                            hidden_state_lambda_L2=self.hyper_params['hidden_state_lambda_L2'], 
+                                            bias_lambda_L2=self.hyper_params['bias_lambda_L2'], 
+                                            output_lambda_L2=self.hyper_params['output_lambda_L2'])
                 tot_pred_loss = prediction_loss + sign_reg + param_reg + stability_loss + uniform_reg
 
                 # regularization - Discriminator

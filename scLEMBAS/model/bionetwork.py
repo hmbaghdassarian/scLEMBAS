@@ -183,22 +183,24 @@ class BioNetBase(nn.Module):
         
         self._prescaled_weights = True
 
-    def L2_reg(self, lambda_L2: Annotated[float, Ge(0)] = 0):
+    def L2_reg(self, weights_lambda_L2: Annotated[float, Ge(0)] = 0, 
+              bias_lambda_L2: Annotated[float, Ge(0)] = 0):
         """Get the L2 regularization term for the neural network parameters.
         
         Parameters
         ----------
-        lambda_2 : Annotated[float, Ge(0)]
-            the regularization parameter, by default 0 (no penalty) 
-        
+        lambda_L2_weights : Annotated[float, Ge(0)]
+            the regularization parameter for the weights, by default 0 (no penalty) 
+        lambda_L2_bias : Annotated[float, Ge(0)]
+            the regularization parameter for the bias, by default 0 (no penalty) 
         Returns
         -------
         bionet_L2 : torch.Tensor
             the regularization term
         """
         # cat embeddings in the cat one are already normalized
-        bias_loss = lambda_L2 * torch.sum(torch.square(self.bias_basal))
-        weight_loss = lambda_L2 * torch.sum(torch.square(self.weights))
+        bias_loss = bias_lambda_L2 * torch.sum(torch.square(self.bias_basal))
+        weight_loss = weights_lambda_L2 * torch.sum(torch.square(self.weights))
 
         bionet_L2 = bias_loss + weight_loss
         return bionet_L2
