@@ -321,6 +321,47 @@ def extract_network(sn_ppis: pd.DataFrame,
 
     return sn_ppis
 
+def map_connections(sn_ppis: pd.DataFrame, 
+                      ligand_labels: List[str], 
+                      tf_labels: List[str], 
+                      source_label: str, 
+                      target_label: str
+                     ):
+    """Maps each ligand to each TF it has a path to.
+
+    Parameters
+    ----------
+    sn_ppis : pd.DataFrame
+        an edge list representing the signaling network
+    ligand_labels : List[str]
+        the list of ligands
+    tf_labels : List[str]
+        the list of transcription factors
+    source_label : str
+        the column label for source nodes in the graph
+    target_label : str
+        the column label for the target node in the graph
+
+    Returns
+    -------
+    ligand_connections : Dict[str, List[str]]
+        a dictionary with keys as ligands and values as the list of TFs that the ligand has a connected path to
+    """
+    ligand_connections = {label: [] for label in ligand_labels}
+    
+    G = nx.from_pandas_edgelist(sn_ppis, source_label, target_label,
+                            create_using = nx.DiGraph() if sn_ppis[sn_ppis.is_directed].shape[0] == sn_ppis.shape[0] else None)
+    all_nodes = sorted(G.nodes)
+    ligand_labels = set(ligand_labels).intersection(all_nodes)
+    tf_labels = set(tf_labels).intersection(all_nodes)
+
+    
+    for source, target in list(itertools.product(ligand_labels, tf_labels)):
+         if nx.shortest_paths.has_path(G, source=source, target=target):
+                ligand_connections[source] += [target]
+ 
+    return ligand_connections
+
 def create_connected_network(sn_ppis: pd.DataFrame, ligand_labels: List[str], tf_labels: List[str], source_label: str, target_label: str, 
                            path_finder: Literal['all', 'shortest', 'connected'] = 'connected'):
     """Filter the input network for those interactions that provide full paths between ligands and transcription factors. 
@@ -347,28 +388,37 @@ def create_connected_network(sn_ppis: pd.DataFrame, ligand_labels: List[str], tf
     -------
     sn_ppis : pd.DataFrame
         an edge list representing the filtered signaling network
+    ligand_connections : Dict[str, List[str]]
+        a dictionary with keys as ligands and values as the list of TFs that the ligand has a connected path to
     """
     
     # get interactions for all paths b/w source and target in input network
     G = nx.from_pandas_edgelist(sn_ppis, source_label, target_label,
                                 create_using = nx.DiGraph() if sn_ppis[sn_ppis.is_directed].shape[0] == sn_ppis.shape[0] else None)
-    
+
     all_nodes = sorted(G.nodes)
+    ligand_labels_unfiltered = ligand_labels.copy()
     ligand_labels = set(ligand_labels).intersection(all_nodes)
     tf_labels = set(tf_labels).intersection(all_nodes)
 
     if path_finder in ['all', 'shortest']:
+        ligand_connections = {label: [] for label in ligand_labels_unfiltered}
         all_edges = set()
         if path_finder == 'all':
             for source, target in tqdm(list(itertools.product(ligand_labels, tf_labels))):
+                all_path_counter = 0
                 for path in nx.all_simple_paths(G, source=source, target=target):
                     all_edges.update(zip(path, path[1:]))
+                    all_path_counter += 1
+                if all_path_counter > 0:
+                    ligand_connections[source] += [target]
         elif path_finder == 'shortest':
             for source, target in tqdm(list(itertools.product(ligand_labels, tf_labels))):
                 if nx.shortest_paths.has_path(G, source=source, target=target):
+                    ligand_connections[source] += [target]
                     path = nx.shortest_path(G, source=source, target=target)
                     all_edges.update(zip(path, path[1:]))
-    
+
         # filter input network 
         all_connected = pd.DataFrame(columns = [source_label, target_label], index = range(len(all_edges)))
         for idx, interaction in enumerate(all_edges):
@@ -381,15 +431,17 @@ def create_connected_network(sn_ppis: pd.DataFrame, ligand_labels: List[str], tf
                 if source == target or nx.shortest_paths.has_path(G, source, target):
                     tf_connected.add(source)
                     break
-        
+
         both_connected = set()
         for source in tf_connected: 
             for target in ligand_labels:
                 if source == target or nx.shortest_paths.has_path(G, source, target):
                     both_connected.add(source)
-        sn_ppis = sn_ppis[sn_ppis[[source_label, target_label]].apply(lambda row: row.isin(both_connected).all(), axis=1)]
-        
-    return sn_ppis
+    #     sn_ppis = sn_ppis[sn_ppis[[source_label, target_label]].apply(lambda row: row.isin(both_connected).all(), axis=1)]
+        sn_ppis = sn_ppis[sn_ppis[source_label].isin(both_connected) & sn_ppis[target_label].isin(both_connected)]
+        ligand_connections = map_connections(sn_ppis, ligand_labels_unfiltered, tf_labels, source_label, target_label)
+
+    return sn_ppis, ligand_connections
 
 import warnings
 
@@ -474,8 +526,10 @@ def stringent_connected_network(all_ppis: pd.DataFrame,
         warnings.warn('Not all input_labels are in the starting network')
     
     counter = 0
+    ligand_connections_list = []
+    ligand_counts = np.array([1])
     # filter for most stringent n_references threshold
-    while len(set(input_labels).difference(all_nodes_)) == 0 and len(set(output_labels).intersection(all_nodes_)) >= 1: # while extracted network still has full paths for every ICD to atleast one TF
+    while np.all(ligand_counts != 0): # while extracted network still has full paths for every ligand to atleast one TF
         print('Iteration: {}'.format(counter))
         sn_ppis = extract_network(all_ppis.copy(), curation_effort_thresh = curation_effort_thresh, 
                                   n_references_thresh = n_references_thresh,
@@ -484,32 +538,37 @@ def stringent_connected_network(all_ppis: pd.DataFrame,
                                   source_label = source_label, 
                                   target_label = target_label,
                                   verbose = False)
-        sn_ppis = create_connected_network(sn_ppis, input_labels, output_labels, source_label = source_label, target_label = target_label, 
+        sn_ppis, ligand_connections = create_connected_network(sn_ppis, input_labels, output_labels, source_label = source_label, target_label = target_label, 
                                path_finder = path_finder)
+        ligand_counts = np.array([len(v) for v in ligand_connections.values()])
+
         all_nodes_ = sorted(set(sn_ppis[source_label].tolist() + sn_ppis[target_label].tolist()))
-        if counter == 0 and (len(set(input_labels).difference(all_nodes_)) != 0 or len(set(output_labels).intersection(all_nodes_)) == 0):
+        if counter == 0 and np.any(ligand_counts == 0):
             warnings.warn('There are disconnected input_labels in the starting signaling network with default thresholds')
-    
+
         if threshold_on == 'n_references':
             n_references_thresh += 1
         elif threshold_on == 'curation_effort':
             curation_effort_thresh += 1
-    
+
         ppi_list.append(sn_ppis)
-    
+        ligand_connections_list.append(ligand_connections)
+
         counter += 1
-    
+
     if threshold_on == 'n_references':
         n_references_thresh -= 2
     elif threshold_on == 'curation_effort':
         curation_effort_thresh -= 2
-    
+
     if len(ppi_list) > 1:
         sn_ppis = ppi_list[-2]
+        ligand_connections = ligand_connections_list[-2]
     else: # situation in which the first iteration already filtered out many nodes
         sn_ppis = ppi_list[0]
+        ligand_connections = ligand_connections_list[0]
 
-    return sn_ppis, n_references_thresh, curation_effort_thresh
+    return sn_ppis, ligand_connections, n_references_thresh, curation_effort_thresh
 
 def format_network(sn_ppis: pd.DataFrame, 
                    weight_label: str = 'mode_of_action', 
