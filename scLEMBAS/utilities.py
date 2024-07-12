@@ -196,3 +196,49 @@ def get_moving_average(values: np.array, n_steps: int):
         stop = np.min((i+np.ceil(n_steps/2), values.shape[0])).astype(int)
         moving_average[i] = np.mean(values[start:stop])
     return moving_average
+
+
+# import copy
+# mod_rand = copy.deepcopy(mod)
+
+# same_sign = True  # Set this variable to True to retain the same signs, False otherwise
+# # Disable gradient tracking
+# with torch.no_grad():
+#     # Extract the weights and mask
+#     weights = mod.signaling_network.weights
+#     mask = mod.signaling_network.mask
+    
+#     # Convert mask to a boolean tensor (if not already)
+#     boolean_mask = ~mask
+    
+#     # Extract the values where mask is False
+#     unmasked_values = weights[boolean_mask].clone()
+    
+#     if same_sign:
+#         signs = torch.sign(unmasked_values)
+        
+#         # Shuffle the absolute values of the unmasked values
+#         abs_unmasked_values = unmasked_values.abs()
+#         shuffled_indices = torch.randperm(abs_unmasked_values.numel())
+#         shuffled_abs_values = abs_unmasked_values[shuffled_indices]
+        
+#         # Reassign the original signs to the shuffled values
+#         shuffled_signed_values = shuffled_abs_values * signs
+        
+#         # Reassign the shuffled signed values back to their original positions
+#         weights[boolean_mask] = shuffled_signed_values
+#     else:
+#         # Shuffle the unmasked values
+#         shuffled_indices = torch.randperm(unmasked_values.numel())
+#         shuffled_values = unmasked_values[shuffled_indices]
+        
+#         # Reassign the shuffled values back to their original positions
+#         weights[boolean_mask] = shuffled_values
+
+#     # Assign these weights back to the model
+#     mod.signaling_network.weights.copy_(weights)
+    
+# if not torch.equal(mod_rand.signaling_network.weights != 0, mod.signaling_network.weights != 0):
+#     raise ValueError('Masked values were included in the shuffling')
+# if same_sign and not torch.equal(torch.sign(mod_rand.signaling_network.weights), torch.sign(mod.signaling_network.weights)):
+#     raise ValueError('The shuffled values do not retain the same sign')
