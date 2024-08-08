@@ -200,7 +200,7 @@ class BioNetBase(nn.Module):
             the regularization term
         """
         # cat embeddings in the cat one are already normalized
-        bias_loss = bias_lambda_L2 * torch.sum(torch.square(self.bias_basal))
+        bias_loss = bias_lambda_L2 * torch.sum(torch.square(self.bias_global))
         weight_loss = weights_lambda_L2 * torch.sum(torch.square(self.weights))
 
         bionet_L2 = bias_loss + weight_loss
@@ -349,12 +349,12 @@ class BioNetSimple(BioNetBase):
         weight_values = 0.1 + 0.1*torch.rand(n_interactions, dtype=self.dtype, device = self.device)
         weight_values[self.edge_MOA[1,:]] = -weight_values[self.edge_MOA[1,:]] # make those that are inhibiting negative
         
-        bias_basal = 1e-3*torch.ones((self.n_network_nodes_in, 1), dtype = self.dtype, device = self.device)
+        bias_global = 1e-3*torch.ones((self.n_network_nodes_in, 1), dtype = self.dtype, device = self.device)
 
         for nt_idx in np.unique(network_targets):
             if torch.all(weight_values[network_targets == nt_idx]<0):
-                bias_basal.data[nt_idx] = 1
-        self.bias_basal = nn.Parameter(bias_basal)
+                bias_global.data[nt_idx] = 1
+        self.bias_global = nn.Parameter(bias_global)
 
         return weight_values 
 
@@ -399,9 +399,9 @@ class BioNetSimple(BioNetBase):
         """
         # implement masks
         self.weights.data.masked_fill_(mask = self.mask, value = 0.0) # fill non-interacting edges with 0
-        self.bias_basal.data.masked_fill_(mask = self.bias_mask, value = 0.0)
+        self.bias_global.data.masked_fill_(mask = self.bias_mask, value = 0.0)
 
-        bias_tot = self.bias_basal
+        bias_tot = self.bias_global
         X_bias = X_full.T + bias_tot # this is the bias with the projection_amplitude included
         X_new = torch.zeros_like(X_bias) #initialize hidden state values at 0
         
@@ -417,7 +417,7 @@ class BioNetSimple(BioNetBase):
                     break
 
         Y_full = X_new.T
-        return Y_full
+        return Y_full, None
     
 class BioNetCat(BioNetBase):
     """Builds the RNN on the signaling network topology, accounting for categorical covariates of the samples (e.g. cell line, genetic background, etc.)."""
@@ -465,7 +465,7 @@ class BioNetCat(BioNetBase):
         weight_values = 0.1 + 0.1*torch.rand(n_interactions, dtype=self.dtype, device = self.device)
         weight_values[self.edge_MOA[1,:]] = -weight_values[self.edge_MOA[1,:]] # make those that are inhibiting negative
         
-        self.bias_basal = torch.zeros((self.n_network_nodes_in, 1), dtype = self.dtype, device = self.device, requires_grad = False) 
+        self.bias_global = torch.zeros((self.n_network_nodes_in, 1), dtype = self.dtype, device = self.device, requires_grad = False) 
         #1e-3*torch.ones((self.n_network_nodes_in, 1), dtype = self.dtype, device = self.device)
 
         return weight_values
@@ -542,7 +542,7 @@ class BioNetCat(BioNetBase):
         return torch.tensor(self.covariates_idx.loc[sample_ids, :].values, device = self.device, dtype = torch.int64)
     
 
-    def forward(self, X_full: torch.Tensor, covariates_idx: torch.Tensor):
+    def forward(self, X_full: torch.Tensor, covariates_idx: torch.Tensor, expr = None):
         """Learn the edeg weights within the signaling network topology.
 
         Parameters
@@ -552,15 +552,18 @@ class BioNetCat(BioNetBase):
         covariates_idx : torch.Tensor
             rows correspond to samples as in X_full. Each column represents one categorical covariate group. Values
             in the columns represent the index mapping of the category label. This should be a row-wise subset of `self.covariates_idx`, which can also be obtained from `self.covariates_to_tensor()`
+        expr : None
+            no value required here and it will not be used, 
+            this simply serves as a placeholder to generically work with SignalingModel.forward
 
         Returns
         -------
         Y_full :  torch.Tensor
             the signaling network scaled by learned interaction weights. Shape is (samples x network nodes).
         """
-        # implement masks
+        # implement mask
         self.weights.data.masked_fill_(mask = self.mask, value = 0.0) # fill non-interacting edges with 0
-#         self.bias_basal.data.masked_fill_(mask = self.bias_mask, value = 0.0)
+#         self.bias_global.data.masked_fill_(mask = self.bias_mask, value = 0.0)
 
         bias_cats = torch.zeros_like(X_full.T, device = self.device, dtype = self.dtype)
         # add categorical covariates
@@ -574,7 +577,7 @@ class BioNetCat(BioNetBase):
     #             one_hot = self.one_hot[cat_group][labels_idx].to(embedding.dtype)
     #             bias_tot += torch.matmul(one_hot, embedding)
         
-        bias_tot = self.bias_basal + bias_cats
+        bias_tot = self.bias_global + bias_cats
         X_bias = X_full.T + bias_tot # this is the bias with the projection_amplitude included
         X_new = torch.zeros_like(X_bias) #initialize hidden state values at 0
         
@@ -590,7 +593,7 @@ class BioNetCat(BioNetBase):
                     break
 
         Y_full = X_new.T
-        return Y_full
+        return Y_full, None
     
 class BioNetSC(BioNetCat):
     """Builds the RNN on the signaling network topology, accounting for single-cell inputs."""
@@ -627,8 +630,8 @@ class BioNetSC(BioNetCat):
                                    layer_norm = self.bionet_params['vae_layer_norm'], 
                                    dropout_rate = self.bionet_params['vae_dropout_rate'], 
                                    activation_fn = self.bionet_params['vae_activation_fn'], 
+                                              device = self.device, dtype = self.dtype
                                   )
-
 
     def initialize_weight_values(self):
         """Initialize the RNN weight_values for all interactions in the signaling network. 
@@ -652,7 +655,7 @@ class BioNetSC(BioNetCat):
 
         return weight_values
 
-    def forward(self, X_full: torch.Tensor, covariates_idx: torch.Tensor):
+    def forward(self, X_full: torch.Tensor, covariates_idx: torch.Tensor, expr: torch.Tensor):
         """Learn the edeg weights within the signaling network topology.
 
         Parameters
@@ -662,15 +665,18 @@ class BioNetSC(BioNetCat):
         covariates_idx : torch.Tensor
             rows correspond to samples as in X_full. Each column represents one categorical covariate group. Values
             in the columns represent the index mapping of the category label. Basically a rowsubset of `self.covariates_idx`.
+        expr : torch.Tensor
+            the expression matrix. rows correspond to samples as in X_full. Columns are genes
 
         Returns
         -------
         Y_full :  torch.Tensor
             the signaling network scaled by learned interaction weights. Shape is (samples x network nodes).
+        bias_global : torch.Tensor
+            the context-independent bias term output by the VAE. Shape is (samples x network nodes).
         """
         # implement masks
         self.weights.data.masked_fill_(mask = self.mask, value = 0.0) # fill non-interacting edges with 0
-        self.bias_basal.data.masked_fill_(mask = self.bias_mask, value = 0.0)
 
         bias_cats = torch.zeros_like(X_full.T, device = self.device, dtype = self.dtype)
         # add categorical covariates
@@ -684,7 +690,10 @@ class BioNetSC(BioNetCat):
     #             one_hot = self.one_hot[cat_group][labels_idx].to(embedding.dtype)
     #             bias_tot += torch.matmul(one_hot, embedding)
         
-        bias_tot = self.bias_basal + bias_cats
+        bb_mu, bb_sigma, bias_global = self.vae(expr)
+        bias_global.data.masked_fill_(mask = self.bias_mask.T.expand(bias_global.shape[0], -1), value = 0.0) # apply bias mask
+        
+        bias_tot = bias_global.T + bias_cats
         X_bias = X_full.T + bias_tot # this is the bias with the projection_amplitude included
         X_new = torch.zeros_like(X_bias) #initialize hidden state values at 0
         
@@ -700,4 +709,4 @@ class BioNetSC(BioNetCat):
                     break
 
         Y_full = X_new.T
-        return Y_full
+        return Y_full, bias_global

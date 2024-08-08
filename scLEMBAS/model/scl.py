@@ -222,7 +222,7 @@ class SignalingModel(torch.nn.Module):
         """Converts a pandas dataframe to the appropriate torch.tensor"""
         return torch.tensor(df.values.copy(), dtype=self.dtype, device = self.device)
 
-    def forward(self, X_in, covariates_idx: torch.Tensor):
+    def forward(self, X_in, covariates_idx: torch.Tensor, expr: torch.Tensor):
         """Forward pass of the model.Linearly scales ligand inputs, learns weights for signaling network interactions, 
         and transforms this to TF activity. See `forward` methods of each layer for details.
 
@@ -235,10 +235,10 @@ class SignalingModel(torch.nn.Module):
             in the columns represent the index mapping of the category label. This should be a row-wise subset of `signaling_network.covariates_idx`, which can also be obtained from `signaling_network.covariates_to_tensor()`
         """
         X_full = self.input_layer(X_in) # input ligands to signaling network
-        Y_full = self.signaling_network(X_full, covariates_idx) # RNN of full signaling network
+        Y_full, bias_global = self.signaling_network(X_full, covariates_idx, expr) # RNN of full signaling network
         Y_hat = self.output_layer(Y_full)
 
-        return Y_hat, Y_full
+        return Y_hat, Y_full, bias_global
 
     def L2_reg(self,
                input_lambda_L2: Annotated[float, Ge(0)] = 0, 

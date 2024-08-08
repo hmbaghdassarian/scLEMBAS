@@ -411,7 +411,7 @@ class TrainSimple(TrainBase):
                 utils.set_seeds(self.mod.seed + self.mod._gradient_seed_counter)
                 network_noise = torch.randn(X_full.shape, device = X_full.device)
                 X_full = X_full + (self.hyper_params['network_noise_scale'] * cur_lr * network_noise) # randomly add noise to signaling network input, makes model more robust
-                Y_full = self.mod.signaling_network(X_full) # train signaling network weights
+                Y_full, _ = self.mod.signaling_network(X_full) # train signaling network weights
                 Y_hat = self.mod.output_layer(Y_full)
                 
                 # get prediction loss
@@ -604,7 +604,7 @@ class TrainCat(TrainBase):
                 utils.set_seeds(self.mod.seed + self.mod._gradient_seed_counter)
                 network_noise = torch.randn(X_full.shape, device = X_full.device)
                 X_full = X_full + (self.hyper_params['network_noise_scale'] * cur_lr * network_noise) # randomly add noise to signaling network input, makes model more robust
-                Y_full = self.mod.signaling_network(X_full, covariates_idx_) # train signaling network weights
+                Y_full, _ = self.mod.signaling_network(X_full, covariates_idx_) # train signaling network weights
                 Y_hat = self.mod.output_layer(Y_full)
 
                 # get prediction loss
@@ -815,7 +815,7 @@ class TrainSC(TrainBase):
                 utils.set_seeds(self.mod.seed + self.mod._gradient_seed_counter)
                 network_noise = torch.randn(X_full.shape, device = X_full.device)
                 X_full = X_full + (self.hyper_params['network_noise_scale'] * cur_lr * network_noise) # randomly add noise to signaling network input, makes model more robust
-                Y_full = self.mod.signaling_network(X_full, covariates_idx_) # train signaling network weights
+                Y_full, bias_basal = self.mod.signaling_network(X_full, covariates_idx_) # train signaling network weights
                 Y_hat = self.mod.output_layer(Y_full)
 
                 # get prediction loss

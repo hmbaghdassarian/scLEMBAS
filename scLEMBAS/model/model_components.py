@@ -333,10 +333,10 @@ class GaussianVariationalEncoder(nn.Module):
         # z = self.z_transformation(dist.rsample())
         
         # reparameterization 
-        epsilon = torch.randn_like(z_m, dtype = self.dtype, device = self.device)
-        z = z_m + z_sigma*epsilon #self.z_transformation(z_m + z_sigma*epsilon)
+        epsilon = torch.randn_like(z_mu, dtype = self.dtype, device = self.device)
+        z = z_mu + z_sigma*epsilon #self.z_transformation(z_m + z_sigma*epsilon)
 
-        return z_m, z_sigma, z
+        return z_mu, z_sigma, z
     
     
 class CatDiscriminator(nn.Module):
