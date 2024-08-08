@@ -17,7 +17,7 @@ from torch.utils.data import DataLoader
 
 import scLEMBAS.utilities as utils
 from .model_utilities import update_with_defaults
-from .bionetwork import BioNetSimple, BioNetCat
+from .bionetwork import BioNetSimple, BioNetCat, BioNetSC
 from .model_components import CatDiscriminator
 from .lr_schedulers import WarmupCosineAnnealingWarmRestarts
 
@@ -33,7 +33,11 @@ else:
         
     
 class ModelData(Dataset):
-    def __init__(self, X_in: torch.tensor, y_out: torch.tensor, covariates_idx: Optional[torch.tensor] = None):
+    def __init__(self, 
+                 X_in: torch.tensor, 
+                 y_out: torch.tensor, 
+                 covariates_idx: Optional[torch.tensor] = None, 
+                expr: Optional[torch.tensor] = None):
             """_summary_
 
             Parameters
@@ -45,6 +49,8 @@ class ModelData(Dataset):
             covariates_idx : Optional[torch.tensor], optional
                 the numerical index representation of the categorical covariates for each sample, by default None
                 can be obtained from `mod.signaling_network.covariates_idx`
+            expr : torch.tensor
+                the gene expression matrix, can be obtained from mod.expr
             """
             self.X_in = X_in
             self.y_out = y_out
@@ -56,13 +62,18 @@ class ModelData(Dataset):
                 self.covariates_idx = covariates_idx
             else:
                 self.covariates_idx = torch.full(self.X_in.shape, torch.nan, device='cpu')
+                
+            if expr is not None:
+                self.expr = expr
+            else:
+                self.expr = torch.full(self.X_in.shape, torch.nan, device='cpu')
 
     def __len__(self) -> int:
         "Returns the total number of samples."
         return self.X_in.shape[0]
     def __getitem__(self, idx: int):
         "Returns one sample of data, data and label (X, y)."
-        return self.X_in[idx, :], self.y_out[idx, :], self.covariates_idx[idx,:]
+        return self.X_in[idx, :], self.y_out[idx, :], self.covariates_idx[idx,:], self.expr[idx,:]
     
     
 class TrainBase:
@@ -219,41 +230,25 @@ class TrainBase:
 
         self.stats_df = pd.DataFrame(columns = stats_df_cols)
 
-    def create_data_loader(self, include_covariates = True):
+    def create_data_loader(self, include_covariates = True, include_expr = True):
         covariates_idx = None
+        expr = None
+        for data_type in ['train', 'test', 'validation']:
+            if data_type == 'train' or self.__dict__['track_' + data_type]:
+                if include_covariates:
+                    covariates_idx = self.mod.signaling_network.covariates_to_tensor(sample_ids = self.__dict__['X_' + data_type].index)
+                if include_expr:
+                    expr = self.mod.df_to_tensor(self.mod.expr.loc[self.__dict__['X_' + data_type].index, :])
 
-        if include_covariates:
-            covariates_idx = self.mod.signaling_network.covariates_to_tensor(sample_ids = self.X_train.index)
-        model_data = ModelData(X_in = self.mod.df_to_tensor(self.X_train).to('cpu'), 
-                           y_out = self.mod.df_to_tensor(self.y_train).to('cpu'),
-                           covariates_idx = covariates_idx)
-        self.train_dataloader = DataLoader(dataset=model_data,
-                                           batch_size=self.hyper_params['train_batch_size'],
-                                           drop_last = False,
-                                           pin_memory = False,#pin_memory,
-                                           shuffle=True) 
-        if self.track_test:
-            if include_covariates:
-                covariates_idx = self.mod.signaling_network.covariates_to_tensor(sample_ids = self.X_test.index)
-            model_data = ModelData(X_in = self.mod.df_to_tensor(self.X_test).to('cpu'), 
-                               y_out = self.mod.df_to_tensor(self.y_test).to('cpu'),
-                               covariates_idx = covariates_idx)
-            self.test_dataloader = DataLoader(dataset=model_data,
-                                               batch_size=self.hyper_params['test_batch_size'],
-                                               drop_last = False,
-                                               pin_memory = False,#pin_memory,
-                                               shuffle=False)
-        if self.track_validation:
-            if include_covariates:
-                covariates_idx = self.mod.signaling_network.covariates_to_tensor(sample_ids = self.X_val.index)
-            model_data = ModelData(X_in = self.mod.df_to_tensor(self.X_val).to('cpu'), 
-                               y_out = self.mod.df_to_tensor(self.y_val).to('cpu'),
-                               covariates_idx = covariates_idx)
-            self.validation_dataloader = DataLoader(dataset=model_data,
-                                               batch_size=self.hyper_params['validation_batch_size'],
-                                               drop_last = False,
-                                               pin_memory = False,#pin_memory,
-                                               shuffle=False)
+                model_data = ModelData(X_in = self.mod.df_to_tensor(self.__dict__['X_' + data_type]).to('cpu'), 
+                                       y_out = self.mod.df_to_tensor(self.__dict__['y_' + data_type]).to('cpu'),
+                                       covariates_idx = covariates_idx,
+                                       expr = expr)
+                self.__dict__[data_type + '_dataloader'] = DataLoader(dataset=model_data,
+                                                                      batch_size=self.hyper_params[data_type + '_batch_size'],
+                                                                      drop_last = False,
+                                                                      pin_memory = False,#pin_memory,
+                                                                      shuffle=True if data_type == 'train' else False) 
  
     @staticmethod
     def split_data(X_in: torch.Tensor, 
@@ -351,7 +346,7 @@ class TrainSimple(TrainBase):
                         track_test = track_test, 
                         track_validation = track_validation)
         
-        self.create_data_loader(include_covariates = False)
+        self.create_data_loader(include_covariates = False, include_expr = False)
   
     def train_model(self,
                     verbose: bool = True):
@@ -400,7 +395,7 @@ class TrainSimple(TrainBase):
             # iterate through batches
             if self.mod.seed:
                 utils.set_seeds(self.mod.seed + e)
-            for batch, (X_in_, y_out_, covariates_idx_) in enumerate(self.train_dataloader):
+            for batch, (X_in_, y_out_, covariates_idx_, expr_) in enumerate(self.train_dataloader):
                 self.mod.train()
                 self.prediction_optimizer.zero_grad()
         
@@ -555,7 +550,7 @@ class TrainCat(TrainBase):
                         track_validation = track_validation, 
                         track_test = track_test)
 
-        self.create_data_loader(include_covariates = True)
+        self.create_data_loader(include_covariates = True, include_expr = False)
 
     def train_model(self, verbose: bool = True):
         """Train the model
@@ -592,7 +587,7 @@ class TrainCat(TrainBase):
             # iterate through batches
             if self.mod.seed:
                 utils.set_seeds(self.mod.seed + e)
-            for batch, (X_in_, y_out_, covariates_idx_) in enumerate(self.train_dataloader):
+            for batch, (X_in_, y_out_, covariates_idx_, expr_) in enumerate(self.train_dataloader):
                 self.mod.train()
                 
                 self.prediction_optimizer.zero_grad()
@@ -730,7 +725,7 @@ class TrainSC(TrainBase):
         
         
         """
-        if not (type(mod.signaling_network) is BioNetCat):
+        if not (type(mod.signaling_network) is BioNetSC):
             raise ValueError('You must use the correct training class to match the BioNet class.')
 
         super().__init__(mod = mod, 
@@ -742,7 +737,7 @@ class TrainSC(TrainBase):
                          track_validation = track_validation,
                          track_test = track_test)
 
-        self.create_data_loader(include_covariates = True)
+        self.create_data_loader(include_covariates = True, include_expr = True)
         self.initialize_discriminator(discriminator_params, discriminator_optimizer)
 
     def initialize_discriminator(self, discriminator_params, discriminator_optimizer):
@@ -802,7 +797,7 @@ class TrainSC(TrainBase):
             # iterate through batches
             if self.mod.seed:
                 utils.set_seeds(self.mod.seed + e)
-            for batch, (X_in_, y_out_, covariates_idx_) in enumerate(self.train_dataloader):
+            for batch, (X_in_, y_out_, covariates_idx_, expr_) in enumerate(self.train_dataloader):
                 self.mod.train()
                 
                 self.prediction_optimizer.zero_grad()
