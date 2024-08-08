@@ -76,7 +76,7 @@ class TrainBase:
     REGULARIZATION_PARAMS = {'input_lambda_L2': 1e-6, 'hidden_state_lambda_L2': 1e-6, 'bias_lambda_L2': 1e-6, 
                              'output_lambda_L2': 1e-6,
                              'moa_lambda_L1': 0.1, #'ligand_lambda_L2': 1e-5, 
-                            'uniform_lambda_L2': 1e-4, 'uniform_max': (1/1.2), 'spectral_loss_factor': 1e-5}
+                            'uniform_lambda_L2': 1e-4, 'uniform_min': 0, 'uniform_max': (1/1.2), 'spectral_loss_factor': 1e-5}
     SPECTRAL_RADIUS_PARAMS = {'n_probes_spectral': 5, 'power_steps_spectral': 50, 'subset_n_spectral': 10}
     HYPER_PARAMS = {**LR_PARAMS, **OTHER_PARAMS, **REGULARIZATION_PARAMS, **SPECTRAL_RADIUS_PARAMS}
 
@@ -375,12 +375,12 @@ class TrainSimple(TrainBase):
         
         #TODELETE:
         with torch.no_grad():
-            self.sn_weights = {'mean': [np.mean(self.mod.signaling_network.weights.to('cpu').detach().numpy().flatten())], 
-                      'median': [np.median(self.mod.signaling_network.weights.to('cpu').detach().numpy().flatten())], 
-                      'std': [np.std(self.mod.signaling_network.weights.to('cpu').detach().numpy().flatten())]}
-            self.sn_bias = {'mean': [np.mean(self.mod.signaling_network.bias_basal.to('cpu').detach().numpy().flatten())], 
-                          'median': [np.median(self.mod.signaling_network.bias_basal.to('cpu').detach().numpy().flatten())], 
-                          'std': [np.std(self.mod.signaling_network.bias_basal.to('cpu').detach().numpy().flatten())]}
+            self.sn_weights = {'mean': [np.mean(np.abs(self.mod.signaling_network.weights[np.logical_not(self.mod.signaling_network.mask.detach().to('cpu').numpy())].to('cpu').detach().numpy().flatten()))], 
+                      'median': [np.median(np.abs(self.mod.signaling_network.weights[np.logical_not(self.mod.signaling_network.mask.detach().to('cpu').numpy())].to('cpu').detach().numpy().flatten()))], 
+                      'std': [np.std(self.mod.signaling_network.weights[np.logical_not(self.mod.signaling_network.mask.detach().to('cpu').numpy())].to('cpu').detach().numpy().flatten())]}
+            self.sn_bias = {'mean': [np.mean(np.abs(self.mod.signaling_network.bias_basal[np.logical_not(self.mod.signaling_network.bias_mask.detach().to('cpu').numpy())].to('cpu').detach().numpy().flatten()))], 
+                          'median': [np.median(np.abs(self.mod.signaling_network.bias_basal[np.logical_not(self.mod.signaling_network.bias_mask.detach().to('cpu').numpy())].to('cpu').detach().numpy().flatten()))], 
+                          'std': [np.std(self.mod.signaling_network.bias_basal[np.logical_not(self.mod.signaling_network.bias_mask.detach().to('cpu').numpy())].to('cpu').detach().numpy().flatten())]}
         
     
         
@@ -425,7 +425,7 @@ class TrainSimple(TrainBase):
                                                                                     subset_n = self.hyper_params['subset_n_spectral'], n_probes = self.hyper_params['n_probes_spectral'], 
                                                                                     power_steps = self.hyper_params['power_steps_spectral'])
                 uniform_reg = self.mod.uniform_regularization(lambda_L2 = self.hyper_params['uniform_lambda_L2']*cur_lr, Y_full = Y_full, 
-                                                        target_min = 0, target_max = self.hyper_params['uniform_max']) # uniform distribution
+                                                        target_min = self.hyper_params['uniform_min'], target_max = self.hyper_params['uniform_max']) # uniform distribution
                 param_reg = self.mod.L2_reg(input_lambda_L2=self.hyper_params['input_lambda_L2'],
                                             hidden_state_lambda_L2=self.hyper_params['hidden_state_lambda_L2'], 
                                             bias_lambda_L2=self.hyper_params['bias_lambda_L2'], 
@@ -452,13 +452,13 @@ class TrainSimple(TrainBase):
             
             #TO DELETE:
             with torch.no_grad():
-                self.sn_weights['mean'] += [np.mean(self.mod.signaling_network.weights.to('cpu').detach().numpy().flatten())]
-                self.sn_weights['median'] += [np.median(self.mod.signaling_network.weights.to('cpu').detach().numpy().flatten())]
-                self.sn_weights['std'] += [np.std(self.mod.signaling_network.weights.to('cpu').detach().numpy().flatten())]
+                self.sn_weights['mean'] += [np.mean(np.abs(self.mod.signaling_network.weights[np.logical_not(self.mod.signaling_network.mask.detach().to('cpu').numpy())].to('cpu').detach().numpy().flatten()))]
+                self.sn_weights['median'] += [np.median(np.abs(self.mod.signaling_network.weights[np.logical_not(self.mod.signaling_network.mask.detach().to('cpu').numpy())].to('cpu').detach().numpy().flatten()))]
+                self.sn_weights['std'] += [np.std(self.mod.signaling_network.weights[np.logical_not(self.mod.signaling_network.mask.detach().to('cpu').numpy())].to('cpu').detach().numpy().flatten())]
 
-                self.sn_bias['mean'] += [np.mean(self.mod.signaling_network.bias_basal.to('cpu').detach().numpy().flatten())]
-                self.sn_bias['median'] += [np.median(self.mod.signaling_network.bias_basal.to('cpu').detach().numpy().flatten())]
-                self.sn_bias['std'] += [np.std(self.mod.signaling_network.bias_basal.to('cpu').detach().numpy().flatten())]
+                self.sn_bias['mean'] += [np.mean(np.abs(self.mod.signaling_network.bias_basal[np.logical_not(self.mod.signaling_network.bias_mask.detach().to('cpu').numpy())].to('cpu').detach().numpy().flatten()))]
+                self.sn_bias['median'] += [np.median(np.abs(self.mod.signaling_network.bias_basal[np.logical_not(self.mod.signaling_network.bias_mask.detach().to('cpu').numpy())].to('cpu').detach().numpy().flatten()))]
+                self.sn_bias['std'] += [np.std(self.mod.signaling_network.bias_basal[np.logical_not(self.mod.signaling_network.bias_mask.detach().to('cpu').numpy())].to('cpu').detach().numpy().flatten())]
             
 #            cur_lr = lr_scheduler.get_lr()[0]
             # test/validation

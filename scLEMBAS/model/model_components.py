@@ -231,7 +231,112 @@ class FCLayers(nn.Module):
         return nn.Sequential(OrderedDict((k, v) for k, v in all_layers.items() if v is not None))
 
     def forward(self, x):
-        return self.fc_layers(x)    
+        return self.fc_layers(x)   
+
+class GaussianVariationalEncoder(nn.Module):
+    """
+    Generative (Gaussian) projection from input TF activity to a latent space (encoder) or vice-versa (decoder).
+    Adapted from scVI's `Encoder`.
+    """
+
+    DEFAULT_HYPER_PARAMS = {f"vae_{key}": value for key, value in 
+                            {**FCLayers.DEFAULT_HYPER_PARAMS, 
+                            **{'n_hidden_nodes': [1024, 768, 512], 'var_min': 1e-4}}.items()}
+    
+    def __init__(self, n_features: int, n_latent: int,
+                 var_min: float = 1e-4,
+                 decode: bool = False,
+                 n_hidden_nodes: List[int] = [1024, 768, 512],
+                 batch_momentum: float = 0.01,
+                 layer_norm: bool = False,
+                 dropout_rate: int | float = 0.1,
+                 activation_fn: nn.Module | None = nn.ReLU,
+                 dtype: torch.dtype=torch.float32,
+                 device: str = 'cpu', 
+                ):
+        """Initialize variational decoder.
+
+        Parameters
+        ----------
+        n_features : int
+            the full number of features input to the encoder
+        n_latent : int, optional
+            dimension (no. of features) of the latent space
+        var_min : float, optional
+            Minimum value for the variance, by default 1e-4. Used for numerical stability
+        decode : bool, optional
+            whether to encode into latent space (False) or decode into full feature space (True)
+        n_hidden_nodes : List[int], optional
+            number of hidden nodes per hidden layer, by default [1024, 768, 512]
+            each element in the list corresponds to one hidden layer (i.e., no. of hidden layers = length of list)
+        batch_momentum : float, optional
+            `momentum` parameter for `BatchNorm` layer, by default .01
+            If None, a `BatchNorm` is not added
+        layer_norm : bool, optional
+            whether to have `LayerNorm` layers or not, by default False
+        dropout_rate : int | float, optional
+            dropout rate to apply to each of the hidden layers, by default 0.1
+            If None, dropout is not added
+        activation_fn : nn.Module | None, optional
+            non-linear Pytorch activation function, by default nn.ReLU. No activation if set to None
+        dtype : torch.dtype, optional
+            datatype to store values in torch, by default torch.float32
+        device : str, optional
+            whether to use gpu ("cuda") or cpu ("cpu"), by default "cpu"
+        """
+        super().__init__()
+
+        self.dtype = dtype
+        self.device = device
+        
+        # self.z_transformation = _identity # z has gaussian distribution
+        # self.var_activation = torch.exp # ensure positivity of variance
+        self.var_min = var_min
+    
+        if n_hidden_nodes != sorted(n_hidden_nodes)[::-1]:
+            warnings.warn('You have specified an encoder/decoder layer that does not have a consistent change in # of nodes per hidden layer')
+        
+        if decode:
+            layers_dim = [n_latent] + n_hidden_nodes[::-1]
+            n_encode_in, n_encode_out = n_hidden_nodes[0], n_features
+        else:
+            layers_dim = [n_features] + n_hidden_nodes
+            n_encode_in, n_encode_out = n_hidden_nodes[-1], n_latent
+
+        self.hidden_layers = FCLayers(layers = layers_dim,
+                                      batch_momentum = batch_momentum,
+                                      layer_norm = layer_norm,
+                                      dropout_rate = dropout_rate,
+                                      activation_fn = activation_fn,
+                                      dtype = self.dtype, device = self.device)
+        self.z_mean = nn.Linear(n_encode_in, n_encode_out, device = self.device, dtype = self.dtype)
+        self.z_log_var = nn.Linear(n_encode_in, n_encode_out, device = self.device, dtype = self.dtype) # log of the standard deviation
+    
+    def forward(self, x):
+        """Calculates the latent space distribution and samples from it.
+    
+        Returns
+        -------
+        z_m : torch.Tensor
+            the mean (mu) parameter for each feature in latent space
+        z_v : torch.Tensor
+            the log-variance parameter for each feature in latent space
+        z : torch.Tensor
+            the sample drawn from N(z_m, z_v)
+        """
+        h = self.hidden_layers(x)
+        z_mu = self.z_mean(h)
+        z_sigma = torch.exp(self.z_log_var(h)/2.) + self.var_min # log-var trick
+
+        # # scVI sampling
+        # dist = torch.distributions.Normal(z_m, z_v.sqrt())
+        # z = self.z_transformation(dist.rsample())
+        
+        # reparameterization 
+        epsilon = torch.randn_like(z_m, dtype = self.dtype, device = self.device)
+        z = z_m + z_sigma*epsilon #self.z_transformation(z_m + z_sigma*epsilon)
+
+        return z_m, z_sigma, z
     
     
 class CatDiscriminator(nn.Module):

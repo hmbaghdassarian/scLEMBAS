@@ -12,19 +12,20 @@ from torch import nn
 
 from ..utilities import set_seeds
 from .model_components import ProjectInput, ProjectOutput
-from .bionetwork import BioNetSimple, BioNetCat
+from .bionetwork import BioNetSimple, BioNetCat, BioNetSC
 
 class SignalingModel(torch.nn.Module):
     """Constructs the signaling network based RNN."""
     
     def __init__(self, net: pd.DataFrame, X_in: pd.DataFrame, y_out: pd.DataFrame,
+                 expr: pd.DataFrame = None,
+                 covariates: Optional[pd.DataFrame] = None, categorical_covariate_keys: Optional[List[str]] = None,
                  projection_amplitude_in: Union[int, float] = 1, projection_amplitude_out: float = 1,
                  ban_list: List[str] = None, weight_label: str = 'mode_of_action', 
                  source_label: str = 'source', target_label: str = 'target',
                  bionet_params: Dict[str, float] = None, 
                  activation_function: str='MML',
-
-                 covariates: Optional[pd.DataFrame] = None, categorical_covariate_keys: Optional[List[str]] = None,
+                 
 #                  decoder_hyper_params : Dict[str, Any] = Encoder.DEFAULT_HYPER_PARAMS,
                  
                  dtype: torch.dtype=torch.float32, device: str = 'cpu', seed: int = 888):
@@ -41,6 +42,14 @@ class SignalingModel(torch.nn.Module):
             input ligand concentrations. Index represents samples and columns represent a ligand. Values represent amount of ligand introduced (e.g., concentration). 
         y_out : pd.DataFrame
             output TF activities. Index represents samples and columns represent TFs. Values represent activity of the TF. 
+        expr : pd.DataFrame, optional
+            The expression matrix with index as sample IDs, columns as gene IDs, and values as expression counts
+            can be optained using `tf_adata.to_df()`
+        covariates : pd.DataFrame, optional
+            metadata with index as sample IDs and columns containing various metadata values/mappings, by default None
+            If None, will run the original LEMBAS model that does not distinguish between categorical covariates
+        categorical_covariate_keys : List[str], optional
+            the columns in the `covariates` representing categorical/discrete variables, by default None
         ban_list : List[str], optional
             a list of signaling network nodes to disregard, by default None
         projection_amplitude_in : Union[int, float]
@@ -62,11 +71,7 @@ class SignalingModel(torch.nn.Module):
                 - 'MML': Michaelis-Menten-like
                 - 'leaky_relu': Leaky ReLU
                 - 'sigmoid': sigmoid 
-        covariates : pd.DataFrame, optional
-            metadata with index as sample ids and columns containing various metadata values/mappings, by default None
-            If None, will run the original LEMBAS model that does not distinguish between categorical covariates
-        categorical_covariate_keys : List[str], optional
-            the columns in the `covariates` representing categorical/discrete variables, by default None
+
         encoder_hyper_params : Dict[str, Any]
             This is only used for single-cell. Keyword arguments to pass to the encoder. Keys include:
                 n_hidden_nodes : List[int], optional
@@ -107,7 +112,7 @@ class SignalingModel(torch.nn.Module):
         # filter for nodes in the network, sorting by node_labels order
         self.X_in = X_in.loc[:, np.intersect1d(X_in.columns.values, node_labels)]
         self.y_out = y_out.loc[:, np.intersect1d(y_out.columns.values, node_labels)]
-
+        self.expr = expr
 
         # define model layers
         self.input_layer = ProjectInput(node_idx_map = self.node_idx_map, 
@@ -124,15 +129,28 @@ class SignalingModel(torch.nn.Module):
                                                 activation_function = activation_function, 
                                                 dtype = self.dtype, device = self.device, seed = self.seed)
         else:
-            self.signaling_network = BioNetCat(edge_list = edge_list, 
-                                               edge_MOA = edge_MOA,
-                                               input_node_idx = self.input_layer.input_node_idx,
-                                               n_network_nodes = len(node_labels), 
-                                               bionet_params = bionet_params, 
-                                               activation_function = activation_function, 
-                                               covariates = covariates, 
-                                               categorical_covariate_keys = categorical_covariate_keys, 
-                                               dtype = self.dtype, device = self.device, seed = self.seed)
+            if self.expr is None:
+                self.signaling_network = BioNetCat(edge_list = edge_list, 
+                                                   edge_MOA = edge_MOA,
+                                                   input_node_idx = self.input_layer.input_node_idx,
+                                                   n_network_nodes = len(node_labels), 
+                                                   bionet_params = bionet_params, 
+                                                   activation_function = activation_function, 
+                                                   covariates = covariates, 
+                                                   categorical_covariate_keys = categorical_covariate_keys, 
+                                                   dtype = self.dtype, device = self.device, seed = self.seed)
+            else:
+                self.signaling_network = BioNetSC(edge_list = edge_list, 
+                                                  edge_MOA = edge_MOA,
+                                                  input_node_idx = self.input_layer.input_node_idx,
+                                                  n_network_nodes = len(node_labels),
+                                                  n_genes = self.expr.shape[1],
+                                                  bionet_params = bionet_params, 
+                                                  activation_function = activation_function, 
+                                                  covariates = covariates, 
+                                                  categorical_covariate_keys = categorical_covariate_keys, 
+                                                  dtype = self.dtype, device = self.device, seed = self.seed)
+                
         self.output_layer = ProjectOutput(node_idx_map = self.node_idx_map, 
                                           output_labels = self.y_out.columns.values, 
                                           projection_amplitude = self.projection_amplitude_out, 

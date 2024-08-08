@@ -19,6 +19,7 @@ import torch.nn.functional as F
 
 from .model_utilities import np_to_torch, update_with_defaults
 from .activation_functions import activation_function_map
+from .model_components import GaussianVariationalEncoder
 from ..utilities import set_seeds
 
 
@@ -314,8 +315,6 @@ class BioNetBase(nn.Module):
 
 class BioNetSimple(BioNetBase):
     """Builds the RNN on the signaling network topology for bulk data with no categorical covariates."""
-    
-    DEFAULT_PARAMETERS = {'target_steps': 100, 'max_steps': 300, 'exp_factor': 20, 'leak': 0.01, 'tolerance': 1e-5}
 
     def __init__(self, edge_list: np.array, 
                  edge_MOA: np.array, 
@@ -447,7 +446,9 @@ class BioNetCat(BioNetBase):
 
 
     def initialize_weight_values(self):
-        """Initialize the RNN weight_values for all interactions in the signaling network.
+        """Initialize the RNN weight_values for all interactions in the signaling network. 
+        
+        For categorical covariates in bulk, there will be no basal bias, but rather only covariate biases. Setting the attribute to zero makes the forward method code more consistent across the classes. 
 
         Returns
         -------
@@ -594,12 +595,15 @@ class BioNetCat(BioNetBase):
 class BioNetSC(BioNetCat):
     """Builds the RNN on the signaling network topology, accounting for single-cell inputs."""
     
-    DEFAULT_PARAMETERS = BioNetCat.DEFAULT_PARAMETERS
+    DEFAULT_PARAMETERS = {**BioNetCat.DEFAULT_PARAMETERS, 
+                          **GaussianVariationalEncoder.DEFAULT_HYPER_PARAMS}
+                          
 
     def __init__(self, edge_list: np.array, 
                  edge_MOA: np.array, 
                  input_node_idx: torch.Tensor,
-                 n_network_nodes: int, 
+                 n_network_nodes: int,
+                 n_genes: int,
                  covariates: pd.DataFrame,
                  categorical_covariate_keys: List[str],
                  activation_function: str = 'MML', 
@@ -610,12 +614,26 @@ class BioNetSC(BioNetCat):
         
         # embed covariates needed for some methods called in super().__init__
         super().__init__(edge_list = edge_list, edge_MOA = edge_MOA, input_node_idx = input_node_idx, 
-                         n_network_nodes = n_network_nodes, activation_function = activation_function, 
+                         n_network_nodes = n_network_nodes, covariates = covariates, 
+                         categorical_covariate_keys = categorical_covariate_keys, activation_function = activation_function, 
                          bionet_params = bionet_params, dtype = dtype, device = device, seed = seed)
+
+        self.vae = GaussianVariationalEncoder(n_features = n_genes, 
+                                   n_latent = self.n_network_nodes_in, 
+                                   decode = False, 
+                                   var_min = self.bionet_params['vae_var_min'],
+                                   n_hidden_nodes = self.bionet_params['vae_n_hidden_nodes'],
+                                   batch_momentum = self.bionet_params['vae_batch_momentum'],
+                                   layer_norm = self.bionet_params['vae_layer_norm'], 
+                                   dropout_rate = self.bionet_params['vae_dropout_rate'], 
+                                   activation_fn = self.bionet_params['vae_activation_fn'], 
+                                  )
 
 
     def initialize_weight_values(self):
-        """Initialize the RNN weight_values for all interactions in the signaling network.
+        """Initialize the RNN weight_values for all interactions in the signaling network. 
+        
+        For single-cell, the basal bias will be calculated from the gene expression during the forward pass.
 
         Returns
         -------
@@ -631,9 +649,6 @@ class BioNetSC(BioNetCat):
         set_seeds(self.seed)
         weight_values = 0.1 + 0.1*torch.rand(n_interactions, dtype=self.dtype, device = self.device)
         weight_values[self.edge_MOA[1,:]] = -weight_values[self.edge_MOA[1,:]] # make those that are inhibiting negative
-        
-        self.bias_basal = nn.Parameter(1e-3*torch.ones((self.n_network_nodes_in, 1), 
-                                                       dtype = self.dtype, device = self.device))        #
 
         return weight_values
 

@@ -113,6 +113,21 @@ def get_tf_activity(adata, organism: str, grn = 'collectri',
 
     return adata
 
+def transform_tf_activity(tf_estimate: pd.DataFrame) -> pd.DataFrame:
+    """Scales TF activity scores between 0 and 1.
+
+    Parameters
+    ----------
+    tf_estimate : pd.DataFrame
+        original TF activity scores
+
+    Returns
+    -------
+    pd.DataFrame
+        scaled TF activity scores
+    """
+    return 1 / (1 + np.exp(-tf_estimate))
+
 def tf_to_adata(adata: AnnData, estimate_key: str = 'consensus_estimate'):
     """Converts the TF activity results from `get_tf_activity` into its own AnnData object. 
 

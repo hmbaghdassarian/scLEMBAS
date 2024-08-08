@@ -321,6 +321,28 @@ def extract_network(sn_ppis: pd.DataFrame,
 
     return sn_ppis
 
+def drop_nodes(nodes: List[str], 
+               sn_ppis: pd.DataFrame,
+               source_label: str,
+               target_label: str):
+    """Drops nodes and all their interactions from the network. 
+
+    Parameters
+    ----------
+    nodes : List[str]
+        IDs of the nodes to drop
+    sn_ppis : pd.DataFrame
+        an edge list representing the signaling network
+    source_label : str
+        the column label for source nodes in the graph
+    target_label : str
+        the column label for the target node in the graph
+    """
+    drop_idx = sn_ppis[(sn_ppis[source_label].isin(nodes)) | (sn_ppis[target_label].isin(nodes))].index
+    sn_ppis = sn_ppis.drop(index = drop_idx).reset_index(drop = True)
+    
+    return sn_ppis
+
 def map_connections(sn_ppis: pd.DataFrame, 
                       ligand_labels: List[str], 
                       tf_labels: List[str], 
@@ -443,8 +465,6 @@ def create_connected_network(sn_ppis: pd.DataFrame, ligand_labels: List[str], tf
 
     return sn_ppis, ligand_connections
 
-import warnings
-
 def stringent_connected_network(all_ppis: pd.DataFrame,
                                 input_labels: List[str], 
                                 output_labels: List[str], 
@@ -501,7 +521,6 @@ def stringent_connected_network(all_ppis: pd.DataFrame,
     curation_effort_thresh : int
         the final threshold for the curation effort
     """
-                                   
 
     ppi_list = []
     if all_ppis.n_references.isna().any():
@@ -538,8 +557,14 @@ def stringent_connected_network(all_ppis: pd.DataFrame,
                                   source_label = source_label, 
                                   target_label = target_label,
                                   verbose = False)
-        sn_ppis, ligand_connections = create_connected_network(sn_ppis, input_labels, output_labels, source_label = source_label, target_label = target_label, 
-                               path_finder = path_finder)
+
+        sn_ppis, ligand_connections = create_connected_network(sn_ppis = sn_ppis, 
+                                                               ligand_labels = input_labels, 
+                                                               tf_labels = output_labels, 
+                                                               source_label = source_label, 
+                                                               target_label = target_label,
+                                                               path_finder = path_finder)
+        print('Number of interactions: {}'.format(sn_ppis.shape[0]))
         ligand_counts = np.array([len(v) for v in ligand_connections.values()])
 
         all_nodes_ = sorted(set(sn_ppis[source_label].tolist() + sn_ppis[target_label].tolist()))
