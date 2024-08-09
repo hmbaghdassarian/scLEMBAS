@@ -701,15 +701,17 @@ class TrainCat(TrainBase):
 
 class TrainSC(TrainBase):
     """Training the signaling model for single-cell data."""
-    
-    HYPER_PARAMS = {**TrainBase.HYPER_PARAMS, **{'discriminator_lambda_L2': 1e-5}}
+
+    DISCRIMINATOR_PARAMS = {**CatDiscriminator.DEFAULT_HYPER_PARAMS, 
+                             **{k: v for k,v in TrainBase.LR_PARAMS.items() if k != 'max_epochs'},
+                             **{'optimizer': torch.optim.Adam,
+                                'discriminator_lambda_L2': 1e-5}}
     
     def __init__(self,
                  mod, 
                  prediction_optimizer: torch.optim, 
                  prediction_loss_fn: torch.nn.modules.loss,
-                 discriminator_optimizer: torch.optim,
-                 discriminator_params: Dict = CatDiscriminator.DEFAULT_HYPER_PARAMS,
+                 discriminator_params: Dict = None,
                  hyper_params: Dict[str, Union[int, float]] = None,
                  train_split: Optional[Dict[str, Union[float, List[str]]]] = {'train': 0.8, 'test': 0.2, 'validation': None},
                  train_seed: int = None,
@@ -721,7 +723,7 @@ class TrainSC(TrainBase):
         Parameters
         ----------
         discriminator_params : Dict
-            key word arguments to pass to `CatDiscriminator`
+            key word arguments to pass to `CatDiscriminator`. see TrainSC.DISCRIMINATOR_PARAMS for defaults
         
         
         """
@@ -738,27 +740,47 @@ class TrainSC(TrainBase):
                          track_test = track_test)
 
         self.create_data_loader(include_covariates = True, include_expr = True)
-        self.initialize_discriminator(discriminator_params, discriminator_optimizer)
+        self.initialize_discriminator(discriminator_params)
 
-    def initialize_discriminator(self, discriminator_params, discriminator_optimizer):
-        discriminator_params['batch_momentum'] = None # bias is a vector in bulk; this should be eliminated in single-cell
-        self.discriminators = nn.ModuleDict(
-                        {
-                            covariate_cat: CatDiscriminator(n_features_in = cat_embedding.weight.shape[1],
-                                              n_labels = cat_embedding.weight.shape[0], 
-                                              dtype = self.mod.dtype, 
-                                              device = self.mod.device,
-                                              **discriminator_params)
-                            for covariate_cat, cat_embedding in self.mod.signaling_network.cat_embeddings.items()}
-                    )
+    def initialize_discriminator(self, discriminator_params):
+        # self.discriminator['params']['batch_momentum'] = None # bias is a vector in bulk; this should be eliminated in single-cell
+        self.discriminator = {}
+        self.discriminator['params'] = update_with_defaults(self.DISCRIMINATOR_PARAMS, discriminator_params)
         
+        self.discriminator['discriminators'] = nn.ModuleDict(
+                            {
+                                covariate_cat: CatDiscriminator(n_features_in = cat_embedding.weight.shape[1],
+                                                  n_labels = cat_embedding.weight.shape[0], 
+                                                  dtype = self.mod.dtype, 
+                                                  device = self.mod.device,
+                                                                batch_momentum = self.discriminator['params']['batch_momentum'], 
+                                                                layer_norm = self.discriminator['params']['layer_norm'], 
+                                                               dropout_rate = self.discriminator['params']['dropout_rate'], 
+                                                               activation_fn = self.discriminator['params']['activation_fn'], 
+                                                               n_hidden_nodes = self.discriminator['params']['n_hidden_nodes'])
+                                for covariate_cat, cat_embedding in self.mod.signaling_network.cat_embeddings.items()}
+                        )
+
         # prediction optimizer contains the parameters for the the union of the generator and the signaling model
         # note, this combines all discriminator parameters into one optimizer
         # may want to check back into this
-        discriminator_params = []
-        for discriminator in self.discriminators.values():
-            discriminator_params += list(discriminator.parameters())
-        self.discriminator_optimizer = discriminator_optimizer(discriminator_params, lr = 1, weight_decay = 0)
+        discriminator_mod_params = []
+        for discriminator in self.discriminator['discriminators'].values():
+            discriminator_mod_params += list(discriminator.parameters())
+
+        self.discriminator['optimizer'] = self.discriminator['params']['optimizer'](discriminator_mod_params, 
+                                                                            lr = self.discriminator['params']['maximum_learning_rate'],
+                                                                            weight_decay = 0)
+        self.discriminator['lr_scheduler'] = WarmupCosineAnnealingWarmRestarts(optimizer = self.discriminator['optimizer'], 
+                                                                               T_0 = self.discriminator['params']['lr_restart_epoch'],
+                                                              T_mul = self.discriminator['params']['lr_restart_factor'], 
+                                                              gamma = self.discriminator['params']['lr_decay'],
+                                                              eta_min = self.discriminator['params']['minimum_learning_rate'],
+                                                              max_lr=self.discriminator['params']['maximum_learning_rate'],
+                                                              warmup_steps = self.discriminator['params']['warmup_epochs'],
+                                                              last_epoch = -1)
+
+
 
     def train_model(self, verbose: bool = True):
         """Train the model
@@ -780,13 +802,12 @@ class TrainSC(TrainBase):
         start_time = time.time()
         for e in trange(self.hyper_params['max_epochs']):
             cur_lr = self.prediction_optimizer.param_groups[0]['lr']
+            self.discriminator['_cur_lr'] = self.discriminator['optimizer'].param_groups[0]['lr']
 
-            # set learning rate
-#             cur_lr = utils.get_lr(e, self.hyper_params['max_epochs'], max_height = self.hyper_params['maximum_learning_rate'],
-#                                 start_height=self.hyper_params['minimum_learning_rate'], end_height=1e-6, peak = self.hyper_params['lr_restart_epoch'])
-            self.prediction_optimizer.param_groups[0]['lr'] = cur_lr
-            raise ValueError('Need to change the discriminator optimizer with lr scheduler')
-            self.discriminator_optimizer.param_groups[0]['lr'] = cur_lr
+            raise ValueError('YOU ARE HERE')
+#             self.prediction_optimizer.param_groups[0]['lr'] = cur_lr
+#             self.discriminator['optimizer'].param_groups[0]['lr'] = self.discriminator['_cur_lr']
+
 
             cur_loss = []
             cur_eig = []
@@ -849,7 +870,7 @@ class TrainSC(TrainBase):
 
                 # regularization - Discriminator
                 for discriminator in self.discriminators.values():
-                    discriminator_loss += discriminator.L2_reg(self.hyper_params['discriminator_lambda_L2'])
+                    discriminator_loss += discriminator.L2_reg(self.discriminator['params']['discriminator_lambda_L2'])
                 
                 # gradient
                 discriminator_loss.backward(retain_graph = True)
