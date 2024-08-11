@@ -310,23 +310,24 @@ class GaussianVariationalEncoder(nn.Module):
                                       activation_fn = activation_fn,
                                       dtype = self.dtype, device = self.device)
         self.z_mean = nn.Linear(n_encode_in, n_encode_out, device = self.device, dtype = self.dtype)
-        self.z_log_var = nn.Linear(n_encode_in, n_encode_out, device = self.device, dtype = self.dtype) # log of the standard deviation
+        self.z_log_var = nn.Linear(n_encode_in, n_encode_out, device = self.device, dtype = self.dtype) # log of the variance
     
     def forward(self, x):
         """Calculates the latent space distribution and samples from it.
     
         Returns
         -------
-        z_m : torch.Tensor
+        z_mu : torch.Tensor
             the mean (mu) parameter for each feature in latent space
-        z_v : torch.Tensor
+        z_log_sigma_squared : torch.Tensor
             the log-variance parameter for each feature in latent space
         z : torch.Tensor
             the sample drawn from N(z_m, z_v)
         """
         h = self.hidden_layers(x)
         z_mu = self.z_mean(h)
-        z_sigma = torch.exp(self.z_log_var(h)/2.) + self.var_min # log-var trick
+        z_log_sigma_squared = self.z_log_var(h) # log-variance
+        z_sigma = torch.exp(z_log_sigma_squared/2.) + self.var_min # std from log-var trick 
 
         # # scVI sampling
         # dist = torch.distributions.Normal(z_m, z_v.sqrt())
@@ -336,7 +337,50 @@ class GaussianVariationalEncoder(nn.Module):
         epsilon = torch.randn_like(z_mu, dtype = self.dtype, device = self.device)
         z = z_mu + z_sigma*epsilon #self.z_transformation(z_m + z_sigma*epsilon)
 
-        return z_mu, z_sigma, z
+        return z_mu, z_log_sigma_squared, z
+    
+    @staticmethod
+    def KL_divergence(z_mu, z_log_sigma_squared):
+        """Calculates KL divergence between the VAE estimated parameters and the standard normal distribution. 
+
+        Parameters
+        ----------
+        z_mu : torch.Tensor
+            the mean (mu) parameter for each feature in latent space
+        z_log_sigma_squared : torch.Tensor
+            the log-variance parameter for each feature in latent space
+
+        Returns
+        -------
+        kl_div : torch.Tensor
+            the average KL divergence across samples. First, calculated for each sample, then averaged across samples.
+        """
+        kl_div = -0.5 * torch.sum(1 + z_log_sigma_squared - z_mu**2 - torch.exp(z_log_sigma_squared), axis = 1) # sample-wise kl divergance 
+        return kl_div.mean() # average across samples
+
+    
+    def L2_reg(self, lambda_L2: Annotated[float, Ge(0)] = 0):
+        """Get the L2 regularization term for the linear layers' parameters.
+        
+        Parameters
+        ----------
+        lambda_2 : Annotated[float, Ge(0)]
+            the regularization parameter, by default 0 (no penalty) 
+        
+        Returns
+        -------
+        l2_loss : torch.Tensor
+            the regularization term
+        """
+        regularization_loss = 0
+        for layer in self.modules():
+            if isinstance(layer, nn.Linear):
+                regularization_loss += torch.sum(torch.square(layer.weight))
+                if layer.bias is not None:
+                    regularization_loss += torch.sum(torch.square(layer.bias))
+        l2_loss = lambda_L2 * regularization_loss
+        
+        return l2_loss
     
     
 class CatDiscriminator(nn.Module):
@@ -435,8 +479,11 @@ class CatDiscriminator(nn.Module):
             the regularization term
         """
         regularization_loss = 0
-        for name, param in self.classifier.named_parameters(): # only the linear parameters
-            regularization_loss += torch.sum(torch.square(param))
-            
+        for layer in self.classifier.modules():
+            if isinstance(layer, nn.Linear):
+                regularization_loss += torch.sum(torch.square(layer.weight))
+                if layer.bias is not None:
+                    regularization_loss += torch.sum(torch.square(layer.bias))
         l2_loss = lambda_L2 * regularization_loss
+        
         return l2_loss

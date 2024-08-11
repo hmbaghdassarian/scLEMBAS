@@ -87,7 +87,8 @@ class TrainBase:
     REGULARIZATION_PARAMS = {'input_lambda_L2': 1e-6, 'hidden_state_lambda_L2': 1e-6, 'bias_lambda_L2': 1e-6, 
                              'output_lambda_L2': 1e-6,
                              'moa_lambda_L1': 0.1, #'ligand_lambda_L2': 1e-5, 
-                            'uniform_lambda_L2': 1e-4, 'uniform_min': 0, 'uniform_max': (1/1.2), 'spectral_loss_factor': 1e-5}
+                            'uniform_lambda_L2': 1e-4, 'uniform_min': 0, 'uniform_max': (1/1.2), 'spectral_loss_factor': 1e-5, 
+                            'vae_lambda_l2': 1e-2}
     SPECTRAL_RADIUS_PARAMS = {'n_probes_spectral': 5, 'power_steps_spectral': 50, 'subset_n_spectral': 10}
     HYPER_PARAMS = {**LR_PARAMS, **OTHER_PARAMS, **REGULARIZATION_PARAMS, **SPECTRAL_RADIUS_PARAMS}
 
@@ -129,11 +130,13 @@ class TrainBase:
                 - 'network_noise_scale' : noise added to signaling network input, by default 10. Set to 0 for no noise. Makes model more robust. 
                 - 'gradient_noise_scale' : noise added to gradient after backward pass. Makes model more robust. 
                 - 'reset_epoch' : number of epochs upon which to reset the optimizer state, by default 200
-                - 'param_lambda_L2' : L2 regularization penalty term for most of the model weights and biases
+                - '<param>_lambda_L2' : L2 regularization penalty term for most of the model weights and biases. Note, bias_lambda_l2 is not used in TrainSC/BioNetSC singce the bias term is regularized by the KL divergence instead. 
                 - 'moa_lambda_L1' : L1 regularization penalty term for incorrect interaction mechanism of action (inhibiting/stimulating)
                 - 'ligand_lambda_L2' : DEPRECATED, DO NOT ADD KEY/VALUE PAIR. L2 regularization penalty term for ligand biases. 
-                - 'uniform_lambda_L2' : L2 regularization penalty term for 
-                - 'uniform_max' : 
+                - 'uniform_lambda_L2' : L2 regularization penalty term for a uniform distribution fo the RNN adjacency matrix weight values
+                - 'uniform_max' : max value of uniform distribution
+                - 'uniform_min' : min value of uniform distribution
+                - 'vae_lambda_l2': L2 regularization to weights and biases of linear layer of the VAE
                 - 'spectral_loss_factor' : regularization penalty term for 
                 - 'n_probes_spectral' : 
                 - 'power_steps_spectral' : 
@@ -373,9 +376,9 @@ class TrainSimple(TrainBase):
             self.sn_weights = {'mean': [np.mean(np.abs(self.mod.signaling_network.weights[np.logical_not(self.mod.signaling_network.mask.detach().to('cpu').numpy())].to('cpu').detach().numpy().flatten()))], 
                       'median': [np.median(np.abs(self.mod.signaling_network.weights[np.logical_not(self.mod.signaling_network.mask.detach().to('cpu').numpy())].to('cpu').detach().numpy().flatten()))], 
                       'std': [np.std(self.mod.signaling_network.weights[np.logical_not(self.mod.signaling_network.mask.detach().to('cpu').numpy())].to('cpu').detach().numpy().flatten())]}
-            self.sn_bias = {'mean': [np.mean(np.abs(self.mod.signaling_network.bias_basal[np.logical_not(self.mod.signaling_network.bias_mask.detach().to('cpu').numpy())].to('cpu').detach().numpy().flatten()))], 
-                          'median': [np.median(np.abs(self.mod.signaling_network.bias_basal[np.logical_not(self.mod.signaling_network.bias_mask.detach().to('cpu').numpy())].to('cpu').detach().numpy().flatten()))], 
-                          'std': [np.std(self.mod.signaling_network.bias_basal[np.logical_not(self.mod.signaling_network.bias_mask.detach().to('cpu').numpy())].to('cpu').detach().numpy().flatten())]}
+            self.sn_bias = {'mean': [np.mean(np.abs(self.mod.signaling_network.bias_global[np.logical_not(self.mod.signaling_network.bias_mask.detach().to('cpu').numpy())].to('cpu').detach().numpy().flatten()))], 
+                          'median': [np.median(np.abs(self.mod.signaling_network.bias_global[np.logical_not(self.mod.signaling_network.bias_mask.detach().to('cpu').numpy())].to('cpu').detach().numpy().flatten()))], 
+                          'std': [np.std(self.mod.signaling_network.bias_global[np.logical_not(self.mod.signaling_network.bias_mask.detach().to('cpu').numpy())].to('cpu').detach().numpy().flatten())]}
         
     
         
@@ -451,9 +454,9 @@ class TrainSimple(TrainBase):
                 self.sn_weights['median'] += [np.median(np.abs(self.mod.signaling_network.weights[np.logical_not(self.mod.signaling_network.mask.detach().to('cpu').numpy())].to('cpu').detach().numpy().flatten()))]
                 self.sn_weights['std'] += [np.std(self.mod.signaling_network.weights[np.logical_not(self.mod.signaling_network.mask.detach().to('cpu').numpy())].to('cpu').detach().numpy().flatten())]
 
-                self.sn_bias['mean'] += [np.mean(np.abs(self.mod.signaling_network.bias_basal[np.logical_not(self.mod.signaling_network.bias_mask.detach().to('cpu').numpy())].to('cpu').detach().numpy().flatten()))]
-                self.sn_bias['median'] += [np.median(np.abs(self.mod.signaling_network.bias_basal[np.logical_not(self.mod.signaling_network.bias_mask.detach().to('cpu').numpy())].to('cpu').detach().numpy().flatten()))]
-                self.sn_bias['std'] += [np.std(self.mod.signaling_network.bias_basal[np.logical_not(self.mod.signaling_network.bias_mask.detach().to('cpu').numpy())].to('cpu').detach().numpy().flatten())]
+                self.sn_bias['mean'] += [np.mean(np.abs(self.mod.signaling_network.bias_global[np.logical_not(self.mod.signaling_network.bias_mask.detach().to('cpu').numpy())].to('cpu').detach().numpy().flatten()))]
+                self.sn_bias['median'] += [np.median(np.abs(self.mod.signaling_network.bias_global[np.logical_not(self.mod.signaling_network.bias_mask.detach().to('cpu').numpy())].to('cpu').detach().numpy().flatten()))]
+                self.sn_bias['std'] += [np.std(self.mod.signaling_network.bias_global[np.logical_not(self.mod.signaling_network.bias_mask.detach().to('cpu').numpy())].to('cpu').detach().numpy().flatten())]
             
 #            cur_lr = lr_scheduler.get_lr()[0]
             # test/validation
@@ -463,10 +466,10 @@ class TrainSimple(TrainBase):
                     if self.track_validation:
                         loss_val_all = []
                         pearson_val_all = []
-                        for batch, (X_in_val, y_out_val, covariates_idx_val) in enumerate(self.validation_dataloader): 
+                        for batch, (X_in_, y_out_, covariates_idx_, expr_val) in enumerate(self.validation_dataloader): 
                             X_in_val, y_out_val, covariates_idx_val = X_in_val.to(self.mod.device), y_out_val.to(self.mod.device), covariates_idx_val.to(self.mod.device)
                             self.mod.signaling_network.mask = self.mod.signaling_network.mask.to(X_in_val.device)
-                            y_pred_val, _ = self.mod(X_in = X_in_val, covariates_idx = covariates_idx_val)
+                            y_pred_val, _, _ = self.mod(X_in = X_in_val, covariates_idx = covariates_idx_val, expr = expr_val)
                             loss_val = self.prediction_loss_fn(y_out_val, y_pred_val).detach().item()
                             pearson_val = self.get_pearson_correlation(y_out_val,  y_pred_val)
                             loss_val_all.append(loss_val)
@@ -475,9 +478,9 @@ class TrainSimple(TrainBase):
                     if self.track_test:
                         loss_test_all = []
                         pearson_test_all = []
-                        for batch, (X_in_test, y_out_test, covariates_idx_test) in enumerate(self.test_dataloader):
+                        for batch, (X_in_test, y_out_test, covariates_idx_test, expr_test) in enumerate(self.test_dataloader):
                             X_in_test, y_out_test, covariates_idx_test = X_in_test.to(self.mod.device), y_out_test.to(self.mod.device), covariates_idx_test.to(self.mod.device)
-                            y_pred_test, _ = self.mod(X_in = X_in_test, covariates_idx = covariates_idx_test)
+                            y_pred_test, _, _ = self.mod(X_in = X_in_test, covariates_idx = covariates_idx_test, expr = expr_test)
                             loss_test = self.prediction_loss_fn(y_out_test, y_pred_test).detach().item()
                             pearson_test = self.get_pearson_correlation(y_out_test, y_pred_test)
                             loss_test_all.append(loss_test)
@@ -644,10 +647,10 @@ class TrainCat(TrainBase):
                     if self.track_validation:
                         loss_val_all = []
                         pearson_val_all = []
-                        for batch, (X_in_val, y_out_val, covariates_idx_val) in enumerate(self.validation_dataloader): 
+                        for batch, (X_in_val, y_out_val, covariates_idx_val, expr_val) in enumerate(self.validation_dataloader): 
                             X_in_val, y_out_val, covariates_idx_val = X_in_val.to(self.mod.device), y_out_val.to(self.mod.device), covariates_idx_val.to(self.mod.device)
                             self.mod.signaling_network.mask = self.mod.signaling_network.mask.to(X_in_val.device)
-                            y_pred_val, _ = self.mod(X_in = X_in_val, covariates_idx = covariates_idx_val)
+                            y_pred_val, _, _ = self.mod(X_in = X_in_val, covariates_idx = covariates_idx_val, expr = expr_val)
                             loss_val = self.prediction_loss_fn(y_out_val, y_pred_val).detach().item()
                             pearson_val = self.get_pearson_correlation(y_out_val,  y_pred_val)
                             loss_val_all.append(loss_val)
@@ -656,9 +659,9 @@ class TrainCat(TrainBase):
                     if self.track_test:
                         loss_test_all = []
                         pearson_test_all = []
-                        for batch, (X_in_test, y_out_test, covariates_idx_test) in enumerate(self.test_dataloader):
+                        for batch, (X_in_test, y_out_test, covariates_idx_test, expr_test) in enumerate(self.test_dataloader):
                             X_in_test, y_out_test, covariates_idx_test = X_in_test.to(self.mod.device), y_out_test.to(self.mod.device), covariates_idx_test.to(self.mod.device)
-                            y_pred_test, _ = self.mod(X_in = X_in_test, covariates_idx = covariates_idx_test)
+                            y_pred_test, _, _ = self.mod(X_in = X_in_test, covariates_idx = covariates_idx_test, expr = expr_test)
                             loss_test = self.prediction_loss_fn(y_out_test, y_pred_test).detach().item()
                             pearson_test = self.get_pearson_correlation(y_out_test, y_pred_test)
                             loss_test_all.append(loss_test)
@@ -804,11 +807,6 @@ class TrainSC(TrainBase):
             cur_lr = self.prediction_optimizer.param_groups[0]['lr']
             self.discriminator['_cur_lr'] = self.discriminator['optimizer'].param_groups[0]['lr']
 
-            raise ValueError('YOU ARE HERE')
-#             self.prediction_optimizer.param_groups[0]['lr'] = cur_lr
-#             self.discriminator['optimizer'].param_groups[0]['lr'] = self.discriminator['_cur_lr']
-
-
             cur_loss = []
             cur_eig = []
             cur_loss_with_reg = []
@@ -820,9 +818,11 @@ class TrainSC(TrainBase):
                 utils.set_seeds(self.mod.seed + e)
             for batch, (X_in_, y_out_, covariates_idx_, expr_) in enumerate(self.train_dataloader):
                 self.mod.train()
+                for mod_discriminator in self.discriminator['discriminators'].values():
+                    mod_discriminator.train()
                 
                 self.prediction_optimizer.zero_grad()
-                self.discriminator_optimizer.zero_grad()
+                self.discriminator['optimizer'].zero_grad()
 
                 X_in_, y_out_, covariates_idx_ = X_in_.to(self.mod.device), y_out_.to(self.mod.device), covariates_idx_.to(self.mod.device)
 
@@ -831,7 +831,11 @@ class TrainSC(TrainBase):
                 utils.set_seeds(self.mod.seed + self.mod._gradient_seed_counter)
                 network_noise = torch.randn(X_full.shape, device = X_full.device)
                 X_full = X_full + (self.hyper_params['network_noise_scale'] * cur_lr * network_noise) # randomly add noise to signaling network input, makes model more robust
-                Y_full, bias_basal = self.mod.signaling_network(X_full, covariates_idx_) # train signaling network weights
+                Y_full, bias_terms = self.mod.signaling_network(X_full = X_full, 
+                                                                 covariates_idx = covariates_idx_, 
+                                                                 expr = expr_) # train signaling network weights
+                bias_global, bias_mu, bias_log_sigma_squared = bias_terms
+                
                 Y_hat = self.mod.output_layer(Y_full)
 
                 # get prediction loss
@@ -841,18 +845,18 @@ class TrainSC(TrainBase):
                 # discriminator prediction and loss
                 discriminator_loss = torch.tensor([0], device = self.mod.device, dtype = self.mod.dtype)
                 for cat_group_idx, (cat, discriminator) in enumerate(self.discriminators.items()):
-                    bias_basal_prediction = discriminator(self.mod.signaling_network.bias_basal.T) # predicted logits
+                    bias_global_prediction = discriminator(self.mod.signaling_network.bias_global.T) # predicted logits
                     # TO DO: should this expansion of the vector into samples be done after getting the prediction or 
                     # should it be done prior to 
                     # if prior, should the batch_norm = False line in the initilize_discriminator be removed?
-                    bias_basal_prediction = bias_basal_prediction.repeat(covariates_idx_.shape[0], 1) # expand vector to # of samples
+                    bias_global_prediction = bias_global_prediction.repeat(covariates_idx_.shape[0], 1) # expand vector to # of samples
 
                     target = covariates_idx_[:, cat_group_idx]
                     if discriminator.n_labels == 2:
                         target = target.to(self.mod.dtype).unsqueeze(1)
 
-                    discriminator_loss += discriminator.loss_fn(bias_basal_prediction, target)
-                    prediction_loss -= discriminator.loss_fn(bias_basal_prediction, target) 
+                    discriminator_loss += discriminator.loss_fn(bias_global_prediction, target)
+                    prediction_loss -= discriminator.loss_fn(bias_global_prediction, target) 
 
                 # regularization - SCL
                 sign_reg = self.mod.signaling_network.sign_regularization(lambda_L1 = self.hyper_params['moa_lambda_L1']) # incorrect MoA
@@ -864,9 +868,15 @@ class TrainSC(TrainBase):
                                                         target_min = 0, target_max = self.hyper_params['uniform_max']) # uniform distribution
                 param_reg = self.mod.L2_reg(input_lambda_L2=self.hyper_params['input_lambda_L2'],
                                             hidden_state_lambda_L2=self.hyper_params['hidden_state_lambda_L2'], 
-                                            bias_lambda_L2=self.hyper_params['bias_lambda_L2'], 
+#                                             bias_lambda_L2=self.hyper_params['bias_lambda_L2'], # unused default argument 
                                             output_lambda_L2=self.hyper_params['output_lambda_L2'])
-                tot_pred_loss = prediction_loss + sign_reg + param_reg + stability_loss + uniform_reg
+
+                param_reg += self.mod.vae.L2_reg(lambda_l2=self.hyper_params['vae_lambda_l2']) # VAE loss
+                   
+#                 param_reg += self.hyper_params['bias_lambda_L2'] * torch.sum(torch.square(bias_global))# not implemented since we have the kl divergence term
+                kl_divergence = self.mod.signaling_network.vae.KL_divergence(z_mu = bias_mu, z_log_sigma_squared = bias_log_sigma_squared)
+                
+                tot_pred_loss = prediction_loss + sign_reg + param_reg + stability_loss + uniform_reg + kl_divergence
 
                 # regularization - Discriminator
                 for discriminator in self.discriminators.values():
@@ -875,9 +885,11 @@ class TrainSC(TrainBase):
                 # gradient
                 discriminator_loss.backward(retain_graph = True)
                 tot_pred_loss.backward()
+                
                 self.mod.add_gradient_noise(noise_level = self.hyper_params['gradient_noise_scale'])
+                
                 self.prediction_optimizer.step()
-                self.discriminator_optimizer.step()
+                self.discriminator['optimizer'].step()
 
                 # store
                 cur_eig.append(spectral_radius)
@@ -890,6 +902,8 @@ class TrainSC(TrainBase):
                 del X_in_, y_out_, covariates_idx_, X_full, Y_full, Y_hat
 
             self.lr_scheduler.step()
+            self.discriminator['lr_scheduler'].step()
+
 #            cur_lr = lr_scheduler.get_lr()[0]
             # test/validation
             if self.track_validation or self.track_test:
@@ -898,10 +912,10 @@ class TrainSC(TrainBase):
                     if self.track_validation:
                         loss_val_all = []
                         pearson_val_all = []
-                        for batch, (X_in_val, y_out_val, covariates_idx_val) in enumerate(self.validation_dataloader): 
+                        for batch, (X_in_val, y_out_val, covariates_idx_val, expr_val) in enumerate(self.validation_dataloader): 
                             X_in_val, y_out_val, covariates_idx_val = X_in_val.to(self.mod.device), y_out_val.to(self.mod.device), covariates_idx_val.to(self.mod.device)
                             self.mod.signaling_network.mask = self.mod.signaling_network.mask.to(X_in_val.device)
-                            y_pred_val, _ = self.mod(X_in = X_in_val, covariates_idx = covariates_idx_val)
+                            y_pred_val, _, _ = self.mod(X_in = X_in_val, covariates_idx = covariates_idx_val, expr = expr_val)
                             loss_val = self.prediction_loss_fn(y_out_val, y_pred_val).detach().item()
                             pearson_val = self.get_pearson_correlation(y_out_val,  y_pred_val)
                             loss_val_all.append(loss_val)
@@ -910,9 +924,9 @@ class TrainSC(TrainBase):
                     if self.track_test:
                         loss_test_all = []
                         pearson_test_all = []
-                        for batch, (X_in_test, y_out_test, covariates_idx_test) in enumerate(self.test_dataloader):
+                        for batch, (X_in_test, y_out_test, covariates_idx_test, expr_test) in enumerate(self.test_dataloader):
                             X_in_test, y_out_test, covariates_idx_test = X_in_test.to(self.mod.device), y_out_test.to(self.mod.device), covariates_idx_test.to(self.mod.device)
-                            y_pred_test, _ = self.mod(X_in = X_in_test, covariates_idx = covariates_idx_test)
+                            y_pred_test, _, _ = self.mod(X_in = X_in_test, covariates_idx = covariates_idx_test, expr = expr_test)
                             loss_test = self.prediction_loss_fn(y_out_test, y_pred_test).detach().item()
                             pearson_test = self.get_pearson_correlation(y_out_test, y_pred_test)
                             loss_test_all.append(loss_test)
@@ -944,7 +958,8 @@ class TrainSC(TrainBase):
 
             if np.logical_and(e % self.hyper_params['reset_optimizer_epoch'] == 0, e>0):
                 self.prediction_optimizer.state = self.reset_state.copy()
-                self.discriminator_optimizer.state = self.reset_state.copy()
+            if (e % self.discriminator['params']['reset_optimizer_epoch'] == 0) and e > 0:
+                self.discriminator['optimizer'].state = self.reset_state.copy()
 
         if verbose:
             mins, secs = divmod(time.time() - start_time, 60)

@@ -114,6 +114,28 @@ class BioNetBase(nn.Module):
     def forward(self):
         raise ValueError('This must be overwritten by the class that inherits it')
 
+    def L2_reg(self, weights_lambda_L2: Annotated[float, Ge(0)] = 0, 
+              bias_lambda_L2: Annotated[float, Ge(0)] = 0):
+        """Get the L2 regularization term for the neural network parameters.
+        
+        Parameters
+        ----------
+        lambda_L2_weights : Annotated[float, Ge(0)]
+            the regularization parameter for the weights, by default 0 (no penalty) 
+        lambda_L2_bias : Annotated[float, Ge(0)]
+            the regularization parameter for the bias, by default 0 (no penalty) 
+        Returns
+        -------
+        bionet_L2 : torch.Tensor
+            the regularization term
+        """
+        # cat embeddings in the cat one are already normalized
+        bias_loss = bias_lambda_L2 * torch.sum(torch.square(self.bias_global))
+        weight_loss = weights_lambda_L2 * torch.sum(torch.square(self.weights))
+
+        bionet_L2 = bias_loss + weight_loss
+        return bionet_L2
+
     def set_bionet_parameters(self, **attributes):
         """Set the parameters for various calculations in the model. Overrides default parameters with attributes if specified.
         Adapted from LEMBAS `trainingParameters`
@@ -183,28 +205,6 @@ class BioNetBase(nn.Module):
         self.weights.data = self.weights.data * factor
         
         self._prescaled_weights = True
-
-    def L2_reg(self, weights_lambda_L2: Annotated[float, Ge(0)] = 0, 
-              bias_lambda_L2: Annotated[float, Ge(0)] = 0):
-        """Get the L2 regularization term for the neural network parameters.
-        
-        Parameters
-        ----------
-        lambda_L2_weights : Annotated[float, Ge(0)]
-            the regularization parameter for the weights, by default 0 (no penalty) 
-        lambda_L2_bias : Annotated[float, Ge(0)]
-            the regularization parameter for the bias, by default 0 (no penalty) 
-        Returns
-        -------
-        bionet_L2 : torch.Tensor
-            the regularization term
-        """
-        # cat embeddings in the cat one are already normalized
-        bias_loss = bias_lambda_L2 * torch.sum(torch.square(self.bias_global))
-        weight_loss = weights_lambda_L2 * torch.sum(torch.square(self.weights))
-
-        bionet_L2 = bias_loss + weight_loss
-        return bionet_L2
 
     def get_sign_mistmatch(self):
         """Identifies edge weights in network that have a sign that does not agree
@@ -382,7 +382,7 @@ class BioNetSimple(BioNetBase):
         # or have an unknown mechanism of action masked (True)
         self.mask_MOA = self.weights_MOA == 0
 
-    def forward(self, X_full: torch.Tensor, covariates_idx = None):
+    def forward(self, X_full: torch.Tensor, covariates_idx = None, expr = None):
         """Learn the edeg weights within the signaling network topology.
 
         Parameters
@@ -417,7 +417,7 @@ class BioNetSimple(BioNetBase):
                     break
 
         Y_full = X_new.T
-        return Y_full, None
+        return Y_full, None  
     
 class BioNetCat(BioNetBase):
     """Builds the RNN on the signaling network topology, accounting for categorical covariates of the samples (e.g. cell line, genetic background, etc.)."""
@@ -690,7 +690,7 @@ class BioNetSC(BioNetCat):
     #             one_hot = self.one_hot[cat_group][labels_idx].to(embedding.dtype)
     #             bias_tot += torch.matmul(one_hot, embedding)
         
-        bb_mu, bb_sigma, bias_global = self.vae(expr)
+        bias_mu, bias_log_sigma_squared, bias_global = self.vae(expr)
         bias_global.data.masked_fill_(mask = self.bias_mask.T.expand(bias_global.shape[0], -1), value = 0.0) # apply bias mask
         
         bias_tot = bias_global.T + bias_cats
@@ -709,4 +709,27 @@ class BioNetSC(BioNetCat):
                     break
 
         Y_full = X_new.T
-        return Y_full, bias_global
+        return Y_full, (bias_global, bias_mu, bias_log_sigma_squared)
+
+    def L2_reg(self, weights_lambda_L2: Annotated[float, Ge(0)] = 0, 
+              bias_lambda_L2: Annotated[float, Ge(0)] = 0):
+        """Get the L2 regularization term for the neural network parameters.
+        
+        Parameters
+        ----------
+        lambda_L2_weights : Annotated[float, Ge(0)]
+            the regularization parameter for the weights, by default 0 (no penalty) 
+        lambda_L2_bias : Annotated[float, Ge(0)]
+            the regularization parameter for the bias, by default 0 (no penalty) 
+        Returns
+        -------
+        bionet_L2 : torch.Tensor
+            the regularization term
+        """
+        # will not use biass loss since implementing KL divergence, however keep the input for consistency with other code
+        # cat embeddings in the cat one are already normalized
+        #bias_loss = bias_lambda_L2 * torch.sum(torch.square(self.bias_global))
+        weight_loss = weights_lambda_L2 * torch.sum(torch.square(self.weights))
+
+        bionet_L2 = weight_loss # + bias_loss
+        return bionet_L2

@@ -65,15 +65,7 @@ class SignalingModel(torch.nn.Module):
                 - 'spectral_target': _description_, by default np.exp(np.log(params['tolerance'])/params['target_steps'])
                 - 'exp_factor': _description_, by default 20
                 - 'cat_max_norm' : passed to `max_norm` argument of nn.Embedding when generating categorical embeddings (only if covariates is not None)
-        activation_function : str, optional
-            RNN activation function, by default 'MML'
-            options include:
-                - 'MML': Michaelis-Menten-like
-                - 'leaky_relu': Leaky ReLU
-                - 'sigmoid': sigmoid 
-
-        encoder_hyper_params : Dict[str, Any]
-            This is only used for single-cell. Keyword arguments to pass to the encoder. Keys include:
+            vae hyper params. This is only used for single-cell. Keyword arguments to pass to the encoder. Keys include:
                 n_hidden_nodes : List[int], optional
                     number of hidden nodes per hidden layer, by default [64]
                     each element in the list corresponds to one hidden layer (i.e., no. of hidden layers = length of list)
@@ -89,9 +81,15 @@ class SignalingModel(torch.nn.Module):
                     non-linear Pytorch activation function, by default nn.ReLU. No activation if set to None
                 linear_output : bool, optional
                     whether the final layer in the encoder should have a linear activation function (True) or the specified `activation_fn` (False)
-             Additional key words when using the generative/variational decoder:
                 var_eps : float, optional
                     Minimum value for the variance, by default 1e-4. Used for numerical stability
+        activation_function : str, optional
+            RNN activation function, by default 'MML'
+            options include:
+                - 'MML': Michaelis-Menten-like
+                - 'leaky_relu': Leaky ReLU
+                - 'sigmoid': sigmoid 
+
         dtype : torch.dtype, optional
             datatype to store values in torch, by default torch.float32
         device : str
