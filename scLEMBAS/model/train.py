@@ -88,7 +88,8 @@ class TrainBase:
                              'output_lambda_L2': 1e-6,
                              'moa_lambda_L1': 0.1, #'ligand_lambda_L2': 1e-5, 
                             'uniform_lambda_L2': 1e-4, 'uniform_min': 0, 'uniform_max': (1/1.2), 'spectral_loss_factor': 1e-5, 
-                            'vae_lambda_l2': 1e-2}
+                            'vae_lambda_l2': 1e-5, 
+                            'vae_scaling_KL': 1e-2}
     SPECTRAL_RADIUS_PARAMS = {'n_probes_spectral': 5, 'power_steps_spectral': 50, 'subset_n_spectral': 10}
     HYPER_PARAMS = {**LR_PARAMS, **OTHER_PARAMS, **REGULARIZATION_PARAMS, **SPECTRAL_RADIUS_PARAMS}
 
@@ -137,6 +138,7 @@ class TrainBase:
                 - 'uniform_max' : max value of uniform distribution
                 - 'uniform_min' : min value of uniform distribution
                 - 'vae_lambda_l2': L2 regularization to weights and biases of linear layer of the VAE
+                - 'vae_scaling_KL': multiplies the KL divergence by this value to scale it
                 - 'spectral_loss_factor' : regularization penalty term for 
                 - 'n_probes_spectral' : 
                 - 'power_steps_spectral' : 
@@ -221,15 +223,17 @@ class TrainBase:
 #                 # for running through model
 #                 self._X_val = self.mod.df_to_tensor(self.X_val)
 #                 self._y_val = self.mod.df_to_tensor(self.y_val)
-                
-        stats_df_cols = ['learning_rate', 'iter_time', 'eig_mean', 'eig_sigma', 'n_moa_violations',
-                         'train_loss_with_reg', 'train_loss_mean', 'train_loss_sigma', 
-                         'train_pearson_mean', 'train_pearson_sigma']
+        
+        stats_df_cols = ['learning_rate', 'iter_time', 'eig_mean', #'eig_sigma', 
+                         'n_moa_violations', 
+                         'train_loss_total', 'train_loss_prediction', 'train_pearson', 
+                        'sign_reg_loss', 'stability_reg_loss', 'uniform_reg_loss', 
+                         'input_param_reg_loss', 'sn_param_reg_loss', 'output_param_reg_loss']        
 
         if self.track_test: 
-            stats_df_cols += ['test_loss_mean', 'test_loss_sigma', 'test_pearson_mean', 'test_pearson_sigma']
+            stats_df_cols += ['test_loss_prediction', 'test_pearson']
         if self.track_validation:
-            stats_df_cols += ['validation_loss_mean', 'validation_loss_sigma', 'validation_pearson_mean', 'validation_pearson_sigma']
+            stats_df_cols += ['validation_loss_prediction', 'validation_pearson']
 
         self.stats_df = pd.DataFrame(columns = stats_df_cols)
 
@@ -241,7 +245,8 @@ class TrainBase:
                 if include_covariates:
                     covariates_idx = self.mod.signaling_network.covariates_to_tensor(sample_ids = self.__dict__['X_' + data_type].index)
                 if include_expr:
-                    expr = self.mod.df_to_tensor(self.mod.expr.loc[self.__dict__['X_' + data_type].index, :])
+                    self.__dict__['expr_' + data_type] = self.mod.expr.loc[self.__dict__['X_' + data_type].index, :]
+                    expr = self.mod.df_to_tensor(self.__dict__['expr_' + data_type])
 
                 model_data = ModelData(X_in = self.mod.df_to_tensor(self.__dict__['X_' + data_type]).to('cpu'), 
                                        y_out = self.mod.df_to_tensor(self.__dict__['y_' + data_type]).to('cpu'),
@@ -390,11 +395,9 @@ class TrainSimple(TrainBase):
 #                                 start_height=self.hyper_params['minimum_learning_rate'], end_height=1e-6, peak = self.hyper_params['lr_restart_epoch'])
 #             self.prediction_optimizer.param_groups[0]['lr'] = cur_lr
             
-            cur_loss = []
-            cur_eig = []
-            cur_loss_with_reg = []
-            cur_pearson = []
-            
+            cur_eig, cur_loss_tot_train,  cur_loss_pred_train, cur_pearson_train = [], [], [], []                           
+            cur_sign_loss, cur_stab_loss, cur_uni_loss, cur_in_loss, cur_sn_loss, cur_out_loss =  [], [], [], [], [], [] 
+
             # iterate through batches
             if self.mod.seed:
                 utils.set_seeds(self.mod.seed + e)
@@ -413,7 +416,7 @@ class TrainSimple(TrainBase):
                 Y_hat = self.mod.output_layer(Y_full)
                 
                 # get prediction loss
-                fit_loss = self.prediction_loss_fn(y_out_, Y_hat)
+                prediction_loss = self.prediction_loss_fn(y_out_, Y_hat)
                 train_pearson_r = self.get_pearson_correlation(y_out_, Y_hat, axis = 0, return_mean = True)
                 
                 # get regularization losses
@@ -424,24 +427,31 @@ class TrainSimple(TrainBase):
                                                                                     power_steps = self.hyper_params['power_steps_spectral'])
                 uniform_reg = self.mod.uniform_regularization(lambda_L2 = self.hyper_params['uniform_lambda_L2']*cur_lr, Y_full = Y_full, 
                                                         target_min = self.hyper_params['uniform_min'], target_max = self.hyper_params['uniform_max']) # uniform distribution
-                param_reg = self.mod.L2_reg(input_lambda_L2=self.hyper_params['input_lambda_L2'],
+                input_param_reg, sn_param_reg, output_param_reg = self.mod.L2_reg(input_lambda_L2=self.hyper_params['input_lambda_L2'],
                                             hidden_state_lambda_L2=self.hyper_params['hidden_state_lambda_L2'], 
                                             bias_lambda_L2=self.hyper_params['bias_lambda_L2'], 
                                             output_lambda_L2=self.hyper_params['output_lambda_L2'])
+                param_reg = input_param_reg + sn_param_reg + output_param_reg
         #             total_loss = fit_loss + sign_reg + ligand_reg + param_reg + stability_loss + uniform_reg
-                total_loss = fit_loss + sign_reg + param_reg + stability_loss + uniform_reg
+                total_loss = prediction_loss + sign_reg + param_reg + stability_loss + uniform_reg
         
                 # gradient
                 total_loss.backward()
                 self.mod.add_gradient_noise(noise_level = self.hyper_params['gradient_noise_scale'])
                 self.prediction_optimizer.step()
         
-                # store
+                # store                                                    
                 cur_eig.append(spectral_radius)
-                cur_loss.append(fit_loss.item())
-                cur_loss_with_reg.append(total_loss.item())
-                cur_pearson.append(train_pearson_r)
-                
+                cur_loss_pred_train.append(prediction_loss.item())
+                cur_loss_tot_train.append(total_loss.item())
+                cur_pearson_train.append(train_pearson_r)
+                cur_sign_loss.append(sign_reg.item())
+                cur_stab_loss.append(stability_loss.item())
+                cur_uni_loss.append(uniform_reg.item())
+                cur_in_loss.append(input_param_reg.item())
+                cur_sn_loss.append(sn_param_reg.item())
+                cur_out_loss.append(output_param_reg.item())
+
                 # free up CUDA mem
                 del sign_reg, stability_loss, uniform_reg, param_reg, fit_loss, train_pearson_r
                 del X_in_, y_out_, covariates_idx_, X_full, Y_full, Y_hat
@@ -488,12 +498,36 @@ class TrainSimple(TrainBase):
                             del y_pred_test, _
         
             # tracking
-            sv = [cur_lr, time.time() - start_time, np.mean(cur_eig), np.std(cur_eig),
-                  self.mod.signaling_network.count_sign_mismatch(), 
-                  np.mean(cur_loss_with_reg), np.mean(cur_loss), np.std(cur_loss), 
-                  np.mean(cur_pearson), np.std(cur_pearson)]
-            sv += [np.mean(loss_test_all), np.std(loss_test_all), np.mean(pearson_test_all), np.std(pearson_test_all)] if self.track_test else []
-            sv += [np.mean(loss_val_all), np.std(loss_val_all), np.mean(pearson_val_all), np.std(pearson_val_all)] if self.track_validation else []
+                cur_eig.append(spectral_radius)
+                cur_loss_pred_train.append(prediction_loss.item())
+                cur_loss_tot_train.append(total_loss.item())
+                cur_pearson_train.append(train_pearson_r)
+                cur_sign_loss.append(sign_reg.item())
+                cur_stab_loss.append(stability_loss.item())
+                cur_uni_loss.append(uniform_reg.item())
+                cur_in_loss.append(input_param_reg.item())
+                cur_sn_loss.append(sn_param_reg.item())
+                cur_out_loss.append(output_param_reg.item())
+
+        stats_df_cols = ['learning_rate', 'iter_time', 'eig_mean', #'eig_sigma', 
+                         'n_moa_violations', 
+                         'train_loss_total', 'train_loss_prediction', 'train_pearson', 
+                        'sign_reg_loss', 'stability_reg_loss', 'uniform_reg_loss', 
+                         'input_param_reg_loss', 'sn_param_reg_loss', 'output_param_reg_loss']        
+
+        if self.track_test: 
+            stats_df_cols += ['test_loss_prediction', 'test_pearson']
+        if self.track_validation:
+            stats_df_cols += ['validation_loss_prediction', 'validation_pearson']
+
+            sv = [cur_lr, time.time() - start_time, np.mean(cur_eig), self.mod.signaling_network.count_sign_mismatch(), 
+                  np.mean(cur_loss_tot_train), np.mean(cur_loss_pred_train), np.mean(cur_pearson_train), 
+                  np.mean(cur_sign_loss), np.mean(cur_stab_loss), np.mean(cur_uni_loss), 
+                  np.mean(cur_in_loss), np.mean(cur_sn_loss), np.mean(cur_out_loss)
+                  ]
+            sv += [np.mean(loss_test_all), np.mean(pearson_test_all)] if self.track_test else []
+            sv += [np.mean(loss_val_all), np.mean(pearson_val_all)] if self.track_validation else []
+
             self.stats_df.loc[e, :] = sv
             
             if e % (self.hyper_params['max_epochs']/100) == 0:
@@ -581,10 +615,8 @@ class TrainCat(TrainBase):
 #                                 start_height=self.hyper_params['minimum_learning_rate'], end_height=1e-6, peak = self.hyper_params['lr_restart_epoch'])
 #             self.prediction_optimizer.param_groups[0]['lr'] = cur_lr
 
-            cur_loss = []
-            cur_eig = []
-            cur_loss_with_reg = []
-            cur_pearson = []
+            cur_eig, cur_loss_tot_train,  cur_loss_pred_train, cur_pearson_train = [], [], [], []                           
+            cur_sign_loss, cur_stab_loss, cur_uni_loss, cur_in_loss, cur_sn_loss, cur_out_loss =  [], [], [], [], [], [] 
 
 
             # iterate through batches
@@ -617,10 +649,11 @@ class TrainCat(TrainBase):
                                                                                     power_steps = self.hyper_params['power_steps_spectral'])
                 uniform_reg = self.mod.uniform_regularization(lambda_L2 = self.hyper_params['uniform_lambda_L2']*cur_lr, Y_full = Y_full, 
                                                         target_min = 0, target_max = self.hyper_params['uniform_max']) # uniform distribution
-                param_reg = self.mod.L2_reg(input_lambda_L2=self.hyper_params['input_lambda_L2'],
+                input_param_reg, sn_param_reg, output_param_reg = self.mod.L2_reg(input_lambda_L2=self.hyper_params['input_lambda_L2'],
                                             hidden_state_lambda_L2=self.hyper_params['hidden_state_lambda_L2'], 
                                             bias_lambda_L2=self.hyper_params['bias_lambda_L2'], 
                                             output_lambda_L2=self.hyper_params['output_lambda_L2'])
+                param_reg = input_param_reg + sn_param_reg + output_param_reg
                 tot_pred_loss = prediction_loss + sign_reg + param_reg + stability_loss + uniform_reg
                 
                 # gradient
@@ -630,12 +663,19 @@ class TrainCat(TrainBase):
 
                 # store
                 cur_eig.append(spectral_radius)
-                cur_loss.append(prediction_loss.item())
-                cur_loss_with_reg.append(tot_pred_loss.item())
-                cur_pearson.append(train_pearson_r)
+                cur_loss_pred_train.append(prediction_loss.item())
+                cur_loss_tot_train.append(tot_pred_loss.item())
+                cur_pearson_train.append(train_pearson_r)
+                cur_sign_loss.append(sign_reg.item())
+                cur_stab_loss.append(stability_loss.item())
+                cur_uni_loss.append(uniform_reg.item())
+                cur_in_loss.append(input_param_reg.item())
+                cur_sn_loss.append(sn_param_reg.item())
+                cur_out_loss.append(output_param_reg.item())
                 
                 # free up CUDA mem
                 del sign_reg, stability_loss, uniform_reg, param_reg, prediction_loss, train_pearson_r
+                del input_param_reg, sn_param_reg, output_param_reg
                 del X_in_, y_out_, covariates_idx_, X_full, Y_full, Y_hat
 
             self.lr_scheduler.step()
@@ -670,12 +710,13 @@ class TrainCat(TrainBase):
         
             # tracking
             # tracking
-            sv = [cur_lr, time.time() - start_time, np.mean(cur_eig), np.std(cur_eig),
-                  self.mod.signaling_network.count_sign_mismatch(), 
-                  np.mean(cur_loss_with_reg), np.mean(cur_loss), np.std(cur_loss), 
-                  np.mean(cur_pearson), np.std(cur_pearson)]
-            sv += [np.mean(loss_test_all), np.std(loss_test_all), np.mean(pearson_test_all), np.std(pearson_test_all)] if self.track_test else []
-            sv += [np.mean(loss_val_all), np.std(loss_val_all), np.mean(pearson_val_all), np.std(pearson_val_all)] if self.track_validation else []
+            sv = [cur_lr, time.time() - start_time, np.mean(cur_eig), self.mod.signaling_network.count_sign_mismatch(), 
+                  np.mean(cur_loss_tot_train), np.mean(cur_loss_pred_train), np.mean(cur_pearson_train), 
+                  np.mean(cur_sign_loss), np.mean(cur_stab_loss), np.mean(cur_uni_loss), 
+                  np.mean(cur_in_loss), np.mean(cur_sn_loss), np.mean(cur_out_loss)
+                  ]
+            sv += [np.mean(loss_test_all), np.mean(pearson_test_all)] if self.track_test else []
+            sv += [np.mean(loss_val_all), np.mean(pearson_val_all)] if self.track_validation else []
             self.stats_df.loc[e, :] = sv
 
             if e % (self.hyper_params['max_epochs']/100) == 0:
@@ -708,7 +749,8 @@ class TrainSC(TrainBase):
     DISCRIMINATOR_PARAMS = {**CatDiscriminator.DEFAULT_HYPER_PARAMS, 
                              **{k: v for k,v in TrainBase.LR_PARAMS.items() if k != 'max_epochs'},
                              **{'optimizer': torch.optim.Adam,
-                                'discriminator_lambda_L2': 1e-5}}
+                                'discriminator_lambda_L2': 1e-5, 
+                               'discriminator_penalty_weight': 1}}
     
     def __init__(self,
                  mod, 
@@ -741,6 +783,13 @@ class TrainSC(TrainBase):
                            train_seed = train_seed,
                          track_validation = track_validation,
                          track_test = track_test)
+        
+        # more tracking params
+        self.stats_df.insert(1, 'discriminator_learning_rate', [])
+        insert_col = self.stats_df.columns.tolist().index('output_param_reg_loss')
+        for ici, col in enumerate(['vae_param_reg', 'kl_divergence', 'discriminator_loss_total', 
+                                'discriminator_loss_prediction', 'discriminator_param_reg_loss']):
+            self.stats_df.insert(insert_col + ici, col, [])
 
         self.create_data_loader(include_covariates = True, include_expr = True)
         self.initialize_discriminator(discriminator_params)
@@ -763,7 +812,7 @@ class TrainSC(TrainBase):
                                                                n_hidden_nodes = self.discriminator['params']['n_hidden_nodes'])
                                 for covariate_cat, cat_embedding in self.mod.signaling_network.cat_embeddings.items()}
                         )
-
+        # NIKOS: combining discriminator params
         # prediction optimizer contains the parameters for the the union of the generator and the signaling model
         # note, this combines all discriminator parameters into one optimizer
         # may want to check back into this
@@ -807,11 +856,9 @@ class TrainSC(TrainBase):
             cur_lr = self.prediction_optimizer.param_groups[0]['lr']
             self.discriminator['_cur_lr'] = self.discriminator['optimizer'].param_groups[0]['lr']
 
-            cur_loss = []
-            cur_eig = []
-            cur_loss_with_reg = []
-            cur_pearson = []
-
+            cur_eig, cur_loss_tot_train,  cur_loss_pred_train, cur_pearson_train = [], [], [], []                           
+            cur_sign_loss, cur_stab_loss, cur_uni_loss, cur_in_loss, cur_sn_loss, cur_out_loss =  [], [], [], [], [], [] 
+            cur_vae_loss, cur_kl_loss, disc_loss_tot_train, disc_loss_pred_train, disc_param_loss = [], [], [], [], []
 
             # iterate through batches
             if self.mod.seed:
@@ -838,27 +885,23 @@ class TrainSC(TrainBase):
                 
                 Y_hat = self.mod.output_layer(Y_full)
 
-                # get prediction loss
+                # get reconstruction loss
                 prediction_loss = self.prediction_loss_fn(y_out_, Y_hat)
                 train_pearson_r = self.get_pearson_correlation(y_out_, Y_hat, axis = 0, return_mean = True)
 
                 # discriminator prediction and loss
-                discriminator_loss = torch.tensor([0], device = self.mod.device, dtype = self.mod.dtype)
-                for cat_group_idx, (cat, discriminator) in enumerate(self.discriminators.items()):
-                    bias_global_prediction = discriminator(self.mod.signaling_network.bias_global.T) # predicted logits
-                    # TO DO: should this expansion of the vector into samples be done after getting the prediction or 
-                    # should it be done prior to 
-                    # if prior, should the batch_norm = False line in the initilize_discriminator be removed?
-                    bias_global_prediction = bias_global_prediction.repeat(covariates_idx_.shape[0], 1) # expand vector to # of samples
+                discriminator_loss_accuracy = torch.tensor(0, device = self.mod.device, dtype = self.mod.dtype)
+                for cat_group_idx, (cat, discriminator) in enumerate(self.discriminator['discriminators'].items()):
+                    bias_global_prediction = discriminator(bias_global) # predicted logits
 
                     target = covariates_idx_[:, cat_group_idx]
                     if discriminator.n_labels == 2:
                         target = target.to(self.mod.dtype).unsqueeze(1)
 
-                    discriminator_loss += discriminator.loss_fn(bias_global_prediction, target)
-                    prediction_loss -= discriminator.loss_fn(bias_global_prediction, target) 
+                    discriminator_loss_accuracy += discriminator.loss_fn(bias_global_prediction, target)   # if don't use retain_graph = True, then use bias_global_prediction.detach() here
+#                     prediction_loss -= discriminator.loss_fn(bias_global_prediction, target) 
 
-                # regularization - SCL
+                ############ REGULARIZATION - SCL ############
                 sign_reg = self.mod.signaling_network.sign_regularization(lambda_L1 = self.hyper_params['moa_lambda_L1']) # incorrect MoA
         #             ligand_reg = self.mod.ligand_regularization(lambda_L2 = self.hyper_params['ligand_lambda_L2']) # ligand biases
                 stability_loss, spectral_radius = self.mod.signaling_network.get_SS_loss(Y_full = Y_full.detach(), spectral_loss_factor = self.hyper_params['spectral_loss_factor'],
@@ -866,24 +909,36 @@ class TrainSC(TrainBase):
                                                                                     power_steps = self.hyper_params['power_steps_spectral'])
                 uniform_reg = self.mod.uniform_regularization(lambda_L2 = self.hyper_params['uniform_lambda_L2']*cur_lr, Y_full = Y_full, 
                                                         target_min = 0, target_max = self.hyper_params['uniform_max']) # uniform distribution
-                param_reg = self.mod.L2_reg(input_lambda_L2=self.hyper_params['input_lambda_L2'],
+                input_param_reg, sn_param_reg, output_param_reg = self.mod.L2_reg(input_lambda_L2=self.hyper_params['input_lambda_L2'],
                                             hidden_state_lambda_L2=self.hyper_params['hidden_state_lambda_L2'], 
 #                                             bias_lambda_L2=self.hyper_params['bias_lambda_L2'], # unused default argument 
                                             output_lambda_L2=self.hyper_params['output_lambda_L2'])
-
-                param_reg += self.mod.vae.L2_reg(lambda_l2=self.hyper_params['vae_lambda_l2']) # VAE loss
+                param_reg = input_param_reg + sn_param_reg + output_param_reg
+                vae_reg = self.mod.signaling_network.vae.L2_reg(lambda_L2=self.hyper_params['vae_lambda_l2']) # VAE loss
+                param_reg += vae_reg
                    
-#                 param_reg += self.hyper_params['bias_lambda_L2'] * torch.sum(torch.square(bias_global))# not implemented since we have the kl divergence term
-                kl_divergence = self.mod.signaling_network.vae.KL_divergence(z_mu = bias_mu, z_log_sigma_squared = bias_log_sigma_squared)
+                # NIKOS: 
+                # 1) should the KL divergence be getting scaled? YT doesn't do it but otherwise mine is very large relative to 
+                # prediction error
+                # 2) should the bias regularization be removed as I have done because of the KL divergence
+                kl_divergence = self.mod.signaling_network.vae.KL_divergence(z_mu = bias_mu, 
+                                                                             z_log_sigma_squared = bias_log_sigma_squared, 
+                                                                             scaling_factor = self.hyper_params['vae_scaling_KL'])
                 
                 tot_pred_loss = prediction_loss + sign_reg + param_reg + stability_loss + uniform_reg + kl_divergence
-
-                # regularization - Discriminator
-                for discriminator in self.discriminators.values():
-                    discriminator_loss += discriminator.L2_reg(self.discriminator['params']['discriminator_lambda_L2'])
+                # NIKOS: 
+                # 1) adverserial training includes the LEMBAS parameters in addition to the generator (see Notes for details)
+                # 2) use the same "discriminator_loss_accuracy", rather than re-calculating -- would this effect gradients?
+                tot_pred_loss -= (self.discriminator['params']['discriminator_penalty_weight'])*discriminator_loss_accuracy # adversarial portion
                 
+                ############ REGULARIZATION - Discriminator ############ 
+                discriminator_reg = torch.tensor(0, device = self.mod.device, dtype = self.mod.dtype)
+                for discriminator in self.discriminator['discriminators'].values():
+                    discriminator_reg += discriminator.L2_reg(self.discriminator['params']['discriminator_lambda_L2'])
+                discriminator_loss = discriminator_loss_accuracy + discriminator_reg
                 # gradient
-                discriminator_loss.backward(retain_graph = True)
+                # NIKOS: is retain_graph = True appropriate
+                discriminator_loss.backward(retain_graph = True) # 16:00 of https://www.youtube.com/watch?v=OljTVUVzPpM&list=PPSV
                 tot_pred_loss.backward()
                 
                 self.mod.add_gradient_noise(noise_level = self.hyper_params['gradient_noise_scale'])
@@ -893,18 +948,30 @@ class TrainSC(TrainBase):
 
                 # store
                 cur_eig.append(spectral_radius)
-                cur_loss.append(prediction_loss.item())
-                cur_loss_with_reg.append(tot_pred_loss.item())
-                cur_pearson.append(train_pearson_r)
+                cur_loss_pred_train.append(prediction_loss.item())
+                cur_loss_tot_train.append(tot_pred_loss.item())
+                cur_pearson_train.append(train_pearson_r)
+                cur_sign_loss.append(sign_reg.item())
+                cur_stab_loss.append(stability_loss.item())
+                cur_uni_loss.append(uniform_reg.item())
+                cur_in_loss.append(input_param_reg.item())
+                cur_sn_loss.append(sn_param_reg.item())
+                cur_out_loss.append(output_param_reg.item())
+                cur_vae_loss.append(vae_reg.item()) 
+                cur_kl_loss.append(kl_divergence.item())
+                disc_loss_tot_train.append(discriminator_loss.item()) 
+                disc_loss_pred_train.append(discriminator_loss_accuracy.item()) 
+                disc_param_loss.append(discriminator_reg.item())
                 
                 # free up CUDA mem
                 del sign_reg, stability_loss, uniform_reg, param_reg, prediction_loss, train_pearson_r
+                del input_param_reg, sn_param_reg, output_param_reg
+                del vae_reg, kl_divergence, discriminator_loss, discriminator_loss_accuracy, discriminator_reg
                 del X_in_, y_out_, covariates_idx_, X_full, Y_full, Y_hat
 
             self.lr_scheduler.step()
             self.discriminator['lr_scheduler'].step()
 
-#            cur_lr = lr_scheduler.get_lr()[0]
             # test/validation
             if self.track_validation or self.track_test:
                 self.mod.eval()
@@ -935,12 +1002,13 @@ class TrainSC(TrainBase):
         
             # tracking
             # tracking
-            sv = [cur_lr, time.time() - start_time, np.mean(cur_eig), np.std(cur_eig),
-                  self.mod.signaling_network.count_sign_mismatch(), 
-                  np.mean(cur_loss_with_reg), np.mean(cur_loss), np.std(cur_loss), 
-                  np.mean(cur_pearson), np.std(cur_pearson)]
-            sv += [np.mean(loss_test_all), np.std(loss_test_all), np.mean(pearson_test_all), np.std(pearson_test_all)] if self.track_test else []
-            sv += [np.mean(loss_val_all), np.std(loss_val_all), np.mean(pearson_val_all), np.std(pearson_val_all)] if self.track_validation else []
+            sv = [cur_lr, self.discriminator['_cur_lr'], time.time() - start_time, np.mean(cur_eig), self.mod.signaling_network.count_sign_mismatch(), 
+                  np.mean(cur_loss_tot_train), np.mean(cur_loss_pred_train), np.mean(cur_pearson_train), 
+                  np.mean(cur_sign_loss), np.mean(cur_stab_loss), np.mean(cur_uni_loss), 
+                  np.mean(cur_in_loss), np.mean(cur_sn_loss), np.mean(cur_out_loss),
+                  np.mean(cur_vae_loss), np.mean(cur_kl_loss), np.mean(disc_loss_tot_train), np.mean(disc_loss_pred_train), np.mean(disc_param_loss)]
+            sv += [np.mean(loss_test_all), np.mean(pearson_test_all)] if self.track_test else []
+            sv += [np.mean(loss_val_all), np.mean(pearson_val_all)] if self.track_validation else []
             self.stats_df.loc[e, :] = sv
 
             if e % (self.hyper_params['max_epochs']/100) == 0:

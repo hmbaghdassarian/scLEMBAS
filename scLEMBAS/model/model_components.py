@@ -250,7 +250,7 @@ class GaussianVariationalEncoder(nn.Module):
                  batch_momentum: float = 0.01,
                  layer_norm: bool = False,
                  dropout_rate: int | float = 0.1,
-                 activation_fn: nn.Module | None = nn.ReLU,
+                 activation_fn: nn.Module | None = nn.LeakyReLU,
                  dtype: torch.dtype=torch.float32,
                  device: str = 'cpu', 
                 ):
@@ -340,7 +340,7 @@ class GaussianVariationalEncoder(nn.Module):
         return z_mu, z_log_sigma_squared, z
     
     @staticmethod
-    def KL_divergence(z_mu, z_log_sigma_squared):
+    def KL_divergence(z_mu, z_log_sigma_squared, scaling_factor):
         """Calculates KL divergence between the VAE estimated parameters and the standard normal distribution. 
 
         Parameters
@@ -349,14 +349,16 @@ class GaussianVariationalEncoder(nn.Module):
             the mean (mu) parameter for each feature in latent space
         z_log_sigma_squared : torch.Tensor
             the log-variance parameter for each feature in latent space
-
+        scaling_factor : float
+            scales the KL divergence by a constant, to make it more in line with other loss terms
+            
         Returns
         -------
         kl_div : torch.Tensor
             the average KL divergence across samples. First, calculated for each sample, then averaged across samples.
         """
         kl_div = -0.5 * torch.sum(1 + z_log_sigma_squared - z_mu**2 - torch.exp(z_log_sigma_squared), axis = 1) # sample-wise kl divergance 
-        return kl_div.mean() # average across samples
+        return scaling_factor*kl_div.mean() # average across samples
 
     
     def L2_reg(self, lambda_L2: Annotated[float, Ge(0)] = 0):
@@ -399,7 +401,7 @@ class CatDiscriminator(nn.Module):
         batch_momentum: float = 0.01,
         layer_norm: bool = False,
         dropout_rate: int | float = 0.1,
-        activation_fn: nn.Module | None = nn.ReLU,
+        activation_fn: nn.Module | None = nn.LeakyReLU,
         dtype: torch.dtype=torch.float32,
         device: str = 'cpu'
     ):
