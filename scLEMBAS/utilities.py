@@ -163,11 +163,11 @@ def print_stats(stats_df):
     """
     epoch = stats_df.shape[0] - 1
     msg = 'i={:.0f}'.format(epoch)
-    msg += ', l(tr)={:.5f}'.format(stats_df.loc[epoch, 'train_loss_mean'])
-    if 'test_loss_mean' in stats_df.columns:
-        msg += ', l(te)={:.5f}'.format(stats_df.loc[epoch, 'test_loss_mean'])
-    if 'validation_loss_mean' in stats_df.columns:
-        msg += ', l(v)={:.5f}'.format(stats_df.loc[epoch, 'validation_loss_mean'])
+    msg += ', l(tr)={:.5f}'.format(stats_df.loc[epoch, 'train_loss_prediction'])
+    if 'test_loss_prediction' in stats_df.columns:
+        msg += ', l(te)={:.5f}'.format(stats_df.loc[epoch, 'test_loss_prediction'])
+    if 'validation_loss_prediction' in stats_df.columns:
+        msg += ', l(v)={:.5f}'.format(stats_df.loc[epoch, 'validation_loss_prediction'])
     msg += ', s={:.5f}'.format(stats_df.loc[epoch, 'eig_mean'])
     msg += ', r={:.5f}'.format(stats_df.loc[epoch, 'learning_rate'])
     msg += ', v={:.5f}'.format(stats_df.loc[epoch, 'n_moa_violations'])

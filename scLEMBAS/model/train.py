@@ -549,7 +549,7 @@ class TrainSimple(TrainBase):
             mins, secs = divmod(time.time() - start_time, 60)
             print("Training ran in: {:.0f} min {:.2f} sec".format(mins, secs))
             
-        return self.mod, cur_loss, cur_eig, self.stats_df
+        return self.mod, self.stats_df
 
 class TrainCat(TrainBase):
     """Training the signaling model for bulk data, accounting for categorical covariates of the samples (e.g. cell line, genetic background, etc.)."""
@@ -739,7 +739,7 @@ class TrainCat(TrainBase):
             mins, secs = divmod(time.time() - start_time, 60)
             print("Training ran in: {:.0f} min {:.2f} sec".format(mins, secs))
 
-        return self.mod, cur_loss, cur_eig, self.stats_df    
+        return self.mod, self.stats_df    
     
     
 
@@ -787,7 +787,7 @@ class TrainSC(TrainBase):
         # more tracking params
         self.stats_df.insert(1, 'discriminator_learning_rate', [])
         insert_col = self.stats_df.columns.tolist().index('output_param_reg_loss')
-        for ici, col in enumerate(['vae_param_reg', 'kl_divergence', 'discriminator_loss_total', 
+        for ici, col in enumerate(['vae_param_reg_loss', 'kl_divergence', 'discriminator_loss_total', 
                                 'discriminator_loss_prediction', 'discriminator_param_reg_loss']):
             self.stats_df.insert(insert_col + ici, col, [])
 
@@ -1033,4 +1033,4 @@ class TrainSC(TrainBase):
             mins, secs = divmod(time.time() - start_time, 60)
             print("Training ran in: {:.0f} min {:.2f} sec".format(mins, secs))
 
-        return self.mod, cur_loss, cur_eig, self.stats_df
+        return self.mod, self.stats_df
