@@ -224,18 +224,20 @@ class TrainBase:
 #                 self._X_val = self.mod.df_to_tensor(self.X_val)
 #                 self._y_val = self.mod.df_to_tensor(self.y_val)
         
-        stats_df_cols = ['learning_rate', 'iter_time', 'eig_mean', #'eig_sigma', 
+        self._stats_cols = ['epoch', 'batch_index', 
+                            'learning_rate', 'iter_time', 'spectral_radius', #'eig_sigma', 
                          'n_moa_violations', 
                          'train_loss_total', 'train_loss_prediction', 'train_pearson', 
                         'sign_reg_loss', 'stability_reg_loss', 'uniform_reg_loss', 
                          'input_param_reg_loss', 'sn_param_reg_loss', 'output_param_reg_loss']        
 
-        if self.track_test: 
-            stats_df_cols += ['test_loss_prediction', 'test_pearson']
-        if self.track_validation:
-            stats_df_cols += ['validation_loss_prediction', 'validation_pearson']
+        self.stats = {}
+        self.stats['train'] = np.empty((0, len(self._stats_cols)))
 
-        self.stats_df = pd.DataFrame(columns = stats_df_cols)
+        if self.track_test: 
+            self.stats['test'] = np.empty((0, 4))
+        if self.track_validation:
+            self.stats['validation'] = np.empty((0, 4))
 
     def create_data_loader(self, include_covariates = True, include_expr = True):
         covariates_idx = None
@@ -325,6 +327,33 @@ class TrainBase:
                 return torch.nanmean(correlations).item()
             else:
                 return correlations
+    def print_stats(self, e):
+        """Prints various stats of the progress of training the model.
+
+        Parameters
+        ----------
+        stats : dict
+            a dictionary of progress statistics
+        iter : int
+            the current training iteration
+        """
+        temp_df = pd.DataFrame(data = self.stats['train'], columns = self._stats_cols)
+        temp_df = temp_df[temp_df.epoch == e + 1].mean()
+
+        msg = 'i={:.0f}'.format(e)
+        msg += ', l(tr)={:.5f}'.format(temp_df.train_loss_prediction)
+        if self.track_test:
+            test_df = pd.DataFrame(self.stats['test'], columns = ['epoch', 'batch', 'test_loss_prediction', 'test_pearson'])
+            test_df = test_df[test_df.epoch == e + 1].mean()
+            msg += ', l(te)={:.5f}'.format(test_df.test_loss_prediction)
+        if self.track_validation:
+            val_df = pd.DataFrame(self.stats['validation'], columns = ['epoch', 'batch', 'val_loss_prediction', 'val_pearson'])
+            val_df = val_df[val_df.epoch == e + 1].mean()
+            msg += ', l(v)={:.5f}'.format(val_df.val_loss_prediction)
+        msg += ', s={:.5f}'.format(temp_df.spectral_radius)
+        msg += ', r={:.5f}'.format(temp_df.learning_rate)
+        msg += ', v={:.5f}'.format(temp_df.n_moa_violations)
+        print(msg)
 
 
 class TrainSimple(TrainBase):
@@ -395,8 +424,7 @@ class TrainSimple(TrainBase):
 #                                 start_height=self.hyper_params['minimum_learning_rate'], end_height=1e-6, peak = self.hyper_params['lr_restart_epoch'])
 #             self.prediction_optimizer.param_groups[0]['lr'] = cur_lr
             
-            cur_eig, cur_loss_tot_train,  cur_loss_pred_train, cur_pearson_train = [], [], [], []                           
-            cur_sign_loss, cur_stab_loss, cur_uni_loss, cur_in_loss, cur_sn_loss, cur_out_loss =  [], [], [], [], [], [] 
+ 
 
             # iterate through batches
             if self.mod.seed:
@@ -440,17 +468,25 @@ class TrainSimple(TrainBase):
                 self.mod.add_gradient_noise(noise_level = self.hyper_params['gradient_noise_scale'])
                 self.prediction_optimizer.step()
         
-                # store                                                    
-                cur_eig.append(spectral_radius)
-                cur_loss_pred_train.append(prediction_loss.item())
-                cur_loss_tot_train.append(total_loss.item())
-                cur_pearson_train.append(train_pearson_r)
-                cur_sign_loss.append(sign_reg.item())
-                cur_stab_loss.append(stability_loss.item())
-                cur_uni_loss.append(uniform_reg.item())
-                cur_in_loss.append(input_param_reg.item())
-                cur_sn_loss.append(sn_param_reg.item())
-                cur_out_loss.append(output_param_reg.item())
+                # store                         
+                # cur_eig.append(spectral_radius)
+                # cur_loss_pred_train.append(prediction_loss.item())
+                # cur_loss_tot_train.append(total_loss.item())
+                # cur_pearson_train.append(train_pearson_r)
+                # cur_sign_loss.append(sign_reg.item())
+                # cur_stab_loss.append(stability_loss.item())
+                # cur_uni_loss.append(uniform_reg.item())
+                # cur_in_loss.append(input_param_reg.item())
+                # cur_sn_loss.append(sn_param_reg.item())
+                # cur_out_loss.append(output_param_reg.item())
+
+                sv = np.array([e + 1, batch, cur_lr, time.time() - start_time, spectral_radius, 
+                    self.mod.signaling_network.count_sign_mismatch(), 
+                    tot_pred_loss.item(), prediction_loss.item(), train_pearson_r, 
+                    sign_reg.item(), stability_loss.item(), uniform_reg.item(), 
+                    input_param_reg.item(), sn_param_reg.item(), output_param_reg.item()
+                    ])
+                self.stats['train'] = np.vstack((self.stats['train'], sv))
 
                 # free up CUDA mem
                 del sign_reg, stability_loss, uniform_reg, param_reg, fit_loss, train_pearson_r
@@ -474,20 +510,21 @@ class TrainSimple(TrainBase):
                 self.mod.eval()
                 with torch.inference_mode(): 
                     if self.track_validation:
-                        loss_val_all = []
-                        pearson_val_all = []
+                        # loss_val_all = []
+                        # pearson_val_all = []
                         for batch, (X_in_, y_out_, covariates_idx_, expr_val) in enumerate(self.validation_dataloader): 
                             X_in_val, y_out_val, covariates_idx_val = X_in_val.to(self.mod.device), y_out_val.to(self.mod.device), covariates_idx_val.to(self.mod.device)
                             self.mod.signaling_network.mask = self.mod.signaling_network.mask.to(X_in_val.device)
                             y_pred_val, _, _ = self.mod(X_in = X_in_val, covariates_idx = covariates_idx_val, expr = expr_val)
                             loss_val = self.prediction_loss_fn(y_out_val, y_pred_val).detach().item()
                             pearson_val = self.get_pearson_correlation(y_out_val,  y_pred_val)
-                            loss_val_all.append(loss_val)
-                            pearson_val_all.append(pearson_val)
+                            # loss_val_all.append(loss_val)
+                            # pearson_val_all.append(pearson_val)
+                            self.stats['validation'] = np.vstack((self.stats['validation'], np.array([e+1, batch, loss_val,pearson_val])))
                             del y_pred_val, _
                     if self.track_test:
-                        loss_test_all = []
-                        pearson_test_all = []
+                        # loss_test_all = []
+                        # pearson_test_all = []
                         for batch, (X_in_test, y_out_test, covariates_idx_test, expr_test) in enumerate(self.test_dataloader):
                             X_in_test, y_out_test, covariates_idx_test = X_in_test.to(self.mod.device), y_out_test.to(self.mod.device), covariates_idx_test.to(self.mod.device)
                             y_pred_test, _, _ = self.mod(X_in = X_in_test, covariates_idx = covariates_idx_test, expr = expr_test)
@@ -495,40 +532,22 @@ class TrainSimple(TrainBase):
                             pearson_test = self.get_pearson_correlation(y_out_test, y_pred_test)
                             loss_test_all.append(loss_test)
                             pearson_test_all.append(pearson_test)
-                            del y_pred_test, _
-        
-            # tracking
-                cur_eig.append(spectral_radius)
-                cur_loss_pred_train.append(prediction_loss.item())
-                cur_loss_tot_train.append(total_loss.item())
-                cur_pearson_train.append(train_pearson_r)
-                cur_sign_loss.append(sign_reg.item())
-                cur_stab_loss.append(stability_loss.item())
-                cur_uni_loss.append(uniform_reg.item())
-                cur_in_loss.append(input_param_reg.item())
-                cur_sn_loss.append(sn_param_reg.item())
-                cur_out_loss.append(output_param_reg.item())
-
-        stats_df_cols = ['learning_rate', 'iter_time', 'eig_mean', #'eig_sigma', 
-                         'n_moa_violations', 
-                         'train_loss_total', 'train_loss_prediction', 'train_pearson', 
-                        'sign_reg_loss', 'stability_reg_loss', 'uniform_reg_loss', 
-                         'input_param_reg_loss', 'sn_param_reg_loss', 'output_param_reg_loss']        
+                            del y_pred_test, _     
 
         if self.track_test: 
             stats_df_cols += ['test_loss_prediction', 'test_pearson']
         if self.track_validation:
             stats_df_cols += ['validation_loss_prediction', 'validation_pearson']
 
-            sv = [cur_lr, time.time() - start_time, np.mean(cur_eig), self.mod.signaling_network.count_sign_mismatch(), 
-                  np.mean(cur_loss_tot_train), np.mean(cur_loss_pred_train), np.mean(cur_pearson_train), 
-                  np.mean(cur_sign_loss), np.mean(cur_stab_loss), np.mean(cur_uni_loss), 
-                  np.mean(cur_in_loss), np.mean(cur_sn_loss), np.mean(cur_out_loss)
-                  ]
-            sv += [np.mean(loss_test_all), np.mean(pearson_test_all)] if self.track_test else []
-            sv += [np.mean(loss_val_all), np.mean(pearson_val_all)] if self.track_validation else []
+            # sv = [cur_lr, time.time() - start_time, np.mean(cur_eig), self.mod.signaling_network.count_sign_mismatch(), 
+            #       np.mean(cur_loss_tot_train), np.mean(cur_loss_pred_train), np.mean(cur_pearson_train), 
+            #       np.mean(cur_sign_loss), np.mean(cur_stab_loss), np.mean(cur_uni_loss), 
+            #       np.mean(cur_in_loss), np.mean(cur_sn_loss), np.mean(cur_out_loss)
+            #       ]
+            # sv += [np.mean(loss_test_all), np.mean(pearson_test_all)] if self.track_test else []
+            # sv += [np.mean(loss_val_all), np.mean(pearson_val_all)] if self.track_validation else []
 
-            self.stats_df.loc[e, :] = sv
+            # self.stats_df.loc[e, :] = sv
             
             if e % (self.hyper_params['max_epochs']/100) == 0:
                 param_names = []
@@ -541,15 +560,22 @@ class TrainSimple(TrainBase):
                     logging.error(log_error)
                     raise ValueError('NaN values found in model parameters at epoch {}'.format(e))
                 if verbose:
-                    utils.print_stats(self.stats_df)
+                    self.print_stats(e)
             if np.logical_and(e % self.hyper_params['reset_optimizer_epoch'] == 0, e>0):
                 self.prediction_optimizer.state = self.reset_state.copy()
         
+        self.stats['train'] = pd.DataFrame(data = self.stats['train'], columns = self._stats_cols)
+        if self.track_test:
+            self.stats['test'] = pd.DataFrame(data = self.stats['test'], 
+                                            columns = ['epoch', 'batch', 'test_loss_prediction', 'test_pearson'])
+        if self.track_validation:
+            self.stats['validation'] = pd.DataFrame(data = self.stats['validation'], 
+                                            columns = ['epoch', 'batch', 'val_loss_prediction', 'val_pearson'])        
         if verbose:
             mins, secs = divmod(time.time() - start_time, 60)
             print("Training ran in: {:.0f} min {:.2f} sec".format(mins, secs))
             
-        return self.mod, self.stats_df
+        return self.mod
 
 class TrainCat(TrainBase):
     """Training the signaling model for bulk data, accounting for categorical covariates of the samples (e.g. cell line, genetic background, etc.)."""
@@ -615,10 +641,6 @@ class TrainCat(TrainBase):
 #                                 start_height=self.hyper_params['minimum_learning_rate'], end_height=1e-6, peak = self.hyper_params['lr_restart_epoch'])
 #             self.prediction_optimizer.param_groups[0]['lr'] = cur_lr
 
-            cur_eig, cur_loss_tot_train,  cur_loss_pred_train, cur_pearson_train = [], [], [], []                           
-            cur_sign_loss, cur_stab_loss, cur_uni_loss, cur_in_loss, cur_sn_loss, cur_out_loss =  [], [], [], [], [], [] 
-
-
             # iterate through batches
             if self.mod.seed:
                 utils.set_seeds(self.mod.seed + e)
@@ -662,17 +684,25 @@ class TrainCat(TrainBase):
                 self.prediction_optimizer.step()
 
                 # store
-                cur_eig.append(spectral_radius)
-                cur_loss_pred_train.append(prediction_loss.item())
-                cur_loss_tot_train.append(tot_pred_loss.item())
-                cur_pearson_train.append(train_pearson_r)
-                cur_sign_loss.append(sign_reg.item())
-                cur_stab_loss.append(stability_loss.item())
-                cur_uni_loss.append(uniform_reg.item())
-                cur_in_loss.append(input_param_reg.item())
-                cur_sn_loss.append(sn_param_reg.item())
-                cur_out_loss.append(output_param_reg.item())
-                
+                # cur_eig.append(spectral_radius)
+                # cur_loss_pred_train.append(prediction_loss.item())
+                # cur_loss_tot_train.append(tot_pred_loss.item())
+                # cur_pearson_train.append(train_pearson_r)
+                # cur_sign_loss.append(sign_reg.item())
+                # cur_stab_loss.append(stability_loss.item())
+                # cur_uni_loss.append(uniform_reg.item())
+                # cur_in_loss.append(input_param_reg.item())
+                # cur_sn_loss.append(sn_param_reg.item())
+                # cur_out_loss.append(output_param_reg.item())
+
+                sv = np.array([e + 1, batch, cur_lr, time.time() - start_time, spectral_radius, 
+                    self.mod.signaling_network.count_sign_mismatch(), 
+                    tot_pred_loss.item(), prediction_loss.item(), train_pearson_r, 
+                    sign_reg.item(), stability_loss.item(), uniform_reg.item(), 
+                    input_param_reg.item(), sn_param_reg.item(), output_param_reg.item()
+                    ])
+                self.stats['train'] = np.vstack((self.stats['train'], sv))
+
                 # free up CUDA mem
                 del sign_reg, stability_loss, uniform_reg, param_reg, prediction_loss, train_pearson_r
                 del input_param_reg, sn_param_reg, output_param_reg
@@ -685,20 +715,21 @@ class TrainCat(TrainBase):
                 self.mod.eval()
                 with torch.inference_mode(): 
                     if self.track_validation:
-                        loss_val_all = []
-                        pearson_val_all = []
+                        # loss_val_all = []
+                        # pearson_val_all = []
                         for batch, (X_in_val, y_out_val, covariates_idx_val, expr_val) in enumerate(self.validation_dataloader): 
                             X_in_val, y_out_val, covariates_idx_val = X_in_val.to(self.mod.device), y_out_val.to(self.mod.device), covariates_idx_val.to(self.mod.device)
                             self.mod.signaling_network.mask = self.mod.signaling_network.mask.to(X_in_val.device)
                             y_pred_val, _, _ = self.mod(X_in = X_in_val, covariates_idx = covariates_idx_val, expr = expr_val)
                             loss_val = self.prediction_loss_fn(y_out_val, y_pred_val).detach().item()
                             pearson_val = self.get_pearson_correlation(y_out_val,  y_pred_val)
-                            loss_val_all.append(loss_val)
-                            pearson_val_all.append(pearson_val)
+                            # loss_val_all.append(loss_val)
+                            # pearson_val_all.append(pearson_val)
+                            self.stats['validation'] = np.vstack((self.stats['validation'], np.array([e+1, batch, loss_val,pearson_val])))
                             del y_pred_val, _
                     if self.track_test:
-                        loss_test_all = []
-                        pearson_test_all = []
+                        # loss_test_all = []
+                        # pearson_test_all = []
                         for batch, (X_in_test, y_out_test, covariates_idx_test, expr_test) in enumerate(self.test_dataloader):
                             X_in_test, y_out_test, covariates_idx_test = X_in_test.to(self.mod.device), y_out_test.to(self.mod.device), covariates_idx_test.to(self.mod.device)
                             y_pred_test, _, _ = self.mod(X_in = X_in_test, covariates_idx = covariates_idx_test, expr = expr_test)
@@ -710,14 +741,14 @@ class TrainCat(TrainBase):
         
             # tracking
             # tracking
-            sv = [cur_lr, time.time() - start_time, np.mean(cur_eig), self.mod.signaling_network.count_sign_mismatch(), 
-                  np.mean(cur_loss_tot_train), np.mean(cur_loss_pred_train), np.mean(cur_pearson_train), 
-                  np.mean(cur_sign_loss), np.mean(cur_stab_loss), np.mean(cur_uni_loss), 
-                  np.mean(cur_in_loss), np.mean(cur_sn_loss), np.mean(cur_out_loss)
-                  ]
-            sv += [np.mean(loss_test_all), np.mean(pearson_test_all)] if self.track_test else []
-            sv += [np.mean(loss_val_all), np.mean(pearson_val_all)] if self.track_validation else []
-            self.stats_df.loc[e, :] = sv
+            # sv = [cur_lr, time.time() - start_time, np.mean(cur_eig), self.mod.signaling_network.count_sign_mismatch(), 
+            #       np.mean(cur_loss_tot_train), np.mean(cur_loss_pred_train), np.mean(cur_pearson_train), 
+            #       np.mean(cur_sign_loss), np.mean(cur_stab_loss), np.mean(cur_uni_loss), 
+            #       np.mean(cur_in_loss), np.mean(cur_sn_loss), np.mean(cur_out_loss)
+            #       ]
+            # sv += [np.mean(loss_test_all), np.mean(pearson_test_all)] if self.track_test else []
+            # sv += [np.mean(loss_val_all), np.mean(pearson_val_all)] if self.track_validation else []
+            # self.stats_df.loc[e, :] = sv
 
             if e % (self.hyper_params['max_epochs']/100) == 0:
                 param_names = []
@@ -730,16 +761,23 @@ class TrainCat(TrainBase):
                     logging.error(log_error)
                     raise ValueError('NaN values found in model parameters at epoch {}'.format(e))
                 if verbose:
-                    utils.print_stats(self.stats_df)
+                    self.print_stats(e)
 
             if np.logical_and(e % self.hyper_params['reset_optimizer_epoch'] == 0, e>0):
                 self.prediction_optimizer.state = self.reset_state.copy()
 
+        self.stats['train'] = pd.DataFrame(data = self.stats['train'], columns = self._stats_cols)
+        if self.track_test:
+            self.stats['test'] = pd.DataFrame(data = self.stats['test'], 
+                                            columns = ['epoch', 'batch', 'test_loss_prediction', 'test_pearson'])
+        if self.track_validation:
+            self.stats['validation'] = pd.DataFrame(data = self.stats['validation'], 
+                                            columns = ['epoch', 'batch', 'val_loss_prediction', 'val_pearson'])        
         if verbose:
             mins, secs = divmod(time.time() - start_time, 60)
             print("Training ran in: {:.0f} min {:.2f} sec".format(mins, secs))
 
-        return self.mod, self.stats_df    
+        return self.mod    
     
     
 
@@ -784,12 +822,13 @@ class TrainSC(TrainBase):
                          track_validation = track_validation,
                          track_test = track_test)
         
-        # more tracking params
-        self.stats_df.insert(1, 'discriminator_learning_rate', [])
-        insert_col = self.stats_df.columns.tolist().index('output_param_reg_loss')
+        # more tracking
+        self._stats_cols.insert(3, 'discriminator_learning_rate')
+        insert_col = self._stats_cols.index('output_param_reg_loss')
         for ici, col in enumerate(['vae_param_reg_loss', 'kl_divergence', 'discriminator_loss_total', 
                                 'discriminator_loss_prediction', 'discriminator_param_reg_loss']):
-            self.stats_df.insert(insert_col + ici, col, [])
+            self._stats_cols.insert(insert_col + ici, col)
+        self.stats['train'] = np.empty((0, len(self._stats_cols))) # overwrite
 
         self.create_data_loader(include_covariates = True, include_expr = True)
         self.initialize_discriminator(discriminator_params)
@@ -856,8 +895,7 @@ class TrainSC(TrainBase):
             cur_lr = self.prediction_optimizer.param_groups[0]['lr']
             self.discriminator['_cur_lr'] = self.discriminator['optimizer'].param_groups[0]['lr']
 
-            cur_eig, cur_loss_tot_train,  cur_loss_pred_train, cur_pearson_train = [], [], [], []                           
-            cur_sign_loss, cur_stab_loss, cur_uni_loss, cur_in_loss, cur_sn_loss, cur_out_loss =  [], [], [], [], [], [] 
+ 
             cur_vae_loss, cur_kl_loss, disc_loss_tot_train, disc_loss_pred_train, disc_param_loss = [], [], [], [], []
 
             # iterate through batches
@@ -947,21 +985,30 @@ class TrainSC(TrainBase):
                 self.discriminator['optimizer'].step()
 
                 # store
-                cur_eig.append(spectral_radius)
-                cur_loss_pred_train.append(prediction_loss.item())
-                cur_loss_tot_train.append(tot_pred_loss.item())
-                cur_pearson_train.append(train_pearson_r)
-                cur_sign_loss.append(sign_reg.item())
-                cur_stab_loss.append(stability_loss.item())
-                cur_uni_loss.append(uniform_reg.item())
-                cur_in_loss.append(input_param_reg.item())
-                cur_sn_loss.append(sn_param_reg.item())
-                cur_out_loss.append(output_param_reg.item())
-                cur_vae_loss.append(vae_reg.item()) 
-                cur_kl_loss.append(kl_divergence.item())
-                disc_loss_tot_train.append(discriminator_loss.item()) 
-                disc_loss_pred_train.append(discriminator_loss_accuracy.item()) 
-                disc_param_loss.append(discriminator_reg.item())
+                # cur_eig.append(spectral_radius)
+                # cur_loss_pred_train.append(prediction_loss.item())
+                # cur_loss_tot_train.append(tot_pred_loss.item())
+                # cur_pearson_train.append(train_pearson_r)
+                # cur_sign_loss.append(sign_reg.item())
+                # cur_stab_loss.append(stability_loss.item())
+                # cur_uni_loss.append(uniform_reg.item())
+                # cur_in_loss.append(input_param_reg.item())
+                # cur_sn_loss.append(sn_param_reg.item())
+                # cur_out_loss.append(output_param_reg.item())
+                # cur_vae_loss.append(vae_reg.item()) 
+                # cur_kl_loss.append(kl_divergence.item())
+                # disc_loss_tot_train.append(discriminator_loss.item()) 
+                # disc_loss_pred_train.append(discriminator_loss_accuracy.item()) 
+                # disc_param_loss.append(discriminator_reg.item())
+
+                sv = np.array([e + 1, batch, cur_lr, self.discriminator['_cur_lr'], 
+                               time.time() - start_time, spectral_radius, 
+                    self.mod.signaling_network.count_sign_mismatch(), 
+                    tot_pred_loss.item(), prediction_loss.item(), train_pearson_r, 
+                    sign_reg.item(), stability_loss.item(), uniform_reg.item(), 
+                    input_param_reg.item(), sn_param_reg.item(), output_param_reg.item(),
+                    vae_reg.item(), kl_divergence.item(), discriminator_loss.item(), discriminator_loss_accuracy.item(), discriminator_reg.item()])
+                self.stats['train'] = np.vstack((self.stats['train'], sv))
                 
                 # free up CUDA mem
                 del sign_reg, stability_loss, uniform_reg, param_reg, prediction_loss, train_pearson_r
@@ -977,39 +1024,40 @@ class TrainSC(TrainBase):
                 self.mod.eval()
                 with torch.inference_mode(): 
                     if self.track_validation:
-                        loss_val_all = []
-                        pearson_val_all = []
+                        # loss_val_all = []
+                        # pearson_val_all = []
                         for batch, (X_in_val, y_out_val, covariates_idx_val, expr_val) in enumerate(self.validation_dataloader): 
                             X_in_val, y_out_val, covariates_idx_val = X_in_val.to(self.mod.device), y_out_val.to(self.mod.device), covariates_idx_val.to(self.mod.device)
                             self.mod.signaling_network.mask = self.mod.signaling_network.mask.to(X_in_val.device)
                             y_pred_val, _, _ = self.mod(X_in = X_in_val, covariates_idx = covariates_idx_val, expr = expr_val)
                             loss_val = self.prediction_loss_fn(y_out_val, y_pred_val).detach().item()
                             pearson_val = self.get_pearson_correlation(y_out_val,  y_pred_val)
-                            loss_val_all.append(loss_val)
-                            pearson_val_all.append(pearson_val)
+                            # loss_val_all.append(loss_val)
+                            # pearson_val_all.append(pearson_val)
+                            self.stats['validation'] = np.vstack((self.stats['validation'], np.array([e+1, batch, loss_val,pearson_val])))
                             del y_pred_val, _
                     if self.track_test:
-                        loss_test_all = []
-                        pearson_test_all = []
+                        # loss_test_all = []
+                        # pearson_test_all = []
                         for batch, (X_in_test, y_out_test, covariates_idx_test, expr_test) in enumerate(self.test_dataloader):
                             X_in_test, y_out_test, covariates_idx_test = X_in_test.to(self.mod.device), y_out_test.to(self.mod.device), covariates_idx_test.to(self.mod.device)
                             y_pred_test, _, _ = self.mod(X_in = X_in_test, covariates_idx = covariates_idx_test, expr = expr_test)
                             loss_test = self.prediction_loss_fn(y_out_test, y_pred_test).detach().item()
                             pearson_test = self.get_pearson_correlation(y_out_test, y_pred_test)
-                            loss_test_all.append(loss_test)
-                            pearson_test_all.append(pearson_test)
+                            # loss_test_all.append(loss_test)
+                            self.stats['test'] = np.vstack((self.stats['test'], np.array([e +1, batch, loss_test,pearson_test])))
                             del y_pred_test, _
         
             # tracking
             # tracking
-            sv = [cur_lr, self.discriminator['_cur_lr'], time.time() - start_time, np.mean(cur_eig), self.mod.signaling_network.count_sign_mismatch(), 
-                  np.mean(cur_loss_tot_train), np.mean(cur_loss_pred_train), np.mean(cur_pearson_train), 
-                  np.mean(cur_sign_loss), np.mean(cur_stab_loss), np.mean(cur_uni_loss), 
-                  np.mean(cur_in_loss), np.mean(cur_sn_loss), np.mean(cur_out_loss),
-                  np.mean(cur_vae_loss), np.mean(cur_kl_loss), np.mean(disc_loss_tot_train), np.mean(disc_loss_pred_train), np.mean(disc_param_loss)]
-            sv += [np.mean(loss_test_all), np.mean(pearson_test_all)] if self.track_test else []
-            sv += [np.mean(loss_val_all), np.mean(pearson_val_all)] if self.track_validation else []
-            self.stats_df.loc[e, :] = sv
+            # sv = [cur_lr, self.discriminator['_cur_lr'], time.time() - start_time, np.mean(cur_eig), self.mod.signaling_network.count_sign_mismatch(), 
+            #       np.mean(cur_loss_tot_train), np.mean(cur_loss_pred_train), np.mean(cur_pearson_train), 
+            #       np.mean(cur_sign_loss), np.mean(cur_stab_loss), np.mean(cur_uni_loss), 
+            #       np.mean(cur_in_loss), np.mean(cur_sn_loss), np.mean(cur_out_loss),
+            #       np.mean(cur_vae_loss), np.mean(cur_kl_loss), np.mean(disc_loss_tot_train), np.mean(disc_loss_pred_train), np.mean(disc_param_loss)]
+            # sv += [np.mean(loss_test_all), np.mean(pearson_test_all)] if self.track_test else []
+            # sv += [np.mean(loss_val_all), np.mean(pearson_val_all)] if self.track_validation else []
+            # self.stats_df.loc[e, :] = sv
 
             if e % (self.hyper_params['max_epochs']/100) == 0:
                 param_names = []
@@ -1022,15 +1070,23 @@ class TrainSC(TrainBase):
                     logging.error(log_error)
                     raise ValueError('NaN values found in model parameters at epoch {}'.format(e))
                 if verbose:
-                    utils.print_stats(self.stats_df)
+                    self.print_stats(e)
 
             if np.logical_and(e % self.hyper_params['reset_optimizer_epoch'] == 0, e>0):
                 self.prediction_optimizer.state = self.reset_state.copy()
             if (e % self.discriminator['params']['reset_optimizer_epoch'] == 0) and e > 0:
                 self.discriminator['optimizer'].state = self.reset_state.copy()
+        
+        self.stats['train'] = pd.DataFrame(data = self.stats['train'], columns = self._stats_cols)
+        if self.track_test:
+            self.stats['test'] = pd.DataFrame(data = self.stats['test'], 
+                                            columns = ['epoch', 'batch', 'test_loss_prediction', 'test_pearson'])
 
+        if self.track_validation:
+            self.stats['validation'] = pd.DataFrame(data = self.stats['validation'], 
+                                            columns = ['epoch', 'batch', 'val_loss_prediction', 'val_pearson'])
         if verbose:
             mins, secs = divmod(time.time() - start_time, 60)
             print("Training ran in: {:.0f} min {:.2f} sec".format(mins, secs))
 
-        return self.mod, self.stats_df
+        return self.mod

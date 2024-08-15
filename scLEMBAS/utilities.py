@@ -151,27 +151,27 @@ def get_lr(iter: int, max_iter: int, max_height: float = 1e-3,
 #     return stats
 
 
-def print_stats(stats_df):
-    """Prints various stats of the progress of training the model.
+# def print_stats(stats_df):
+#     """Prints various stats of the progress of training the model.
 
-    Parameters
-    ----------
-    stats : dict
-        a dictionary of progress statistics
-    iter : int
-        the current training iteration
-    """
-    epoch = stats_df.shape[0] - 1
-    msg = 'i={:.0f}'.format(epoch)
-    msg += ', l(tr)={:.5f}'.format(stats_df.loc[epoch, 'train_loss_prediction'])
-    if 'test_loss_prediction' in stats_df.columns:
-        msg += ', l(te)={:.5f}'.format(stats_df.loc[epoch, 'test_loss_prediction'])
-    if 'validation_loss_prediction' in stats_df.columns:
-        msg += ', l(v)={:.5f}'.format(stats_df.loc[epoch, 'validation_loss_prediction'])
-    msg += ', s={:.5f}'.format(stats_df.loc[epoch, 'eig_mean'])
-    msg += ', r={:.5f}'.format(stats_df.loc[epoch, 'learning_rate'])
-    msg += ', v={:.5f}'.format(stats_df.loc[epoch, 'n_moa_violations'])
-    print(msg)
+#     Parameters
+#     ----------
+#     stats : dict
+#         a dictionary of progress statistics
+#     iter : int
+#         the current training iteration
+#     """
+#     epoch = stats_df.shape[0] - 1
+#     msg = 'i={:.0f}'.format(epoch)
+#     msg += ', l(tr)={:.5f}'.format(stats_df.loc[epoch, 'train_loss_prediction'])
+#     if 'test_loss_prediction' in stats_df.columns:
+#         msg += ', l(te)={:.5f}'.format(stats_df.loc[epoch, 'test_loss_prediction'])
+#     if 'validation_loss_prediction' in stats_df.columns:
+#         msg += ', l(v)={:.5f}'.format(stats_df.loc[epoch, 'validation_loss_prediction'])
+#     msg += ', s={:.5f}'.format(stats_df.loc[epoch, 'eig_mean'])
+#     msg += ', r={:.5f}'.format(stats_df.loc[epoch, 'learning_rate'])
+#     msg += ', v={:.5f}'.format(stats_df.loc[epoch, 'n_moa_violations'])
+#     print(msg)
     
 
 
