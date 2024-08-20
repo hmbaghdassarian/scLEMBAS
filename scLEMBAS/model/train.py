@@ -824,8 +824,8 @@ class TrainSC(TrainBase):
         
         # more tracking
         self._stats_cols.insert(3, 'discriminator_learning_rate')
-        insert_col = self._stats_cols.index('output_param_reg_loss')
-        for ici, col in enumerate(['vae_param_reg_loss', 'kl_divergence', 'discriminator_loss_total', 
+        insert_col = self._stats_cols.index('output_param_reg_loss') + 1
+        for ici, col in enumerate(['vae_param_reg_loss', 'kl_divergence', 'adverserial_loss','discriminator_loss_total', 
                                 'discriminator_loss_prediction', 'discriminator_param_reg_loss']):
             self._stats_cols.insert(insert_col + ici, col)
         self.stats['train'] = np.empty((0, len(self._stats_cols))) # overwrite
@@ -851,10 +851,8 @@ class TrainSC(TrainBase):
                                                                n_hidden_nodes = self.discriminator['params']['n_hidden_nodes'])
                                 for covariate_cat, cat_embedding in self.mod.signaling_network.cat_embeddings.items()}
                         )
-        # NIKOS: combining discriminator params
-        # prediction optimizer contains the parameters for the the union of the generator and the signaling model
-        # note, this combines all discriminator parameters into one optimizer
-        # may want to check back into this
+
+        # NOTE: combines all discriminators into one optimizer; in the future, may want to separate or create a multi-task classifier
         discriminator_mod_params = []
         for discriminator in self.discriminator['discriminators'].values():
             discriminator_mod_params += list(discriminator.parameters())
@@ -923,10 +921,7 @@ class TrainSC(TrainBase):
                 
                 Y_hat = self.mod.output_layer(Y_full)
 
-                # get reconstruction loss
-                prediction_loss = self.prediction_loss_fn(y_out_, Y_hat)
-                train_pearson_r = self.get_pearson_correlation(y_out_, Y_hat, axis = 0, return_mean = True)
-
+                ############ DISCRIMINATOR ############
                 # discriminator prediction and loss
                 discriminator_loss_accuracy = torch.tensor(0, device = self.mod.device, dtype = self.mod.dtype)
                 for cat_group_idx, (cat, discriminator) in enumerate(self.discriminator['discriminators'].items()):
@@ -939,7 +934,24 @@ class TrainSC(TrainBase):
                     discriminator_loss_accuracy += discriminator.loss_fn(bias_global_prediction, target)   # if don't use retain_graph = True, then use bias_global_prediction.detach() here
 #                     prediction_loss -= discriminator.loss_fn(bias_global_prediction, target) 
 
-                ############ REGULARIZATION - SCL ############
+                # discriminator regularization
+                discriminator_reg = torch.tensor(0, device = self.mod.device, dtype = self.mod.dtype)
+                for discriminator in self.discriminator['discriminators'].values():
+                    discriminator_reg += discriminator.L2_reg(self.discriminator['params']['discriminator_lambda_L2'])
+                discriminator_loss = discriminator_loss_accuracy + discriminator_reg
+                
+                # discriminator optimization
+                # NOTE: discriminator is optimized prior to advererial training (and loss re-calculated)
+                # TODO: need to reset optimizer? or anything
+                discriminator_loss.backward(retain_graph = True)
+                self.discriminator['optimizer'].step()
+
+                ############ LEMBAS and generator ############
+                # reconstruction loss
+                prediction_loss = self.prediction_loss_fn(y_out_, Y_hat)
+                train_pearson_r = self.get_pearson_correlation(y_out_, Y_hat, axis = 0, return_mean = True)
+
+                # lembas regularization
                 sign_reg = self.mod.signaling_network.sign_regularization(lambda_L1 = self.hyper_params['moa_lambda_L1']) # incorrect MoA
         #             ligand_reg = self.mod.ligand_regularization(lambda_L2 = self.hyper_params['ligand_lambda_L2']) # ligand biases
                 stability_loss, spectral_radius = self.mod.signaling_network.get_SS_loss(Y_full = Y_full.detach(), spectral_loss_factor = self.hyper_params['spectral_loss_factor'],
@@ -955,34 +967,33 @@ class TrainSC(TrainBase):
                 vae_reg = self.mod.signaling_network.vae.L2_reg(lambda_L2=self.hyper_params['vae_lambda_l2']) # VAE loss
                 param_reg += vae_reg
                    
-                # NIKOS: 
-                # 1) should the KL divergence be getting scaled? YT doesn't do it but otherwise mine is very large relative to 
-                # prediction error
-                # 2) should the bias regularization be removed as I have done because of the KL divergence
+                # NOTE: KL divergence is scaled to match loss magnitudes; no bias regularization given KL regularization
+                # can use MMD in the future if KL unstable
                 kl_divergence = self.mod.signaling_network.vae.KL_divergence(z_mu = bias_mu, 
                                                                              z_log_sigma_squared = bias_log_sigma_squared, 
                                                                              scaling_factor = self.hyper_params['vae_scaling_KL'])
                 
                 tot_pred_loss = prediction_loss + sign_reg + param_reg + stability_loss + uniform_reg + kl_divergence
-                # NIKOS: 
-                # 1) adverserial training includes the LEMBAS parameters in addition to the generator (see Notes for details)
-                # 2) use the same "discriminator_loss_accuracy", rather than re-calculating -- would this effect gradients?
-                tot_pred_loss -= (self.discriminator['params']['discriminator_penalty_weight'])*discriminator_loss_accuracy # adversarial portion
-                
-                ############ REGULARIZATION - Discriminator ############ 
-                discriminator_reg = torch.tensor(0, device = self.mod.device, dtype = self.mod.dtype)
-                for discriminator in self.discriminator['discriminators'].values():
-                    discriminator_reg += discriminator.L2_reg(self.discriminator['params']['discriminator_lambda_L2'])
-                discriminator_loss = discriminator_loss_accuracy + discriminator_reg
+
+                # adverserial portion -- same as discriminator, but recalculating on trained model
+                # TODO: does discriminator need to be in .eval/.inference mode?
+                adverserial_loss = torch.tensor(0, device = self.mod.device, dtype = self.mod.dtype)
+                for cat_group_idx, (cat, discriminator) in enumerate(self.discriminator['discriminators'].items()):
+                    bias_global_prediction = discriminator(bias_global) # predicted logits
+
+                    target = covariates_idx_[:, cat_group_idx]
+                    if discriminator.n_labels == 2:
+                        target = target.to(self.mod.dtype).unsqueeze(1)
+
+                    adverserial_loss += discriminator.loss_fn(bias_global_prediction, target)   # if don't use retain_graph = True, then use bias_global_prediction.detach() here
+#                     prediction_loss -= discriminator.loss_fn(bias_global_prediction, target) 
+                tot_pred_loss -= (self.discriminator['params']['discriminator_penalty_weight'])*adverserial_loss # adversarial portion
+
                 # gradient
-                # NIKOS: is retain_graph = True appropriate
-                discriminator_loss.backward(retain_graph = True) # 16:00 of https://www.youtube.com/watch?v=OljTVUVzPpM&list=PPSV
                 tot_pred_loss.backward()
-                
                 self.mod.add_gradient_noise(noise_level = self.hyper_params['gradient_noise_scale'])
-                
                 self.prediction_optimizer.step()
-                self.discriminator['optimizer'].step()
+
 
                 # store
                 # cur_eig.append(spectral_radius)
@@ -1007,7 +1018,7 @@ class TrainSC(TrainBase):
                     tot_pred_loss.item(), prediction_loss.item(), train_pearson_r, 
                     sign_reg.item(), stability_loss.item(), uniform_reg.item(), 
                     input_param_reg.item(), sn_param_reg.item(), output_param_reg.item(),
-                    vae_reg.item(), kl_divergence.item(), discriminator_loss.item(), discriminator_loss_accuracy.item(), discriminator_reg.item()])
+                    vae_reg.item(), kl_divergence.item(), adverserial_loss.item(), discriminator_loss.item(), discriminator_loss_accuracy.item(), discriminator_reg.item()])
                 self.stats['train'] = np.vstack((self.stats['train'], sv))
                 
                 # free up CUDA mem
@@ -1077,7 +1088,27 @@ class TrainSC(TrainBase):
             if (e % self.discriminator['params']['reset_optimizer_epoch'] == 0) and e > 0:
                 self.discriminator['optimizer'].state = self.reset_state.copy()
         
+        # format the tracking metrics
         self.stats['train'] = pd.DataFrame(data = self.stats['train'], columns = self._stats_cols)
+        
+        # sanity check
+        loss_cols = [
+               'train_loss_prediction', 'sign_reg_loss',
+               'stability_reg_loss', 'uniform_reg_loss', 'input_param_reg_loss',
+               'sn_param_reg_loss', 'output_param_reg_loss', 'vae_param_reg_loss', 'kl_divergence']
+
+        reg_tot = self.stats['train'][loss_cols].sum(axis = 1)
+        lambda_ = self.discriminator['params']['discriminator_penalty_weight']
+        adverserial = lambda_*self.stats['train']['adverserial_loss']
+        if not np.allclose(reg_tot - adverserial, self.stats['train']['train_loss_total']):
+            warnings.warn('Training loss tracking is incorrect')
+        
+        if not np.allclose(self.stats['train']['discriminator_loss_total'], 
+                           self.stats['train'][['discriminator_loss_prediction', 
+                                                'discriminator_param_reg_loss']].sum(axis = 1)):
+            warnings.warn('Discriminator loss tracking is incorrect')
+        
+        
         if self.track_test:
             self.stats['test'] = pd.DataFrame(data = self.stats['test'], 
                                             columns = ['epoch', 'batch', 'test_loss_prediction', 'test_pearson'])
