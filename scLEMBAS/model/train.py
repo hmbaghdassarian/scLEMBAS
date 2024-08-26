@@ -1079,7 +1079,7 @@ class TrainSC(TrainBase):
                     log_error = 'NaN values found in model parameters at epoch {}'.format(e)
                     log_error += ' for layers ' + ', '.join(param_names)
                     logging.error(log_error)
-                    raise ValueError('NaN values found in model parameters at epoch {}'.format(e))
+                    raise ValueError(log_error)
                 if verbose:
                     self.print_stats(e)
 
