@@ -111,6 +111,9 @@ class ProjectOutput(nn.Module):
 
         weights = self.projection_amplitude * torch.ones(self.size_out, dtype=dtype, device = device)
         self.weights = nn.Parameter(weights)
+        
+        bias = torch.zeros(len(output_labels)).to(device, dtype)
+        self.bias = nn.Parameter(bias)
 
     def forward(self, Y_full):
         """Learn the weights for the output TFs of the signaling network (if grad_fn set to False, 
@@ -128,25 +131,30 @@ class ProjectOutput(nn.Module):
         Y_hat :  torch.Tensor
             the linearly scaled TF outputs. Shape is (samples x TFs)
         """
-        Y_hat = self.weights * Y_full[:, self.output_node_order] 
+        Y_hat = (self.weights * Y_full[:, self.output_node_order]) + self.bias 
         return Y_hat
 
-    def L2_reg(self, lambda_L2: Annotated[float, Ge(0)] = 0):
-        """Get the L2 regularization term for the neural network weight parameters.
+    def L2_reg(self, 
+               weights_lambda_L2: Annotated[float, Ge(0)] = 0, 
+              bias_lambda_L2: Annotated[float, Ge(0)] = 0):
+        """Get the L2 regularization term for the neural network parameters.
         Here, this pushes learned parameters towards `projection_amplitude` 
         
         Parameters
         ----------
-        lambda_2 : Annotated[float, Ge(0)]
-            the regularization parameter, by default 0 (no penalty) 
+        weights_lambda_L2 : Annotated[float, Ge(0)]
+            the regularization parameter for the weights, by default 0 (no penalty) 
+        bias_lambda_L2 : Annotated[float, Ge(0)]
+            the regularization parameter for the weights, by default 0 (no penalty) 
         
         Returns
         -------
         projection_L2 : torch.Tensor
             the regularization term
         """
-        projection_L2 = lambda_L2 * torch.sum(torch.square(self.weights - self.projection_amplitude))  
-        return projection_L2
+        weight_loss = weights_lambda_L2 * torch.sum(torch.square(self.weights - self.projection_amplitude)) 
+        biass_loss = bias_lambda_L2 * torch.sum(torch.square(self.bias))
+        return weight_loss + biass_loss
     
     # def set_device(self, device: str):
     #     """Sets torch.tensor objects to the device

@@ -244,25 +244,35 @@ class SignalingModel(torch.nn.Module):
 
     def L2_reg(self,
                input_lambda_L2: Annotated[float, Ge(0)] = 0, 
-              hidden_state_lambda_L2: Annotated[float, Ge(0)] = 0, 
-              bias_lambda_L2: Annotated[float, Ge(0)] = 0, 
-              output_lambda_L2: Annotated[float, Ge(0)] = 0):
+              bn_weights_lambda_l2: Annotated[float, Ge(0)] = 0, 
+              bn_bias_lambda_L2: Annotated[float, Ge(0)] = 0, 
+              output_weights_lambda_L2: Annotated[float, Ge(0)] = 0, 
+              output_bias_lambda_L2: Annotated[float, Ge(0)] = 0):
         """Get the L2 regularization term for the neural network parameters.
         
         Parameters
         ----------
-        lambda_L2 : Annotated[float, Ge(0)]
-            the regularization parameter, by default 0 (no penalty) 
-        
+        input_lambda_L2 : Annotated[float, Ge(0)]
+            the regularization parameter for the ProjectInput layer weights, by default 0 (no penalty)  
+        bn_weights_lambda_l2 : Annotated[float, Ge(0)]
+            the regularization parameter for the bionetwork layer weights, by default 0 (no penalty) 
+        bn_bias_lambda_L2 : Annotated[float, Ge(0)]
+            tthe regularization parameter for the bionetwork layer bias, by default 0 (no penalty) 
+        output_weights_lambda_L2 : Annotated[float, Ge(0)]
+            the regularization parameter for the ProjectOutput layer weights, by default 0 (no penalty) 
+        output_bias_lambda_L2 : Annotated[float, Ge(0)]
+            the regularization parameter for the ProjectOutput layer bias, by default 0 (no penalty) 
+
         Returns
         -------
          : torch.Tensor
             the regularization term (as the sum of the regularization terms for each layer)
         """
         input_loss = self.input_layer.L2_reg(input_lambda_L2) 
-        sn_loss = self.signaling_network.L2_reg(weights_lambda_L2 = hidden_state_lambda_L2, 
-                                                bias_lambda_L2 = bias_lambda_L2) 
-        output_loss = self.output_layer.L2_reg(output_lambda_L2)
+        sn_loss = self.signaling_network.L2_reg(weights_lambda_L2 = bn_weights_lambda_l2, 
+                                                bias_lambda_L2 = bn_bias_lambda_L2) 
+        output_loss = self.output_layer.L2_reg(weights_lambda_L2 = output_weights_lambda_L2, 
+                                               bias_lambda_L2 = output_bias_lambda_L2)
         return input_loss, sn_loss, output_loss
 
     def ligand_regularization(self, lambda_L2: Annotated[float, Ge(0)] = 0):

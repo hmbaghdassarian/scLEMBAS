@@ -84,8 +84,9 @@ class TrainBase:
                 'lr_decay': 0.9, 'lr_restart_factor': 1, 'warmup_epochs': 500}
     OTHER_PARAMS = {'train_batch_size': 512, 'test_batch_size': 512, 'validation_batch_size': 512, 
                     'network_noise_scale': 10, 'gradient_noise_scale': 1e-9}
-    REGULARIZATION_PARAMS = {'input_lambda_L2': 1e-6, 'hidden_state_lambda_L2': 1e-6, 'bias_lambda_L2': 1e-6, 
-                             'output_lambda_L2': 1e-6,
+    REGULARIZATION_PARAMS = {'input_lambda_L2': 1e-6, 'bn_weights_lambda_l2': 1e-6, 'bn_bias_lambda_L2': 1e-6, 
+                             'output_weights_lambda_L2': 1e-6,
+                             'output_bias_lambda_L2': 1e-6,
                              'moa_lambda_L1': 0.1, #'ligand_lambda_L2': 1e-5, 
                             'uniform_lambda_L2': 1e-4, 'uniform_min': 0, 'uniform_max': (1/1.2), 'spectral_loss_factor': 1e-5, 
                             'vae_lambda_l2': 1e-5, 
@@ -131,7 +132,7 @@ class TrainBase:
                 - 'network_noise_scale' : noise added to signaling network input, by default 10. Set to 0 for no noise. Makes model more robust. 
                 - 'gradient_noise_scale' : noise added to gradient after backward pass. Makes model more robust. 
                 - 'reset_epoch' : number of epochs upon which to reset the optimizer state, by default 200
-                - '<param>_lambda_L2' : L2 regularization penalty term for most of the model weights and biases. Note, bias_lambda_l2 is not used in TrainSC/BioNetSC singce the bias term is regularized by the KL divergence instead. 
+                - '<param>_lambda_L2' : L2 regularization penalty term for most of the model weights and biases. Note, bn_bias_lambda_l2 is not used in TrainSC/BioNetSC singce the bias term is regularized by the KL divergence instead. 
                 - 'moa_lambda_L1' : L1 regularization penalty term for incorrect interaction mechanism of action (inhibiting/stimulating)
                 - 'ligand_lambda_L2' : DEPRECATED, DO NOT ADD KEY/VALUE PAIR. L2 regularization penalty term for ligand biases. 
                 - 'uniform_lambda_L2' : L2 regularization penalty term for a uniform distribution fo the RNN adjacency matrix weight values
@@ -456,9 +457,10 @@ class TrainSimple(TrainBase):
                 uniform_reg = self.mod.uniform_regularization(lambda_L2 = self.hyper_params['uniform_lambda_L2']*cur_lr, Y_full = Y_full, 
                                                         target_min = self.hyper_params['uniform_min'], target_max = self.hyper_params['uniform_max']) # uniform distribution
                 input_param_reg, sn_param_reg, output_param_reg = self.mod.L2_reg(input_lambda_L2=self.hyper_params['input_lambda_L2'],
-                                            hidden_state_lambda_L2=self.hyper_params['hidden_state_lambda_L2'], 
-                                            bias_lambda_L2=self.hyper_params['bias_lambda_L2'], 
-                                            output_lambda_L2=self.hyper_params['output_lambda_L2'])
+                                            bn_weights_lambda_l2=self.hyper_params['bn_weights_lambda_l2'], 
+                                            bn_bias_lambda_L2=self.hyper_params['bn_bias_lambda_L2'], 
+                                            output_weights_lambda_L2=self.hyper_params['output_weights_lambda_L2'],
+                                            output_bias_lambda_L2=self.hyper_params['output_bias_lambda_L2'])
                 param_reg = input_param_reg + sn_param_reg + output_param_reg
         #             total_loss = fit_loss + sign_reg + ligand_reg + param_reg + stability_loss + uniform_reg
                 total_loss = prediction_loss + sign_reg + param_reg + stability_loss + uniform_reg
@@ -672,9 +674,10 @@ class TrainCat(TrainBase):
                 uniform_reg = self.mod.uniform_regularization(lambda_L2 = self.hyper_params['uniform_lambda_L2']*cur_lr, Y_full = Y_full, 
                                                         target_min = 0, target_max = self.hyper_params['uniform_max']) # uniform distribution
                 input_param_reg, sn_param_reg, output_param_reg = self.mod.L2_reg(input_lambda_L2=self.hyper_params['input_lambda_L2'],
-                                            hidden_state_lambda_L2=self.hyper_params['hidden_state_lambda_L2'], 
-                                            bias_lambda_L2=self.hyper_params['bias_lambda_L2'], 
-                                            output_lambda_L2=self.hyper_params['output_lambda_L2'])
+                                            bn_weights_lambda_l2=self.hyper_params['bn_weights_lambda_l2'], 
+                                            bn_bias_lambda_L2=self.hyper_params['bn_bias_lambda_L2'], 
+                                            output_weights_lambda_L2=self.hyper_params['output_weights_lambda_L2'],
+                                            output_bias_lambda_L2=self.hyper_params['output_bias_lambda_L2'])
                 param_reg = input_param_reg + sn_param_reg + output_param_reg
                 tot_pred_loss = prediction_loss + sign_reg + param_reg + stability_loss + uniform_reg
                 
@@ -960,9 +963,10 @@ class TrainSC(TrainBase):
                 uniform_reg = self.mod.uniform_regularization(lambda_L2 = self.hyper_params['uniform_lambda_L2']*cur_lr, Y_full = Y_full, 
                                                         target_min = 0, target_max = self.hyper_params['uniform_max']) # uniform distribution
                 input_param_reg, sn_param_reg, output_param_reg = self.mod.L2_reg(input_lambda_L2=self.hyper_params['input_lambda_L2'],
-                                            hidden_state_lambda_L2=self.hyper_params['hidden_state_lambda_L2'], 
-#                                             bias_lambda_L2=self.hyper_params['bias_lambda_L2'], # unused default argument 
-                                            output_lambda_L2=self.hyper_params['output_lambda_L2'])
+                                            bn_weights_lambda_l2=self.hyper_params['bn_weights_lambda_l2'], 
+#                                             bn_bias_lambda_L2=self.hyper_params['bn_bias_lambda_L2'], # unused default argument 
+                                            output_weights_lambda_L2=self.hyper_params['output_weights_lambda_L2'],
+                                            output_bias_lambda_L2=self.hyper_params['output_bias_lambda_L2'])
                 param_reg = input_param_reg + sn_param_reg + output_param_reg
                 vae_reg = self.mod.signaling_network.vae.L2_reg(lambda_L2=self.hyper_params['vae_lambda_l2']) # VAE loss
                 param_reg += vae_reg
