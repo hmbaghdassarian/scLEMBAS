@@ -12,6 +12,8 @@ import pandas as pd
 import numpy as np
 import networkx as nx
 
+from .utilities import flatten_list
+
 ppi_link = 'https://zenodo.org/records/11477837/files/organism_omnipath_ppi_05_24_24.csv'
 
 def load_network(network_type: str = 'omnipath', 
@@ -468,6 +470,8 @@ def create_connected_network(sn_ppis: pd.DataFrame, ligand_labels: List[str], tf
 def stringent_connected_network(all_ppis: pd.DataFrame,
                                 input_labels: List[str], 
                                 output_labels: List[str], 
+                                input_fraction: float | int = 1, 
+                                output_fraction: float | int = 0,
                                 threshold_on: Literal['n_references', 'curation_effort']  = 'n_references',
                                 min_curation_effort: int = None, 
                                min_references_thresh: int = None, 
@@ -478,8 +482,11 @@ def stringent_connected_network(all_ppis: pd.DataFrame,
                                path_finder: Literal['all', 'shortest', 'connected'] = 'connected'):
 
     """
-    Creates the most "stringent" extracted network that still contains all input nodes connected to atleast one output node, 
-    if possible. Stringency is defined by thresholding on the number of references or curation effort. 
+    Creates the most "stringent" extracted network that still contains each input node connected to (has a path to) atleast one output node, 
+    if possible. Stringency is defined by thresholding on the number of references or curation effort.
+    
+    If `input_fraction` is 1 and `output_fraction` is 0, ensures each input is connected to atleast one output. Otherwise, ensures `input_fraction` inputs are connected to atleast one output AND atleast `output_fraction` output nodes are retained. 
+    
 
     This can replace `extract_network` and `create_connected_network` .
 
@@ -491,6 +498,10 @@ def stringent_connected_network(all_ppis: pd.DataFrame,
         the list of input nodes to the signaling network (e.g., ligands)
     output_labels : List[str]
         the list of output nodes to the signaling network (e.g., transcription factors)
+    input_fraction : float | int
+        the fraction of all input nodes that need to be connected to atleast one output node, by default 1
+    output_fraction : float | int
+        the fraction of all output nodes that need to be retained while implementing this pruning process, by default 0
     threshold_on : Literal['n_references', 'curation_effort']
         whether to threshold on the references or the curation threshold, by default 'n_references'
         The two values are highly correlated and should give similar results. 
@@ -527,28 +538,34 @@ def stringent_connected_network(all_ppis: pd.DataFrame,
         all_ppis['n_references'] = all_ppis.n_references.fillna(all_ppis.n_references.min() - 1)
     if all_ppis.curation_effort.isna().any():
         all_ppis['curation_effort'] = all_ppis.curation_effort.fillna(all_ppis.curation_effort.min() - 1)
-    
+
     # setting to min is the same as no thresholds, so start at + 1
     if not min_curation_effort: 
         curation_effort_thresh = all_ppis.curation_effort.min() # this starts at no thresholding
     else:
         curation_effort_thresh = min_curation_effort
-    
+
     if not min_references_thresh: 
         n_references_thresh = all_ppis.n_references.min() # this starts at no thresholding
     else:
         n_references_thresh = min_references_thresh
-    
-    
+
+
     all_nodes_ = sorted(set(all_ppis[source_label].tolist() + all_ppis[target_label].tolist()))
     if len(set(input_labels).difference(all_nodes_)) != 0:
         warnings.warn('Not all input_labels are in the starting network')
-    
+        
+    print('The starting network has {} interactions between {} nodes'.format(all_ppis.shape[0], len(all_nodes_)))
+
     counter = 0
     ligand_connections_list = []
     ligand_counts = np.array([1])
+    retained_outputs = [np.nan]*len(output_labels)
     # filter for most stringent n_references threshold
-    while np.all(ligand_counts != 0): # while extracted network still has full paths for every ligand to atleast one TF
+
+    # while extracted network still has full paths for every ligand to atleast one TF
+    while len(ligand_counts[ligand_counts != 0])/len(ligand_counts) >= input_fraction and len(retained_outputs)/len(output_labels) >= output_fraction:
+    # while np.all(ligand_counts != 0): # while extracted network still has full paths for every ligand to atleast one TF
         print('Iteration: {}'.format(counter))
         sn_ppis = extract_network(all_ppis.copy(), curation_effort_thresh = curation_effort_thresh, 
                                   n_references_thresh = n_references_thresh,
@@ -564,12 +581,19 @@ def stringent_connected_network(all_ppis: pd.DataFrame,
                                                                source_label = source_label, 
                                                                target_label = target_label,
                                                                path_finder = path_finder)
-        print('Number of interactions: {}'.format(sn_ppis.shape[0]))
         ligand_counts = np.array([len(v) for v in ligand_connections.values()])
+        retained_outputs = set(flatten_list([v for v in ligand_connections.values()]))
+
 
         all_nodes_ = sorted(set(sn_ppis[source_label].tolist() + sn_ppis[target_label].tolist()))
-        if counter == 0 and np.any(ligand_counts == 0):
-            warnings.warn('There are disconnected input_labels in the starting signaling network with default thresholds')
+        print('The pruned network has {} interactions between {} nodes'.format(sn_ppis.shape[0], len(all_nodes_)))  
+          
+          
+        if counter == 0:
+            if len(ligand_counts[ligand_counts != 0])/len(ligand_counts) < input_fraction:
+                warnings.warn('There are disconnected input_labels in the starting signaling network with default thresholds')
+            if len(retained_outputs)/len(output_labels) < output_fraction:
+                warnings.warn('There are too few output_labels in the starting signaling network with default thresholds')
 
         if threshold_on == 'n_references':
             n_references_thresh += 1

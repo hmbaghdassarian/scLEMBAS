@@ -197,6 +197,11 @@ def get_moving_average(values: np.array, n_steps: int):
         moving_average[i] = np.mean(values[start:stop])
     return moving_average
 
+def flatten_list(nested_list):
+    """
+    Flattens a list of lists into a single list.
+    """
+    return [item for sublist in nested_list for item in sublist]
 
 # import copy
 # mod_rand = copy.deepcopy(mod)
