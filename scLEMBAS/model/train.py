@@ -132,7 +132,7 @@ class TrainBase:
                 - 'network_noise_scale' : noise added to signaling network input, by default 10. Set to 0 for no noise. Makes model more robust. 
                 - 'gradient_noise_scale' : noise added to gradient after backward pass. Makes model more robust. 
                 - 'reset_epoch' : number of epochs upon which to reset the optimizer state, by default 200
-                - '<param>_lambda_L2' : L2 regularization penalty term for most of the model weights and biases. Note, bn_bias_lambda_l2 is not used in TrainSC/BioNetSC singce the bias term is regularized by the KL divergence instead. 
+                - '<param>_lambda_L2' : L2 regularization penalty term for most of the model weights and biases. Note, recommend setting bn_bias_lambda_l2 to 0 when using TrainSC/BioNetSC singce the bias term is regularized by the KL divergence instead. 
                 - 'moa_lambda_L1' : L1 regularization penalty term for incorrect interaction mechanism of action (inhibiting/stimulating)
                 - 'ligand_lambda_L2' : DEPRECATED, DO NOT ADD KEY/VALUE PAIR. L2 regularization penalty term for ligand biases. 
                 - 'uniform_lambda_L2' : L2 regularization penalty term for a uniform distribution fo the RNN adjacency matrix weight values
@@ -792,6 +792,8 @@ class TrainSC(TrainBase):
                              **{'optimizer': torch.optim.Adam,
                                 'discriminator_lambda_L2': 1e-5, 
                                'discriminator_penalty_weight': 1}}
+    HYPER_PARAMS = TrainBase.HYPER_PARAMS
+    HYPER_PARAMS['bn_bias_lambda_L2'] = 0 # KL divergence regularization deals with this
     
     def __init__(self,
                  mod, 
@@ -964,7 +966,8 @@ class TrainSC(TrainBase):
                                                         target_min = 0, target_max = self.hyper_params['uniform_max']) # uniform distribution
                 input_param_reg, sn_param_reg, output_param_reg = self.mod.L2_reg(input_lambda_L2=self.hyper_params['input_lambda_L2'],
                                             bn_weights_lambda_l2=self.hyper_params['bn_weights_lambda_l2'], 
-#                                             bn_bias_lambda_L2=self.hyper_params['bn_bias_lambda_L2'], # unused default argument 
+                                            bn_bias_lambda_L2=self.hyper_params['bn_bias_lambda_L2'], 
+                                            bias_global = bias_global,
                                             output_weights_lambda_L2=self.hyper_params['output_weights_lambda_L2'],
                                             output_bias_lambda_L2=self.hyper_params['output_bias_lambda_L2'])
                 param_reg = input_param_reg + sn_param_reg + output_param_reg

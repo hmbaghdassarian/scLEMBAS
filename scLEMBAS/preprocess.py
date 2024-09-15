@@ -8,11 +8,12 @@ from tqdm import tqdm
 import warnings
 from typing import List, Literal, Optional
 
-
 import numpy as np
 import pandas as pd
 from scipy.stats import mannwhitneyu, ttest_ind, rankdata
 from scipy import stats
+from scipy.spatial.distance import pdist, squareform
+from scipy.spatial.distance import euclidean
 import statsmodels.stats.multitest as smm
 from cliffs_delta import cliffs_delta
 
@@ -268,7 +269,7 @@ def pairwise_pearson_correlation(X, Y):
     
     return correlation_matrix
 
-def spearman_rank_correlation(X, Y):
+def pairwise_spearman_correlation(X, Y):
     # Convert the rows of X and Y to ranks
     X_ranked = np.apply_along_axis(rankdata, 1, X)
     Y_ranked = np.apply_along_axis(rankdata, 1, Y)
@@ -302,6 +303,55 @@ def pairwise_manhattan_distance(X, Y):
     
     return distance_matrix
 
+def pairwise_euclidean_distance(X, Y):
+    return np.sqrt(((X[:, np.newaxis] - Y) ** 2).sum(axis=2))
+
+pairwise_f = {'pearson': pairwise_pearson_correlation, 
+              'spearman': pairwise_spearman_correlation, 
+             'manhattan': pairwise_manhattan_distance, 
+             'euclidean': pairwise_euclidean_distance}
+
+def calculate_pairwise_distances(df1, 
+                                 df2,
+                                 distance_metric:Literal['euclidean', 'manhattan', 'pearson', 'spearman'] = 'pearson', 
+                                 axis: Literal[0,1]=1, 
+                                 invert_corr: bool = True):
+    """Calculate pairwise distances between two dataframes using various distance metrics.
+
+    Parameters
+    ----------
+    df1 : pandas.DataFrame
+        The first dataframe containing the first set of vectors.
+    df2 : pandas.DataFrame
+        The second dataframe containing the second set of vectors.
+    axis : Literal[0,1], optional
+        The axis along which to compute the distances (0 for rows, 1 for columns), by default 1
+    distance_metric : _type_, optional
+        The distance metric to use. Options are 'euclidean', 'manhattan', 'pearson', 'spearman'. Default is 'euclidean'., by default Literal['euclidean', 'manhattan', 'pearson', 'spearman']
+    invert_corr:bool=True
+        Takes the negative of the value for correlation based metrics if True (larger number is a larger distance)
+        
+    Returns
+    ----------
+    pandas.DataFrame
+        A DataFrame of pairwise distances between the vectors from df1 and df2. Rows are entries from 
+        the first dataframe and columns are entries from the second dataframe. 
+    """
+    # Transpose if comparing along columns (axis=0)
+    if axis == 1:
+        df1 = df1.T
+        df2 = df2.T
+    
+    pairwise_distances = pd.DataFrame(pairwise_f[distance_metric](df1.values, df2.values), 
+                                      index = df1.index, 
+                                      columns = df2.index)
+        
+    if distance_metric in ['pearson', 'spearman'] and invert_corr:
+        pairwise_distances *= -1
+
+    return pairwise_distances
+
+
 
 def _get_pairwise_distance(X: pd.DataFrame, 
                           md: pd.DataFrame, 
@@ -309,16 +359,8 @@ def _get_pairwise_distance(X: pd.DataFrame,
                          comb, distance_metric):
     samples_1 = md[md[label] == comb[0]].index.tolist()
     samples_2 = md[md[label] == comb[1]].index.tolist()
-
-    if distance_metric == 'euclidean':
-        pairwise_distances = np.sqrt(((X.loc[samples_1,:].values[:, np.newaxis] - X.loc[samples_2,:].values) ** 2).sum(axis=2))
-#     pairwise_distances = pd.DataFrame(pairwise_distances, index = samples_1, columns = samples_2)
-    elif distance_metric == 'pearson':
-        pairwise_distances = pairwise_pearson_correlation(X.loc[samples_1,:].values, X.loc[samples_2,:].values)
-    elif distance_metric == 'spearman':
-        pairwise_distances = spearman_rank_correlation(X.loc[samples_1,:].values, X.loc[samples_2,:].values)
-    elif distance_metric == 'manhattan':
-        pairwise_distances = pairwise_manhattan_distance(X.loc[samples_1,:].values, X.loc[samples_2,:].values)
+    
+    pairwise_distances = pairwise_f[distance_metric](X.loc[samples_1,:].values, X.loc[samples_2,:].values)
     
     return pairwise_distances
 
@@ -573,3 +615,102 @@ def quantify_cluster_distance(tf_adata,
     distances_df['BH_FDR'] = smm.multipletests(distances_df.pval, alpha=0.1, method='fdr_bh')[1]
 
     return distances_df
+
+
+
+# def compute_centroid_distances(adata, 
+#                                column_name: str, 
+#                                n_pcs: Optional[int] = None):
+#     """
+#     Computes the pairwise Euclidean distances between the centroids of groups defined 
+#     by a metadata column in PCA space on the first n PCs. 
+    
+#     Parameters:
+#     adata : anndata.AnnData
+#         AnnData object containing PCA results and metadata.
+#     column_name : str
+#         The column name in .obs for grouping observations.
+#     n_pcs : int, optional
+#         The number of PCs to calculate the Euclidean distance on, by default all PCs available
+
+#     Returns:
+#     pd.DataFrame
+#         A DataFrame containing the pairwise Euclidean distances between centroids.
+#     """
+#     if n_pcs is None:
+#         if 'pca_rank' in adata.uns['pca'].keys():
+#             n_pcs = adata.uns['pca']['pca_rank']
+#         else:
+#             n_pcs = adata.obsm['X_pca'].shape[1]
+    
+#     # Step 1: Extract the PCA coordinates for the first n PCs
+#     pca_coords = adata.obsm['X_pca'][:, :n_pcs]  # Assuming PCA is stored in 'X_pca'
+
+#     # Step 2: Get the metadata for the specified column
+#     annotations = adata.obs[column_name]
+
+#     # Step 3: Compute the centroids for each group
+#     centroids = pd.DataFrame(pca_coords, index=annotations).groupby(level=0).mean()
+
+#     # Step 4: Calculate pairwise Euclidean distances between centroids
+#     distances = pdist(centroids, metric='euclidean')
+#     distance_matrix = pd.DataFrame(squareform(distances), index=centroids.index, columns=centroids.index)
+
+#     return distance_matrix
+
+def cross_condition_distances(adata, column_1: str, column_2: str, n_pcs: Optional[int] = None):
+    """
+    Computes the Euclidean distances between centroids of groups defined by `column_1` 
+    within different conditions specified by `column_2` in PCA space on the first n PCs.
+    
+    Parameters:
+    adata : anndata.AnnData
+        AnnData object containing PCA results and metadata.
+    column_1 : str
+        The column name in .obs for grouping observations (e.g., 'seurat_annotations').
+    column_2 : str
+        The column name in .obs for different conditions (e.g., 'stim').
+
+    Returns:
+    pd.DataFrame
+        A DataFrame containing the Euclidean distances between centroids for each group in column_1 
+        across different conditions in column_2.
+    """
+    if n_pcs is None:
+        if 'pca_rank' in adata.uns['pca'].keys():
+            n_pcs = adata.uns['pca']['pca_rank']
+        else:
+            n_pcs = adata.obsm['X_pca'].shape[1]
+    # Step 1: Extract the PCA coordinates for the first n PCs
+    pca_coords = adata.obsm['X_pca'][:, :n_pcs]  # Assuming PCA is stored in 'X_pca'
+
+    # Step 2: Combine the metadata columns to create a unique identifier for each group
+    combined_annotations = adata.obs[column_1].astype(str) + "_" + adata.obs[column_2].astype(str)
+
+    # Step 3: Compute the centroids for each unique group (combined column_1 and column_2)
+    centroids = pd.DataFrame(pca_coords, index=combined_annotations).groupby(level=0).mean()
+
+    # Step 4: Separate centroids back into their component groups
+    centroid_groups = pd.DataFrame(pd.DataFrame(centroids.index)[0].apply(lambda x: x.split('_')).tolist())
+    centroids.index = pd.MultiIndex.from_frame(centroid_groups, names=[column_1, column_2])
+
+    # Step 5: Initialize a DataFrame to store distances between conditions in column_2
+    distance_results = []
+
+    # Step 6: Calculate the Euclidean distances for the same groups in column_1 across different conditions in column_2
+    for group in centroids.index.get_level_values(column_1).unique():
+        # Extract the centroids for a specific group in column_1 across different conditions
+        subset = centroids.loc[group]
+
+        # Ensure there are at least two conditions to compare
+        if len(subset) > 1:
+            conditions = subset.index.get_level_values(column_2)
+            for i, cond1 in enumerate(conditions):
+                for cond2 in conditions[i + 1:]:
+                    dist = euclidean(subset.loc[cond1], subset.loc[cond2])
+                    distance_results.append([group, cond1, cond2, dist])
+
+    # Convert results to a DataFrame for easy visualization
+    distance_df = pd.DataFrame(distance_results, columns=[column_1, f'{column_2}_1', f'{column_2}_2', 'distance'])
+
+    return distance_df

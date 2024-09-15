@@ -57,7 +57,7 @@ class SignalingModel(torch.nn.Module):
         projection_amplitude_out : float
              value with which to scale TF activity outputs by, by default 1 (see `ProjectOutput` for details, can also be tuned as a learned parameter in the model)
         bionet_params : Dict[str, float], optional
-            training parameters for the model, by default None
+            hyper parameters for the model, by default None
             Key values include:
                 - 'max_steps': maximum number of time steps of the RNN, by default 300
                 - 'tolerance': threshold at which to break RNN; based on magnitude of change of updated edge weight values, by default 1e-5
@@ -246,6 +246,7 @@ class SignalingModel(torch.nn.Module):
                input_lambda_L2: Annotated[float, Ge(0)] = 0, 
               bn_weights_lambda_l2: Annotated[float, Ge(0)] = 0, 
               bn_bias_lambda_L2: Annotated[float, Ge(0)] = 0, 
+               bias_global = None,
               output_weights_lambda_L2: Annotated[float, Ge(0)] = 0, 
               output_bias_lambda_L2: Annotated[float, Ge(0)] = 0):
         """Get the L2 regularization term for the neural network parameters.
@@ -257,7 +258,9 @@ class SignalingModel(torch.nn.Module):
         bn_weights_lambda_l2 : Annotated[float, Ge(0)]
             the regularization parameter for the bionetwork layer weights, by default 0 (no penalty) 
         bn_bias_lambda_L2 : Annotated[float, Ge(0)]
-            tthe regularization parameter for the bionetwork layer bias, by default 0 (no penalty) 
+            tthe regularization parameter for the bionetwork layer bias, by default 0 (no penalty)
+        bias_global : 
+            the global bias vector, only to be used with BioNetSC as it is not a stored parameter
         output_weights_lambda_L2 : Annotated[float, Ge(0)]
             the regularization parameter for the ProjectOutput layer weights, by default 0 (no penalty) 
         output_bias_lambda_L2 : Annotated[float, Ge(0)]
@@ -269,7 +272,8 @@ class SignalingModel(torch.nn.Module):
             the regularization term (as the sum of the regularization terms for each layer)
         """
         input_loss = self.input_layer.L2_reg(input_lambda_L2) 
-        sn_loss = self.signaling_network.L2_reg(weights_lambda_L2 = bn_weights_lambda_l2, 
+        sn_loss = self.signaling_network.L2_reg(bias_global = bias_global, 
+                                                weights_lambda_L2 = bn_weights_lambda_l2, 
                                                 bias_lambda_L2 = bn_bias_lambda_L2) 
         output_loss = self.output_layer.L2_reg(weights_lambda_L2 = output_weights_lambda_L2, 
                                                bias_lambda_L2 = output_bias_lambda_L2)
