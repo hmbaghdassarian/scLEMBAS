@@ -17,4 +17,5 @@ dependencies:
     - pip:
         - decoupler==1.5.0
         - annotated-types
+        - cliffs-delta
     

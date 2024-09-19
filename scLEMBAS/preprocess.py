@@ -6,7 +6,7 @@ from itertools import repeat
 import multiprocessing
 from tqdm import tqdm
 import warnings
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -312,9 +312,9 @@ pairwise_f = {'pearson': pairwise_pearson_correlation,
              'euclidean': pairwise_euclidean_distance}
 
 def calculate_pairwise_distances(df1, 
-                                 df2,
-                                 distance_metric:Literal['euclidean', 'manhattan', 'pearson', 'spearman'] = 'pearson', 
-                                 axis: Literal[0,1]=1, 
+                                 df2: Optional[pd.DataFrame] = None,
+                                 distance_metric:Literal['euclidean', 'manhattan', 'pearson', 'spearman'] = 'euclidean', 
+                                 axis: Literal[0,1]=0, 
                                  invert_corr: bool = True):
     """Calculate pairwise distances between two dataframes using various distance metrics.
 
@@ -323,9 +323,9 @@ def calculate_pairwise_distances(df1,
     df1 : pandas.DataFrame
         The first dataframe containing the first set of vectors.
     df2 : pandas.DataFrame
-        The second dataframe containing the second set of vectors.
+        The second dataframe containing the second set of vectors. If none, calculates the pairwise distances within df1.
     axis : Literal[0,1], optional
-        The axis along which to compute the distances (0 for rows, 1 for columns), by default 1
+        The axis along which to compute the distances (0 for rows, 1 for columns), by default 0
     distance_metric : _type_, optional
         The distance metric to use. Options are 'euclidean', 'manhattan', 'pearson', 'spearman'. Default is 'euclidean'., by default Literal['euclidean', 'manhattan', 'pearson', 'spearman']
     invert_corr:bool=True
@@ -338,6 +338,8 @@ def calculate_pairwise_distances(df1,
         the first dataframe and columns are entries from the second dataframe. 
     """
     # Transpose if comparing along columns (axis=0)
+    if df2 is None:
+        df2 = df1.copy()
     if axis == 1:
         df1 = df1.T
         df2 = df2.T
@@ -351,6 +353,10 @@ def calculate_pairwise_distances(df1,
 
     return pairwise_distances
 
+def get_upper_triangle(df):
+    """Returns the upper triangle (excluding diagonal) of a pandas dataframe as a numpy vector."""
+    mask = np.triu(np.ones(df.shape), k=1).astype(bool)
+    return df.where(mask).stack().values
 
 
 def _get_pairwise_distance(X: pd.DataFrame, 
@@ -360,7 +366,13 @@ def _get_pairwise_distance(X: pd.DataFrame,
     samples_1 = md[md[label] == comb[0]].index.tolist()
     samples_2 = md[md[label] == comb[1]].index.tolist()
     
-    pairwise_distances = pairwise_f[distance_metric](X.loc[samples_1,:].values, X.loc[samples_2,:].values)
+    pairwise_distances = calculate_pairwise_distances(df1 = X.loc[samples_1,:], 
+                            df2 = X.loc[samples_2,:], 
+                            axis = 0, 
+                            distance_metric = distance_metric, 
+                            invert_corr = True).values
+    # this does same as the line above, maybe a bit faster, but without the invert_corr argument
+#     pairwise_distances = pairwise_f[distance_metric](X.loc[samples_1,:].values, X.loc[samples_2,:].values)
     
     return pairwise_distances
 
@@ -446,15 +458,18 @@ def _par_pairwisedistance(comb, X, obs, label, normal, seed, n_perm, null_sample
     
     return central, pval, cl, cu, median_cd, cld, cud
 
-
 def quantify_cluster_distance(tf_adata, 
                               label: str, 
+                              comparison_combination_subset: Optional[List[Tuple[str]]] = None,
                               comparison_subset: Optional[List[str]] = None,
                               label_subset: Optional[List[str]] = None,
+                              include_self: bool = False, 
+                              feature_subset: Optional[List[str]] = None,
                               distance_metric: Literal['euclidean', 'manhattan', 'pearson', 'spearman'] = 'euclidean',
                               normal: bool = True, 
+                              use_pcs: bool = False,
                               rank: int = None, 
-                              n_perm: int = 100, 
+                              n_perm: int = 1000, 
                               alternative: Literal['two-sided', 'less', 'greater'] = 'greater', 
                               seed: int = 888, 
                              n_cores: int = 1):
@@ -467,21 +482,31 @@ def quantify_cluster_distance(tf_adata,
         output of `preprocess.embed_tf_activity`
     label : str
         the cell grouping label (e.g., cluster)
+    comparison_combination_subset : Optional[List[Tuple[str]]]
+        this will only make a comparison if it is present as a tuple here
     comparison_subset : Optional[List[str]], optional
         this will only make comparisons if atleast one of the two labels is in `comparison_subset`, by default all comparisons
     label_subset : Optional[List[str]], optional
         this will subset dataset to those with the labels in `label_subset`, by default all labels
-    distance_metric : Literal['euclidean', 'pearson']
+    include_self : bool, optional
+        whether to include comparisons within the same group (pairwise distances between single-cells in the same group), by default False
+    feature_subset : Optional[List[str]], optional
+        this will subset dataset to this list of features, by default all features
+    distance_metric : Literal['euclidean', 'manhattan', 'pearson', 'spearman']
         the distance metric to calculate between cell labels, by default euclidean 
     normal : bool, optional
         whether to assume that pairwise distances are normally distributed or run non-parametric tests, by default True
+    use_pcs : bool, optional
+        whether to calculate distances on PC space or full feature space
     rank : int, optional
         # of PCs to use when calculating distance, by default the one automatically selected in 
         preprocess.embed_tf_activity
+        only used when `use_pcs` = True
     n_prem : int, optional
         number of permutations from which to create the null distribution, by default 100
     alternative : str, optional
         specifies the comparison of the actual distance statistic to the null distribution, by default greater
+        even correlations should be greater, because we invert their values (switch the signs)
     seed : int, optional
         random seed for numpy operations, by default 888, by default 888
     n_cores : int, optional
@@ -502,46 +527,57 @@ def quantify_cluster_distance(tf_adata,
             - 'CU_cd': the upper bound of the 95% confidence interval w.r.t. the mean_cd
             - 'BH_FDR': the BH FDR corrected pvalues
     """
-    if distance_metric in ['euclidean', 'manhattan'] and alternative != 'greater':
-        warnings.warn('Recommended to test that the actual distance is greater than (more dissimilar) that of the null')
-    if distance_metric in ['pearson', 'spearman'] and alternative != 'less':
-        warnings.warn('Recommended to test that the actual distance is less than (more dissimilar) that of the null')
+#     if distance_metric in ['euclidean', 'manhattan'] and alternative != 'greater':
+#         warnings.warn('Recommended to test that the actual distance is greater than (more dissimilar) that of the null')
+#     if distance_metric in ['pearson', 'spearman'] and alternative != 'less':
+#         warnings.warn('Recommended to test that the actual distance is less than (more dissimilar) that of the null')
 
     tf_adata = tf_adata.copy()
     if label_subset is not None and len(label_subset) > 0:
         tf_adata = tf_adata[tf_adata.obs[tf_adata.obs[label].isin(label_subset)].index, :]
-        
+    if feature_subset is not None and len(feature_subset) > 0:
+        tf_adata = tf_adata[:, feature_subset]
     # permute labels for null distribution, independent of specific combinations
     null_md = tf_adata.obs.copy()
     null_samples = []
     for i in range(n_perm):
         np.random.seed(seed + i)   
         ns = np.random.permutation(null_md.index)
-        if label_subset:
+        if label_subset is not None:
             null_md[null_md[label].isin(label_subset)].index
         null_samples.append(np.random.permutation(null_md.index))
     null_samples = np.column_stack(null_samples)
+    
+    if use_pcs:
+        if 'X_pca' not in tf_adata.obsm:
+            raise ValueError('Please run "preprocess.embed_tf_activity" first.')
+        if not rank:
+            if 'pca' in tf_adata.uns and 'pca_rank' in tf_adata.uns['pca']:
+                rank = tf_adata.uns['pca']['pca_rank']
+            else:
+                rank = tf_adata.obsm['X_pca'].shape[1] # use all PCs
 
-    if 'X_pca' not in tf_adata.obsm:
-        raise ValueError('Please run "preprocess.embed_tf_activity" first.')
-    if not rank:
-        if 'pca' in tf_adata.uns and 'pca_rank' in tf_adata.uns['pca']:
-            rank = tf_adata.uns['pca']['pca_rank']
-        else:
-            rank = tf_adata.obsm['X_pca'].shape[1] # use all PCs
-
-    X = pd.DataFrame(tf_adata.obsm['X_pca'][:, :rank], 
-                     index = tf_adata.obs.index, 
-                    columns = ['PC_{}'.format(i + 1) for i in range(rank)])
+        X = pd.DataFrame(tf_adata.obsm['X_pca'][:, :rank], 
+                         index = tf_adata.obs.index, 
+                        columns = ['PC_{}'.format(i + 1) for i in range(rank)])
+    else:
+        X = tf_adata.to_df()
     
     # create the label combinations
     if isinstance(tf_adata.obs[label].dtype, pd.CategoricalDtype):
         labels = tf_adata.obs[label].cat.categories.tolist()
     else:
         labels = sorted(set(tf_adata.obs[label]))
-    label_combinations = list(itertools.combinations(labels, 2))
+    
+    if include_self:
+        label_combinations = list(itertools.combinations_with_replacement(labels, 2))
+    else:
+        label_combinations = list(itertools.combinations(labels, 2))
     if comparison_subset is not None and len(comparison_subset) > 0:
         label_combinations = [comb for comb in label_combinations if comb[0] in comparison_subset or comb[1] in comparison_subset]
+    if comparison_combination_subset is not None and len(comparison_combination_subset) > 0:
+        label_combinations = [i for i in label_combinations if i in comparison_combination_subset]
+    
     
     if n_cores is None or n_cores <= 1:
         distances_df = pd.DataFrame(columns = ['central_tendency', 'pval', 'CL', 'CU', 'median_cd', 'CL_cd', 'CU_cd'])
@@ -615,7 +651,6 @@ def quantify_cluster_distance(tf_adata,
     distances_df['BH_FDR'] = smm.multipletests(distances_df.pval, alpha=0.1, method='fdr_bh')[1]
 
     return distances_df
-
 
 
 # def compute_centroid_distances(adata, 
