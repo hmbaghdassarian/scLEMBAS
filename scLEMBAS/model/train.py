@@ -224,7 +224,9 @@ class TrainBase:
 #                 # for running through model
 #                 self._X_val = self.mod.df_to_tensor(self.X_val)
 #                 self._y_val = self.mod.df_to_tensor(self.y_val)
-        
+        self._initialize_tracking()
+
+    def _initialize_tracking(self):
         self._stats_cols = ['epoch', 'batch_index', 
                             'learning_rate', 'iter_time', 'spectral_radius', #'eig_sigma', 
                          'n_moa_violations', 
@@ -827,16 +829,26 @@ class TrainSC(TrainBase):
                          track_validation = track_validation,
                          track_test = track_test)
         
-        # more tracking
-        self._stats_cols.insert(3, 'discriminator_learning_rate')
-        insert_col = self._stats_cols.index('output_param_reg_loss') + 1
-        for ici, col in enumerate(['vae_param_reg_loss', 'kl_divergence', 'adverserial_loss','discriminator_loss_total', 
-                                'discriminator_loss_prediction', 'discriminator_param_reg_loss']):
-            self._stats_cols.insert(insert_col + ici, col)
-        self.stats['train'] = np.empty((0, len(self._stats_cols))) # overwrite
-
         self.create_data_loader(include_covariates = True, include_expr = True)
         self.initialize_discriminator(discriminator_params)
+        
+    def _initialize_tracking(self):
+        self._stats_cols = ['epoch', 'batch_index', 
+                            'learning_rate', 'discriminator_learning_rate', 'iter_time', 'spectral_radius', #'eig_sigma', 
+                         'n_moa_violations', 
+                         'train_loss_total', 'train_loss_prediction', 
+                        'sign_reg_loss', 'stability_reg_loss', 'uniform_reg_loss', 
+                         'input_param_reg_loss', 'sn_param_reg_loss', 'output_param_reg_loss', 
+                          'vae_param_reg_loss', 'kl_divergence', 'adverserial_loss','discriminator_loss_total', 
+                                'discriminator_loss_prediction', 'discriminator_param_reg_loss' ]        
+
+        self.stats = {}
+        self.stats['train'] = np.empty((0, len(self._stats_cols)))
+
+        if self.track_test: 
+            self.stats['test'] = np.empty((0, 3))
+        if self.track_validation:
+            self.stats['validation'] = np.empty((0, 3))
 
     def initialize_discriminator(self, discriminator_params):
         # self.discriminator['params']['batch_momentum'] = None # bias is a vector in bulk; this should be eliminated in single-cell
@@ -954,7 +966,6 @@ class TrainSC(TrainBase):
                 ############ LEMBAS and generator ############
                 # reconstruction loss
                 prediction_loss = self.prediction_loss_fn(y_out_, Y_hat)
-                train_pearson_r = self.get_pearson_correlation(y_out_, Y_hat, axis = 0, return_mean = True)
 
                 # lembas regularization
                 sign_reg = self.mod.signaling_network.sign_regularization(lambda_L1 = self.hyper_params['moa_lambda_L1']) # incorrect MoA
@@ -1002,34 +1013,17 @@ class TrainSC(TrainBase):
                 self.prediction_optimizer.step()
 
 
-                # store
-                # cur_eig.append(spectral_radius)
-                # cur_loss_pred_train.append(prediction_loss.item())
-                # cur_loss_tot_train.append(tot_pred_loss.item())
-                # cur_pearson_train.append(train_pearson_r)
-                # cur_sign_loss.append(sign_reg.item())
-                # cur_stab_loss.append(stability_loss.item())
-                # cur_uni_loss.append(uniform_reg.item())
-                # cur_in_loss.append(input_param_reg.item())
-                # cur_sn_loss.append(sn_param_reg.item())
-                # cur_out_loss.append(output_param_reg.item())
-                # cur_vae_loss.append(vae_reg.item()) 
-                # cur_kl_loss.append(kl_divergence.item())
-                # disc_loss_tot_train.append(discriminator_loss.item()) 
-                # disc_loss_pred_train.append(discriminator_loss_accuracy.item()) 
-                # disc_param_loss.append(discriminator_reg.item())
-
                 sv = np.array([e + 1, batch, cur_lr, self.discriminator['_cur_lr'], 
                                time.time() - start_time, spectral_radius, 
                     self.mod.signaling_network.count_sign_mismatch(), 
-                    tot_pred_loss.item(), prediction_loss.item(), train_pearson_r, 
+                    tot_pred_loss.item(), prediction_loss.item(), #train_pearson_r, 
                     sign_reg.item(), stability_loss.item(), uniform_reg.item(), 
                     input_param_reg.item(), sn_param_reg.item(), output_param_reg.item(),
                     vae_reg.item(), kl_divergence.item(), adverserial_loss.item(), discriminator_loss.item(), discriminator_loss_accuracy.item(), discriminator_reg.item()])
                 self.stats['train'] = np.vstack((self.stats['train'], sv))
                 
                 # free up CUDA mem
-                del sign_reg, stability_loss, uniform_reg, param_reg, prediction_loss, train_pearson_r
+                del sign_reg, stability_loss, uniform_reg, param_reg, prediction_loss
                 del input_param_reg, sn_param_reg, output_param_reg
                 del vae_reg, kl_divergence, discriminator_loss, discriminator_loss_accuracy, discriminator_reg
                 del X_in_, y_out_, covariates_idx_, X_full, Y_full, Y_hat
@@ -1049,10 +1043,9 @@ class TrainSC(TrainBase):
                             self.mod.signaling_network.mask = self.mod.signaling_network.mask.to(X_in_val.device)
                             y_pred_val, _, _ = self.mod(X_in = X_in_val, covariates_idx = covariates_idx_val, expr = expr_val)
                             loss_val = self.prediction_loss_fn(y_out_val, y_pred_val).detach().item()
-                            pearson_val = self.get_pearson_correlation(y_out_val,  y_pred_val)
                             # loss_val_all.append(loss_val)
                             # pearson_val_all.append(pearson_val)
-                            self.stats['validation'] = np.vstack((self.stats['validation'], np.array([e+1, batch, loss_val,pearson_val])))
+                            self.stats['validation'] = np.vstack((self.stats['validation'], np.array([e+1, batch, loss_val])))
                             del y_pred_val, _
                     if self.track_test:
                         # loss_test_all = []
@@ -1061,21 +1054,9 @@ class TrainSC(TrainBase):
                             X_in_test, y_out_test, covariates_idx_test = X_in_test.to(self.mod.device), y_out_test.to(self.mod.device), covariates_idx_test.to(self.mod.device)
                             y_pred_test, _, _ = self.mod(X_in = X_in_test, covariates_idx = covariates_idx_test, expr = expr_test)
                             loss_test = self.prediction_loss_fn(y_out_test, y_pred_test).detach().item()
-                            pearson_test = self.get_pearson_correlation(y_out_test, y_pred_test)
                             # loss_test_all.append(loss_test)
-                            self.stats['test'] = np.vstack((self.stats['test'], np.array([e +1, batch, loss_test,pearson_test])))
+                            self.stats['test'] = np.vstack((self.stats['test'], np.array([e +1, batch, loss_test])))
                             del y_pred_test, _
-        
-            # tracking
-            # tracking
-            # sv = [cur_lr, self.discriminator['_cur_lr'], time.time() - start_time, np.mean(cur_eig), self.mod.signaling_network.count_sign_mismatch(), 
-            #       np.mean(cur_loss_tot_train), np.mean(cur_loss_pred_train), np.mean(cur_pearson_train), 
-            #       np.mean(cur_sign_loss), np.mean(cur_stab_loss), np.mean(cur_uni_loss), 
-            #       np.mean(cur_in_loss), np.mean(cur_sn_loss), np.mean(cur_out_loss),
-            #       np.mean(cur_vae_loss), np.mean(cur_kl_loss), np.mean(disc_loss_tot_train), np.mean(disc_loss_pred_train), np.mean(disc_param_loss)]
-            # sv += [np.mean(loss_test_all), np.mean(pearson_test_all)] if self.track_test else []
-            # sv += [np.mean(loss_val_all), np.mean(pearson_val_all)] if self.track_validation else []
-            # self.stats_df.loc[e, :] = sv
 
             if e % (self.hyper_params['max_epochs']/100) == 0:
                 param_names = []
@@ -1118,13 +1099,41 @@ class TrainSC(TrainBase):
         
         if self.track_test:
             self.stats['test'] = pd.DataFrame(data = self.stats['test'], 
-                                            columns = ['epoch', 'batch', 'test_loss_prediction', 'test_pearson'])
+                                            columns = ['epoch', 'batch', 'test_loss_prediction'])
 
         if self.track_validation:
             self.stats['validation'] = pd.DataFrame(data = self.stats['validation'], 
-                                            columns = ['epoch', 'batch', 'val_loss_prediction', 'val_pearson'])
+                                            columns = ['epoch', 'batch', 'val_loss_prediction'])
         if verbose:
             mins, secs = divmod(time.time() - start_time, 60)
             print("Training ran in: {:.0f} min {:.2f} sec".format(mins, secs))
 
         return self.mod
+
+    def print_stats(self, e):
+        """Prints various stats of the progress of training the model.
+
+        Parameters
+        ----------
+        stats : dict
+            a dictionary of progress statistics
+        iter : int
+            the current training iteration
+        """
+        temp_df = pd.DataFrame(data = self.stats['train'], columns = self._stats_cols)
+        temp_df = temp_df[temp_df.epoch == e + 1].mean()
+
+        msg = 'i={:.0f}'.format(e)
+        msg += ', l(tr)={:.5f}'.format(temp_df.train_loss_prediction)
+        if self.track_test:
+            test_df = pd.DataFrame(self.stats['test'], columns = ['epoch', 'batch', 'test_loss_prediction'])
+            test_df = test_df[test_df.epoch == e + 1].mean()
+            msg += ', l(te)={:.5f}'.format(test_df.test_loss_prediction)
+        if self.track_validation:
+            val_df = pd.DataFrame(self.stats['validation'], columns = ['epoch', 'batch', 'val_loss_prediction'])
+            val_df = val_df[val_df.epoch == e + 1].mean()
+            msg += ', l(v)={:.5f}'.format(val_df.val_loss_prediction)
+        msg += ', s={:.5f}'.format(temp_df.spectral_radius)
+        msg += ', r={:.5f}'.format(temp_df.learning_rate)
+        msg += ', v={:.5f}'.format(temp_df.n_moa_violations)
+        print(msg)

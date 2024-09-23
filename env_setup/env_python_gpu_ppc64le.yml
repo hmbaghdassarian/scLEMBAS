@@ -14,8 +14,11 @@ dependencies:
     - conda-forge::patchworklib
     - conda-forge::annotated-types
     - conda-forge::scikit-image
+#     - conda-forge::pathos
     - pip:
         - decoupler==1.5.0
         - annotated-types
         - cliffs-delta
+        - pykeops
+        - geomloss
     
