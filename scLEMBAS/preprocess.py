@@ -232,7 +232,8 @@ def embed_tf_activity(tf_adata: AnnData,
                      n_components: int = 50, 
                       pc_rank: str | int = 'automate',
                      resolution: float | List[float] = 1, 
-                     nmi_label: str = None):
+                     nmi_label: str = None, 
+                     run_umap = True):
     """Runs dimensionality reduction and clustering of cells from their TF activity using default scanpy parameters.
 
     Parameters
@@ -252,6 +253,8 @@ def embed_tf_activity(tf_adata: AnnData,
     resolution : float | List[float], optional
         The resolution parameter for leiden clustering. If a list, will iterate through all resolutions, maximizing
         NMI between the clusters and the nmi_label in `tf_adata.obs`
+    run_umap : bool, optional
+        Whether to run umap or not, by default True
 
     Returns
     -------
@@ -277,7 +280,8 @@ def embed_tf_activity(tf_adata: AnnData,
     #     raise ValueError('Unexpected disagreement when running PCA.transform')
     
     sc.pp.neighbors(adata = tf_adata, n_pcs=pc_rank) # construct neighborhood graph
-    scanpy_umap(adata = tf_adata)
+    if run_umap:
+        scanpy_umap(adata = tf_adata)
 
     # cluster
     if not isinstance(resolution, list):
@@ -951,3 +955,79 @@ def cross_condition_distances(adata, column_1: str, column_2: str, n_pcs: Option
     distance_df = pd.DataFrame(distance_results, columns=[column_1, f'{column_2}_1', f'{column_2}_2', 'distance'])
 
     return distance_df
+
+
+def get_k_neighbors(adata, cell_id, k):
+    """Identifies the k nearest neighbors of a cell
+
+    Parameters
+    ----------
+    adata : _type_
+        AnnData object with neighbor graph already calculated
+    cell_id : _type_
+        ID of cell upon which to calculate the nearest neighbors
+    k : _type_
+        number of nearest neighbors to return
+
+    Returns
+    -------
+    neighbor_ids
+        the k nearest neighbors
+    """
+    if k > adata.uns['neighbors']['params']['n_neighbors']:
+        raise ValueError('You have selected a k larger than the size of the local neighborhood')
+    cell_index = np.where(adata.obs_names == cell_id)[0][0]
+    neighbors_matrix = adata.obsp['connectivities']
+    neighbor_indices = neighbors_matrix[cell_index].toarray().argsort()[0][-k-1:-1]
+    neighbor_ids = adata.obs_names[neighbor_indices]
+    
+    return neighbor_ids
+
+def get_alignment_score(adata, batch_key, k: int = 15, normalize: bool = True):
+    """Alignment score as described in https://doi.org/10.1038/nbt.4096
+
+    Parameters
+    ----------
+    adata : _type_
+        anndata object
+    batch_key : _type_
+        batch column key in adata.obs
+    k : int, optional
+        number of nearest neighbors to use when calculating the score, by default 15
+    normalize : bool, optional
+        whether to normalize the alignment score to a maximum of 1, by default True
+
+    Returns
+    -------
+    alignment_score : float
+        the alignment score. Minimum value is 0. Highest value is 1 if normalized. Larger values mean
+        fewer batch effects
+    """
+    w = adata.obs.value_type.value_counts()
+    w /= w.sum()
+    knn_tracker = dict(zip(adata.obs.value_type.unique(), adata.obs.value_type.nunique() * [[]]))
+
+    for cell_id in tqdm(adata.obs.index):
+        batch = adata.obs.loc[cell_id, batch_key]
+        knn = get_k_neighbors(adata, cell_id = cell_id, k = k)
+        same_batch_count = (adata.obs.loc[knn, batch_key] == batch).sum()
+
+        knn_tracker[batch] += [same_batch_count]
+
+    for batch, counts in knn_tracker.items():
+        knn_tracker[batch] = np.mean(counts)
+
+    alignment_score = 0
+    for batch, x_i in knn_tracker.items():
+        w_i = w.loc[batch]
+        alignment_score += (w_i * (1 - (x_i - (w_i*k))/(k - (w_i*k))))
+
+    if normalize:
+        knn_tracker = {k: 0 for k in knn_tracker}
+
+        max_alignment_score = 0
+        for batch, x_i in knn_tracker.items():
+            w_i = w.loc[batch]
+            max_alignment_score += (w_i * (1 - (x_i - (w_i*k))/(k - (w_i*k))))
+        alignment_score /= max_alignment_score
+    return alignment_score
