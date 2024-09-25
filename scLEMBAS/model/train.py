@@ -814,6 +814,12 @@ class TrainSC(TrainBase):
         ----------
         discriminator_params : Dict
             key word arguments to pass to `CatDiscriminator`. see TrainSC.DISCRIMINATOR_PARAMS for defaults
+            as well as:
+                'optimizer': the optimizer to use
+                'discriminator_labmda_L2': L2 regularization penalty for discriminator parameters
+                'discriminator_penalty_weight': float | List[float]
+                    scales the dscriminator loss to incorporate into the adverserial training this can either be a float, 
+                    or a list of floats, where each element corresponds to the scaling for that epoch
         
         
         """
@@ -854,6 +860,13 @@ class TrainSC(TrainBase):
         # self.discriminator['params']['batch_momentum'] = None # bias is a vector in bulk; this should be eliminated in single-cell
         self.discriminator = {}
         self.discriminator['params'] = update_with_defaults(self.DISCRIMINATOR_PARAMS, discriminator_params)
+        if isinstance(self.discriminator['params']['discriminator_penalty_weight'], float):
+            self.discriminator['params']['discriminator_penalty_weight'] = [self.discriminator['params']['discriminator_penalty_weight']]*self.hyper_params['max_epochs']
+        elif isinstance(self.discriminator['params']['discriminator_penalty_weight'], list):
+            if len(self.discriminator['params']['discriminator_penalty_weight']) != self.hyper_params['max_epochs']:
+                raise ValueError('Must specify a discriminator penalty weight for each epoch')
+        else:
+            raise ValueError("'discriminator_penalty_weight' must be a float or list")
         
         self.discriminator['discriminators'] = nn.ModuleDict(
                             {
@@ -909,7 +922,7 @@ class TrainSC(TrainBase):
         for e in trange(self.hyper_params['max_epochs']):
             cur_lr = self.prediction_optimizer.param_groups[0]['lr']
             self.discriminator['_cur_lr'] = self.discriminator['optimizer'].param_groups[0]['lr']
-
+            cur_disc_lambda = self.discriminator['params']['discriminator_penalty_weight'][e]
  
             cur_vae_loss, cur_kl_loss, disc_loss_tot_train, disc_loss_pred_train, disc_param_loss = [], [], [], [], []
 
@@ -1005,7 +1018,7 @@ class TrainSC(TrainBase):
 
                     adverserial_loss += discriminator.loss_fn(bias_global_prediction, target)   # if don't use retain_graph = True, then use bias_global_prediction.detach() here
 #                     prediction_loss -= discriminator.loss_fn(bias_global_prediction, target) 
-                tot_pred_loss -= (self.discriminator['params']['discriminator_penalty_weight'])*adverserial_loss # adversarial portion
+                tot_pred_loss -= (cur_disc_lambda*adverserial_loss) # adversarial portion
 
                 # gradient
                 tot_pred_loss.backward()
@@ -1019,7 +1032,8 @@ class TrainSC(TrainBase):
                     tot_pred_loss.item(), prediction_loss.item(), #train_pearson_r, 
                     sign_reg.item(), stability_loss.item(), uniform_reg.item(), 
                     input_param_reg.item(), sn_param_reg.item(), output_param_reg.item(),
-                    vae_reg.item(), kl_divergence.item(), adverserial_loss.item(), discriminator_loss.item(), discriminator_loss_accuracy.item(), discriminator_reg.item()])
+                    vae_reg.item(), kl_divergence.item(), 
+                               cur_disc_lambda*adverserial_loss.item(), discriminator_loss.item(), discriminator_loss_accuracy.item(), discriminator_reg.item()])
                 self.stats['train'] = np.vstack((self.stats['train'], sv))
                 
                 # free up CUDA mem
@@ -1086,9 +1100,7 @@ class TrainSC(TrainBase):
                'sn_param_reg_loss', 'output_param_reg_loss', 'vae_param_reg_loss', 'kl_divergence']
 
         reg_tot = self.stats['train'][loss_cols].sum(axis = 1)
-        lambda_ = self.discriminator['params']['discriminator_penalty_weight']
-        adverserial = lambda_*self.stats['train']['adverserial_loss']
-        if not np.allclose(reg_tot - adverserial, self.stats['train']['train_loss_total']):
+        if not np.allclose(reg_tot - self.stats['train']['adverserial_loss'], self.stats['train']['train_loss_total']):
             warnings.warn('Training loss tracking is incorrect')
         
         if not np.allclose(self.stats['train']['discriminator_loss_total'], 
