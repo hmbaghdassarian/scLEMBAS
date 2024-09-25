@@ -29,6 +29,8 @@ from decoupler.pre import extract
 from anndata import AnnData
 import scanpy as sc
 
+from ._scanpy_umap import scanpy_umap
+
 default_device = "cuda" if torch.cuda.is_available() else "cpu"
 default_emd_loss_fn = SamplesLoss("sinkhorn", p=2, blur=0.05).to(default_device)
 
@@ -275,7 +277,7 @@ def embed_tf_activity(tf_adata: AnnData,
     #     raise ValueError('Unexpected disagreement when running PCA.transform')
     
     sc.pp.neighbors(adata = tf_adata, n_pcs=pc_rank) # construct neighborhood graph
-    sc.tl.umap(adata = tf_adata) # run UMAP
+    scanpy_umap(adata = tf_adata)
 
     # cluster
     if not isinstance(resolution, list):
