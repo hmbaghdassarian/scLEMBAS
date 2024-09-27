@@ -477,10 +477,14 @@ def calculate_null_pval(null_dist: List[float], actual_val: float,
         pval = (np.sum(null_dist <= actual_val) + 1) / (len(null_dist) + 1)
     return pval
 
-def _par_pairwisedistance(comb, X, obs, label, normal, seed, n_perm, null_samples, null_md, alternative, distance_metric):
+def _par_pairwisedistance(comb, X, obs, label, normal, seed, n_perm, null_samples, null_md, alternative, distance_metric, 
+                         exclude_null_cells, label_counts):
     pairwise_distances = _get_pairwise_distance(X = X, md = obs, label = label, comb = comb, 
                                                distance_metric = distance_metric)
-    pdf = pairwise_distances.flatten()
+    if comb[0] == comb[1]:
+        pdf = np.triu(pairwise_distances, k = 1).flatten()
+    else:
+        pdf = pairwise_distances.flatten()
     if normal: 
         central = np.mean(pdf)
         std = np.std(pdf, ddof=1) 
@@ -495,22 +499,31 @@ def _par_pairwisedistance(comb, X, obs, label, normal, seed, n_perm, null_sample
     # generate the null distribution
     null_centrals = []
     cds = []
+    null_md[label + '_null'] = null_md[label].tolist()
+    lc = label_counts.loc[list(comb), :]
+    if exclude_null_cells is not None and lc[lc['diff'] != 0].shape[0] != 0:
+        frac_vals = lc.og/lc.og.sum()
+        np.random.seed(seed)
+        null_md[label + '_null'] = np.random.choice(frac_vals.index, size=null_md.shape[0], p=frac_vals.values)
     for i in range(n_perm):
-        null_md.index = null_samples[:, i]
-        null_distances = _get_pairwise_distance(X = X, md = null_md, label = label, comb = comb, 
-                                                distance_metric = distance_metric)
+        null_md.index = null_samples[:, i]          
+        null_distances = _get_pairwise_distance(X = X, md = null_md, label = label + '_null', comb = comb, 
+                                                distance_metric = distance_metric)    
+        if comb[0] == comb[1]:
+            null_distances = np.triu(null_distances, k = 1).flatten()
+        else:
+            null_distances = null_distances.flatten()
 
-    #     distances = pd.DataFrame(np.column_stack((pairwise_distances.flatten(), null_distances.flatten())), 
-    #                              columns = ['actual', 'null'])   
-        distances = np.column_stack((pdf, null_distances.flatten()))
+        
+
         if normal:
-    #         pval = ttest_ind(distances[:, 0], distances[:, 1], equal_var = False, random_state = seed, alternative = 'greater').pvalue
-            nc = np.mean(distances[:, 1])
-            cd = cohen_d(distances[:, 0], distances[:, 1])  # positive if actual > null
+    #         pval = ttest_ind(pdf, null_distances, equal_var = False, random_state = seed, alternative = 'greater').pvalue
+            nc = np.mean(null_distances)
+            cd = cohen_d(pdf, null_distances)  # positive if actual > null
         else:
     #         pval = mannwhitneyu(distances.actual, distances.null, alternative = 'greater').pvalue
-            nc = np.median(distances[:, 1])
-            cd, _ = cliffs_delta(distances[:, 0], distances[:, 1])  # positive if actual > null
+            nc = np.median(null_distances)
+            cd, _ = cliffs_delta(pdf, null_distances)  # positive if actual > null
 
         null_centrals.append(nc)
         cds.append(cd)
@@ -530,23 +543,18 @@ def _par_pairwisedistance(comb, X, obs, label, normal, seed, n_perm, null_sample
 
 
 def _filter_combs(tf_adata, label, comparison_combination_subset, comparison_subset, label_subset, 
-                  include_self, use_pcs, rank, n_perm, seed, feature_subset):
+                  include_self, use_pcs, rank, n_perm, seed, feature_subset, exclude_null_cells):
     
     tf_adata = tf_adata.copy()
+    
+    # permute labels for null distribution, independent of specific combinations
+    # if move this to after the label_subset filtering, null distribution will only be based on the subset
+    null_md = tf_adata.obs.copy()
+    
     if label_subset is not None and len(label_subset) > 0:
         tf_adata = tf_adata[tf_adata.obs[tf_adata.obs[label].isin(label_subset)].index, :]
     if feature_subset is not None and len(feature_subset) > 0:
         tf_adata = tf_adata[:, feature_subset]
-    # permute labels for null distribution, independent of specific combinations
-    null_md = tf_adata.obs.copy()
-    null_samples = []
-    for i in range(n_perm):
-        np.random.seed(seed + i)   
-        ns = np.random.permutation(null_md.index)
-        if label_subset is not None:
-            null_md[null_md[label].isin(label_subset)].index
-        null_samples.append(np.random.permutation(null_md.index))
-    null_samples = np.column_stack(null_samples)
 
     if use_pcs:
         if 'X_pca' not in tf_adata.obsm:
@@ -578,7 +586,23 @@ def _filter_combs(tf_adata, label, comparison_combination_subset, comparison_sub
     if comparison_combination_subset is not None and len(comparison_combination_subset) > 0:
         label_combinations = [i for i in label_combinations if i in comparison_combination_subset]
         
-    return tf_adata, X, label_combinations, null_md, null_samples
+    # generate the null distribution
+    #all_combs = list(set([value for tup in label_combinations for value in tup]))
+
+    if exclude_null_cells is not None:
+        null_md.drop(index = exclude_null_cells, inplace = True)
+    label_counts = pd.DataFrame({'og': tf_adata.obs[label].value_counts(), 
+                                'null': null_md[label].value_counts()})
+    label_counts.loc[label_counts['null'].isna(), 'null'] = 0
+    label_counts['diff'] = label_counts.og - label_counts.null
+    
+    null_samples = []
+    for i in range(n_perm):
+        np.random.seed(seed + i)   
+        null_samples.append(np.random.permutation(null_md.index))
+    null_samples = np.column_stack(null_samples)
+        
+    return tf_adata, X, label_combinations, null_md, null_samples, label_counts
 
 def quantify_cluster_distance(tf_adata, 
                               label: str, 
@@ -587,6 +611,7 @@ def quantify_cluster_distance(tf_adata,
                               label_subset: Optional[List[str]] = None,
                               include_self: bool = False, 
                               feature_subset: Optional[List[str]] = None,
+                              exclude_null_cells: Optional[List[str]] = None, 
                               distance_metric: Literal['euclidean', 'manhattan', 'pearson', 'spearman'] = 'euclidean',
                               normal: bool = True, 
                               use_pcs: bool = False,
@@ -614,6 +639,9 @@ def quantify_cluster_distance(tf_adata,
         whether to include comparisons within the same group (pairwise distances between single-cells in the same group), by default False
     feature_subset : Optional[List[str]], optional
         this will subset dataset to this list of features, by default all features
+    exclude_null_cells : Optional[List[str]], optional
+        this will exclude specific cells (by their AnnData ID `adata.obs_names`) from the null distribution
+        if this excludes more cells than in a comparison, we use a relative proportion
     distance_metric : Literal['euclidean', 'manhattan', 'pearson', 'spearman']
         the distance metric to calculate between cell labels, by default euclidean 
     normal : bool, optional
@@ -654,9 +682,10 @@ def quantify_cluster_distance(tf_adata,
 #     if distance_metric in ['pearson', 'spearman'] and alternative != 'less':
 #         warnings.warn('Recommended to test that the actual distance is less than (more dissimilar) that of the null')
 
-    tf_adata, X, label_combinations, null_md, null_samples = _filter_combs(tf_adata, label, comparison_combination_subset, 
+    tf_adata, X, label_combinations, null_md, null_samples, label_counts = _filter_combs(tf_adata, label, comparison_combination_subset, 
                                                           comparison_subset, label_subset, include_self, use_pcs, 
-                                                          rank, n_perm, seed, feature_subset)
+                                                          rank, n_perm, seed, feature_subset, 
+                                                                          exclude_null_cells = exclude_null_cells)
     
     
     if n_cores is None or n_cores <= 1:
@@ -666,7 +695,10 @@ def quantify_cluster_distance(tf_adata,
             # get actual value stats
             pairwise_distances = _get_pairwise_distance(X = X, md = tf_adata.obs, label = label, comb = comb, 
                                                        distance_metric = distance_metric)
-            pdf = pairwise_distances.flatten()
+            if comb[0] == comb[1]:
+                pdf = np.triu(pairwise_distances, k = 1).flatten()
+            else:
+                pdf = pairwise_distances.flatten()
             if normal: 
                 central = np.mean(pdf)
                 std = np.std(pdf, ddof=1) 
@@ -681,22 +713,32 @@ def quantify_cluster_distance(tf_adata,
             # generate the null distribution
             null_centrals = []
             cds = []
+            
+            # generate labels in proportion to what they were prior to dropping, if they do not exist in the numbers as before
+            # otherwise, assign as many cells as before
+            null_md[label + '_null'] = null_md[label].tolist()
+            lc = label_counts.loc[list(comb), :]
+            if exclude_null_cells is not None and lc[lc['diff'] != 0].shape[0] != 0:
+                frac_vals = lc.og/lc.og.sum()
+                np.random.seed(seed)
+                null_md[label + '_null'] = np.random.choice(frac_vals.index, size=null_md.shape[0], p=frac_vals.values)
             for i in range(n_perm):
-                null_md.index = null_samples[:, i]
-                null_distances = _get_pairwise_distance(X = X, md = null_md, label = label, comb = comb, 
+                null_md.index = null_samples[:, i]          
+                null_distances = _get_pairwise_distance(X = X, md = null_md, label = label + '_null', comb = comb, 
                                                         distance_metric = distance_metric)
+                if comb[0] == comb[1]:
+                    null_distances = np.triu(null_distances, k = 1).flatten()
+                else:
+                    null_distances = null_distances.flatten()
 
-            #     distances = pd.DataFrame(np.column_stack((pairwise_distances.flatten(), null_distances.flatten())), 
-            #                              columns = ['actual', 'null'])   
-                distances = np.column_stack((pdf, null_distances.flatten()))
                 if normal:
-            #         pval = ttest_ind(distances[:, 0], distances[:, 1], equal_var = False, random_state = seed, alternative = 'greater').pvalue
-                    nc = np.mean(distances[:, 1])
-                    cd = cohen_d(distances[:, 0], distances[:, 1])  # positive if actual > null
+            #         pval = ttest_ind(pdf, null_distances, equal_var = False, random_state = seed, alternative = 'greater').pvalue
+                    nc = np.mean(null_distances)
+                    cd = cohen_d(pdf, null_distances)  # positive if actual > null
                 else:
             #         pval = mannwhitneyu(distances.actual, distances.null, alternative = 'greater').pvalue
-                    nc = np.median(distances[:, 1])
-                    cd, _ = cliffs_delta(distances[:, 0], distances[:, 1])  # positive if actual > null
+                    nc = np.median(null_distances)
+                    cd, _ = cliffs_delta(pdf, null_distances)  # positive if actual > null
 
                 null_centrals.append(nc)
                 cds.append(cd)
@@ -714,10 +756,12 @@ def quantify_cluster_distance(tf_adata,
             distances_df.loc['-'.join(comb), :] = [central, pval, cl, cu, median_cd, cld, cud]
     else:
         pool = multiprocessing.Pool(processes = n_cores)
+        enc = exclude_null_cells if exclude_null_cells is None else 1
         res = pool.starmap(_par_pairwisedistance, zip(label_combinations, repeat(X), repeat(tf_adata.obs), repeat(label),
                                                      repeat(normal), repeat(seed), repeat(n_perm), repeat(null_samples), 
                                                       repeat(null_md),
-                                                     repeat(alternative), repeat(distance_metric)))
+                                                     repeat(alternative), repeat(distance_metric), 
+                                                     repeat(enc), repeat(label_counts)))
         distances_df = pd.DataFrame(res,
                                     columns = ['central_tendency', 'pval', 'CL', 'CU', 'median_cd', 'CL_cd', 'CU_cd'],
                                     index = ['-'.join(lc) for lc in label_combinations])
@@ -732,7 +776,7 @@ def calculate_emd(df_1, df_2,
     df_2_tensor = torch.tensor(df_2.values, device = device, dtype = torch.float32)
     return emd_loss_fn(df_1_tensor, df_2_tensor).detach().item()
 
-def _par_emd(comb, X, obs, label, n_perm, null_samples, null_md, alternative, device, emd_loss_fn):
+def _par_emd(comb, X, obs, label, n_perm, null_samples, null_md, alternative, device, emd_loss_fn, exclude_null_cells, label_counts):
     samples_1 = obs[obs[label] == comb[0]].index.tolist()
     samples_2 = obs[obs[label] == comb[1]].index.tolist()
 
@@ -741,10 +785,17 @@ def _par_emd(comb, X, obs, label, n_perm, null_samples, null_md, alternative, de
                   device = device, emd_loss_fn = emd_loss_fn)
 
     null_emds = []
+    null_md[label + '_null'] = null_md[label].tolist()
+    lc = label_counts.loc[list(comb), :]
+    if exclude_null_cells is not None and lc[lc['diff'] != 0].shape[0] != 0:
+        frac_vals = lc.og/lc.og.sum()
+        np.random.seed(seed)
+        null_md[label + '_null'] = np.random.choice(frac_vals.index, size=null_md.shape[0], p=frac_vals.values)
+
     for i in range(n_perm):
         null_md.index = null_samples[:, i]
-        samples_1 = null_md[null_md[label] == comb[0]].index.tolist()
-        samples_2 = null_md[null_md[label] == comb[1]].index.tolist()
+        samples_1 = null_md[null_md[label + '_null'] == comb[0]].index.tolist()
+        samples_2 = null_md[null_md[label + '_null'] == comb[1]].index.tolist()
         null_emd = calculate_emd(df_1 = X.loc[samples_1,:],
                                  df_2 = X.loc[samples_2,:], 
                                  device = device, emd_loss_fn = emd_loss_fn)
@@ -761,6 +812,7 @@ def quantify_emd(tf_adata,
                               label_subset: Optional[List[str]] = None,
                               include_self: bool = False, 
                               feature_subset: Optional[List[str]] = None,
+                 exclude_null_cells: Optional[List[str]] = None,
                               use_pcs: bool = False,
                               rank: int = None, 
                               n_perm: int = 1000, 
@@ -788,6 +840,8 @@ def quantify_emd(tf_adata,
         whether to include comparisons within the same group (pairwise distances between single-cells in the same group), by default False
     feature_subset : Optional[List[str]], optional
         this will subset dataset to this list of features, by default all features
+    exclude_null_cells : Optional[List[str]], optional
+        this will exclude specific cells (by their AnnData ID `adata.obs_names`) from the null distribution
     use_pcs : bool, optional
         whether to calculate distances on PC space or full feature space
     rank : int, optional
@@ -817,16 +871,19 @@ def quantify_emd(tf_adata,
             - 'BH_FDR': the BH FDR corrected pvalues
     """
 
-    tf_adata, X, label_combinations, null_md, null_samples = _filter_combs(tf_adata, label, comparison_combination_subset, 
+    tf_adata, X, label_combinations, null_md, null_samples, label_counts = _filter_combs(tf_adata, label, comparison_combination_subset, 
                                                           comparison_subset, label_subset, include_self, use_pcs, 
-                                                          rank, n_perm, seed, feature_subset)
+                                                          rank, n_perm, seed, feature_subset, 
+                                                                          exclude_null_cells = exclude_null_cells)
     pvals = dict()
     if n_cores is not None and n_cores > 1 and device == 'cpu':
         pool = multiprocessing.Pool(processes = n_cores)
+        enc = exclude_null_cells if exclude_null_cells is None else 1
         res = pool.starmap(_par_emd, zip(label_combinations, repeat(X), repeat(tf_adata.obs), repeat(label),
                                                      repeat(n_perm), repeat(null_samples), 
                                                       repeat(null_md),
-                                                     repeat(alternative), repeat(device), repeat(emd_loss_fn)))
+                                                     repeat(alternative), repeat(device), repeat(emd_loss_fn), 
+                                        repeat(enc), repeat(label_counts)))
         distances_df = pd.DataFrame(res,
                             columns = ['emd', 'pval'],
                             index = ['-'.join(lc) for lc in label_combinations])
@@ -842,10 +899,17 @@ def quantify_emd(tf_adata,
                           device = device, emd_loss_fn = emd_loss_fn)
 
             null_emds = []
+            null_md[label + '_null'] = null_md[label].tolist()
+            lc = label_counts.loc[list(comb), :]
+            if exclude_null_cells is not None and lc[lc['diff'] != 0].shape[0] != 0:
+                frac_vals = lc.og/lc.og.sum()
+                np.random.seed(seed)
+                null_md[label + '_null'] = np.random.choice(frac_vals.index, size=null_md.shape[0], p=frac_vals.values)
+
             for i in range(n_perm):
                 null_md.index = null_samples[:, i]
-                samples_1 = null_md[null_md[label] == comb[0]].index.tolist()
-                samples_2 = null_md[null_md[label] == comb[1]].index.tolist()
+                samples_1 = null_md[null_md[label + '_null'] == comb[0]].index.tolist()
+                samples_2 = null_md[null_md[label + '_null'] == comb[1]].index.tolist()
                 null_emd = calculate_emd(df_1 = X.loc[samples_1,:],
                                          df_2 = X.loc[samples_2,:], 
                                          device = device, emd_loss_fn = emd_loss_fn)
