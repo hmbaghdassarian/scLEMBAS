@@ -774,6 +774,18 @@ def calculate_emd(df_1, df_2,
                   emd_loss_fn = default_emd_loss_fn, device = default_device):
     df_1_tensor = torch.tensor(df_1.values, device = device, dtype = torch.float32)
     df_2_tensor = torch.tensor(df_2.values, device = device, dtype = torch.float32)
+    
+    # # normalization for different sample sizes is handled internally by SamplesLoss
+#     n_1, n_2 = df_1_tensor.shape[0], df_2_tensor.shape[0]
+#     # normalize if sample sizes are different
+#     if n_1 != n_2:
+#         print('wee')
+#         weights_1 = torch.ones(n_1) / n_1
+#         weights_2 = torch.ones(n_2) / n_2
+#         emd_loss = loss_fn(weights_1, df_1_tensor, weights_2, df_2_tensor)
+#     else:
+#         emd_loss = loss_fn(df_1_tensor, df_2_tensor)
+    
     return emd_loss_fn(df_1_tensor, df_2_tensor).detach().item()
 
 def _par_emd(comb, X, obs, label, n_perm, null_samples, null_md, alternative, device, emd_loss_fn, exclude_null_cells, label_counts):
@@ -1095,3 +1107,38 @@ def get_alignment_score(adata, batch_key, k: int = 15, normalize: bool = True):
             max_alignment_score += (w_i * (1 - (x_i - (w_i*k))/(k - (w_i*k))))
         alignment_score /= max_alignment_score
     return alignment_score
+
+def exponential_discriminator_weight(n_epochs: int, 
+                                     min_penalty_weight: float | int, 
+                                     max_penalty_weight: float | int, 
+                                    a: float | int = 1, b: float | int = 0.007):
+    """Generates an exponential curve across epochs which can be used as the penalty weight for 
+    adverserial training. This allows the discriminator to learn in preliminary epochs, then 
+    the VAE/generator to learn in a manner that tricks the discriminator in later epochs.
+
+    Parameters
+    ----------
+    n_epochs : int
+        the number of epochs
+    min_penalty_weight : float | int
+        the minimum starting penalty 
+    max_penalty_weight : float | int
+        the maximum starting penalty
+    a : float | int, optional
+        a parameter in eponential curve y = a * b ^ x, by default 1
+    b : float | int, optional
+        b parameter in eponential curve y = a * b ^ x, by default 0.007
+    """
+    
+    
+    """Generates an exponential curve from min to max penalty weight across epochs. Used to 
+    incrementally increase weight during adverserial training, which allows discriminator to 
+    learn at first, then allows generator to learn how to trick the discriminator."""
+    
+    epochs = np.linspace(0, n_epochs- 1, n_epochs)
+    dpw = a * np.exp(b * epochs)
+    dpw = (dpw - dpw.min()) / (dpw.max() - dpw.min()) # normalize
+    discriminator_penalty_weight = min_penalty_weight + (max_penalty_weight - min_penalty_weight) * dpw
+    discriminator_penalty_weight = discriminator_penalty_weight.tolist()
+    
+    return discriminator_penalty_weight, epochs

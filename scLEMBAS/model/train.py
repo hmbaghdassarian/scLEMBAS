@@ -203,7 +203,7 @@ class TrainBase:
              self.train_seed = train_seed
 
         if isinstance(train_split['train'], float):
-            self.X_train, self.X_test, self.X_val, self.y_train, self.y_test, self.y_val = self.split_data(self.mod.X_in, 
+            self.X_train, self.X_test, self.X_validation, self.y_train, self.y_test, self.y_validation = self.split_data(self.mod.X_in, 
                                                                                                            self.mod.y_out, 
                                                                                                            train_split, 
                                                                                                            train_seed)
@@ -219,8 +219,8 @@ class TrainBase:
 #                 self._y_test = self.mod.df_to_tensor(self.y_test)
             if 'validation' in train_split and train_split['validation'] is not None:
                 # for storing
-                self.X_val = self.mod.X_in.loc[train_split['validation'], :]
-                self.y_val = self.mod.y_out.loc[train_split['validation'], :]
+                self.X_validation = self.mod.X_in.loc[train_split['validation'], :]
+                self.y_validation = self.mod.y_out.loc[train_split['validation'], :]
 #                 # for running through model
 #                 self._X_val = self.mod.df_to_tensor(self.X_val)
 #                 self._y_val = self.mod.df_to_tensor(self.y_val)
@@ -290,18 +290,18 @@ class TrainBase:
                                                             y_out, 
                                                             train_size=train_split_frac['train'],
                                                             random_state=seed)
-            X_val, y_val = None, None
+            X_validation, y_validation = None, None
         else:
             X_train, _X, y_train, _y = train_test_split(X_in, 
                                                             y_out, 
                                                             train_size=train_split_frac['train'],
                                                             random_state=seed)
-            X_test, X_val, y_test, y_val = train_test_split(_X, 
+            X_test, X_validation, y_test, y_validation = train_test_split(_X, 
                                                         _y, 
                                                         train_size=train_split_frac['test']/(train_split_frac['test'] + train_split_frac['validation']),
                                                         random_state=seed)
 
-        return X_train, X_test, X_val, y_train, y_test, y_val
+        return X_train, X_test, X_validation, y_train, y_test, y_validation
     
     @staticmethod
     def get_pearson_correlation(tensor_a, tensor_b, axis=0, return_mean=True):
@@ -495,6 +495,7 @@ class TrainSimple(TrainBase):
                 # free up CUDA mem
                 del sign_reg, stability_loss, uniform_reg, param_reg, fit_loss, train_pearson_r
                 del X_in_, y_out_, covariates_idx_, X_full, Y_full, Y_hat
+                torch.cuda.empty_cache()
                 
             self.lr_scheduler.step()
             
@@ -712,6 +713,7 @@ class TrainCat(TrainBase):
                 del sign_reg, stability_loss, uniform_reg, param_reg, prediction_loss, train_pearson_r
                 del input_param_reg, sn_param_reg, output_param_reg
                 del X_in_, y_out_, covariates_idx_, X_full, Y_full, Y_hat
+                torch.cuda.empty_cache()
 
             self.lr_scheduler.step()
 #            cur_lr = lr_scheduler.get_lr()[0]                
@@ -1041,6 +1043,7 @@ class TrainSC(TrainBase):
                 del input_param_reg, sn_param_reg, output_param_reg
                 del vae_reg, kl_divergence, discriminator_loss, discriminator_loss_accuracy, discriminator_reg
                 del X_in_, y_out_, covariates_idx_, X_full, Y_full, Y_hat
+                torch.cuda.empty_cache()
 
             self.lr_scheduler.step()
             self.discriminator['lr_scheduler'].step()

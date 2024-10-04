@@ -5,6 +5,7 @@ channels:
   - bioconda
 dependencies:    
     - https://ftp.osuosl.org/pub/open-ce/current::pytorch # replace with below for OS other than ppc64le
+    - cudatoolkit-dev
     - conda-forge::scanpy
     - conda-forge::pip
     - conda-forge::omnipath
