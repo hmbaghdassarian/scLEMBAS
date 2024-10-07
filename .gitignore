@@ -10,3 +10,5 @@
 **/*lightning_logs/
 **/*.pickle
 **/*.log
+**/*.err
+**/*.out
