@@ -172,7 +172,7 @@ regularization_params = {'input_lambda_L2': 0, # doesn't matter if setting the r
 
 # Iterate:
 
-# In[10]:
+# In[9]:
 
 
 max_epochs_iter = [100, 300, 600, 900, 1500]
@@ -180,11 +180,11 @@ max_lr_iter = [1e-3, 1e-4]
 train_batch_iter = [256, 512, 1024, 2048]
 
 
-# In[11]:
+# In[10]:
 
 
-if os.path.isfile(os.path.join(data_path, 'processed', 'k_fold_validation_results.csv')):
-    res = pd.read_csv(os.path.join(data_path, 'processed', 'k_fold_validation_results.csv'))
+if os.path.isfile(os.path.join(data_path, 'processed', 'Kang_k_fold_validation_results.csv')):
+    res = pd.read_csv(os.path.join(data_path, 'processed', 'Kang_k_fold_validation_results.csv'), index_col = 0)
 else:
     res = pd.DataFrame(columns = ['max_epochs', 'max_lr', 'train_batch_size', 'k', 'emd_loss_total'])
 
@@ -192,36 +192,7 @@ stim_map = {'STIM': 1, 'CTRL': 0}
 best_emd_loss = np.inf
 
 
-# In[12]:
-
-
-# # DELETE
-# max_epochs_iter = [30, 31]
-# max_lr_iter = [1e-3]
-# train_batch_iter = [7000]
-# k_fold_cells = {k:v for k,v in k_fold_cells.items() if k < 2}
-
-# subset_cells = []
-# n_cells = 200
-
-# for ct in tf_adata.obs['seurat_annotations'].unique():
-#     cells = tf_adata.obs[tf_adata.obs['seurat_annotations'] == ct].index.tolist()
-#     if len(cells) > n_cells:
-#         np.random.seed(seed)
-#         cells = list(np.random.choice(cells, n_cells, replace = False))
-#     subset_cells += cells
-# len(subset_cells)
-
-
-
-# tf_adata = tf_adata[subset_cells, :]
-# adata = adata[subset_cells, :]
-# for k in k_fold_cells:
-#     k_fold_cells[k]['train_cells'] = list(set(k_fold_cells[k]['train_cells']).intersection(subset_cells))
-#     k_fold_cells[k]['val_cells'] = list(set(k_fold_cells[k]['val_cells']).intersection(subset_cells))
-
-
-# In[31]:
+# In[52]:
 
 
 for max_epochs in max_epochs_iter:
@@ -240,17 +211,38 @@ for max_epochs in max_epochs_iter:
         
         for train_batch in train_batch_iter:
             if res[(res.max_epochs == max_epochs) & (res.max_lr == max_lr) & 
-                    (res.train_batch_size == train_batch)].shape[0] == 0:
+                    (res.train_batch_size == train_batch)].shape[0] == 0: # no k's run
                 emd_loss_k = []
+                trainers_k = {}
             else:
                 emd_loss_k = res[(res.max_epochs == max_epochs) & (res.max_lr == max_lr) &
                                  (res.train_batch_size == train_batch)].emd_loss_total.tolist()
-            trainers_k = {}
+                trainers_k = io.read_pickled_object(os.path.join(data_path, 'processed', 'Kang_trainers_k.pickle'))
+                
             for k in k_fold_cells:
                 if res[(res.max_epochs == max_epochs) & (res.max_lr == max_lr) & 
                     (res.train_batch_size == train_batch) & (res.k == k)].shape[0] == 1:
+                    run = False
                     pass
                 else:
+                    run = True
+                    # sanity checks
+                    if k in trainers_k:
+                        raise ValueError('Something went wrong in loading new files')
+                    elif len(trainers_k) > 0:
+                        if (max(trainers_k) != k - 1):
+                            raise ValueError('Something went wrong in loading new files')
+                        for _k in trainers_k:
+                            a = trainers_k[_k].hyper_params['max_epochs'] == max_epochs
+                            b = trainers_k[_k].hyper_params['maximum_learning_rate'] == max_lr
+                            c = trainers_k[_k].hyper_params['train_batch_size'] == train_batch
+                            if not (a and b and c):
+                                raise ValueError('Something went wrong in loading new files')    
+                        
+                        
+                    print('epochs: {}, lr: {:.4f}, train batch size: {}, k: {}'.format(max_epochs, max_lr, train_batch, k))
+                    print('------')
+                    
                     train_cells = k_fold_cells[k]['train_cells']
                     val_cells = k_fold_cells[k]['val_cells']
 
@@ -260,12 +252,6 @@ for max_epochs in max_epochs_iter:
                                        'validation_batch_size': len(val_cells)}}
                     training_params = {**lr_params, **other_params, **regularization_params, **spectral_radius_params}
 
-#                     # TO DELETE
-#                     training_params['lr_restart_epoch'] = 100
-#                     discriminator_params['lr_restart_epoch'] = 100
-#                     regularization_params['vae_scaling_KL'] = 1e2
-#                     regularization_params['spectral_loss_factor'] = 1e2
-#                     discriminator_params['discriminator_penalty_weight'] = 0.001
 
                     mod = SignalingModel(net = sn_ppis,
                                          X_in = pd.DataFrame(tf_adata.obs.stim.cat.codes, columns = ['IFNB1']),
@@ -294,6 +280,7 @@ for max_epochs in max_epochs_iter:
                                        track_validation = False)
                     mod = trainer.train_model(verbose = False)
                     trainers_k[k] = trainer
+                    io.write_pickled_object(trainers_k, os.path.join(data_path, 'processed', 'Kang_trainers_k.pickle'))
 
                     # prediction on in-distribution gene expression inputs, per condition
                     emd_loss_tot = 0
@@ -327,13 +314,34 @@ for max_epochs in max_epochs_iter:
 
                     emd_loss_k.append(emd_loss_tot)
                     res.loc[res.shape[0], :] = [max_epochs, max_lr, train_batch, k, emd_loss_tot]
-                    res.to_csv(os.path.join(data_path, 'processed', 'k_fold_validation_results.csv'))
+                    res.to_csv(os.path.join(data_path, 'processed', 'Kang_k_fold_validation_results.csv'))
                     
             emd_loss_mean = np.mean(emd_loss_k)
             if emd_loss_mean < best_emd_loss:
                 best_emd_loss = emd_loss_mean
                 for k, trainer in trainers_k.items():
-                    io.write_pickled_object(trainer, os.path.join(models_path, 'best_trainer_' + str(k) + '.pickle'))
-            del trainers_k, trainer, mod
-            torch.cuda.empty_cache()
+                    io.write_pickled_object(trainer, os.path.join(models_path, 'Kang_best_trainer_' + str(k) + '.pickle'))
+            if run:
+                del trainers_k, trainer, mod
+                torch.cuda.empty_cache()
+
+
+# In[53]:
+
+
+files = [os.path.join(data_path, 'processed', 'Kang_k_fold_validation_results.csv'), 
+         os.path.join(models_path, 'Kang_best_trainer_*'), 
+         os.path.join(data_path, 'processed', 'Kang_trainers_k.pickle')]
+for i, f in enumerate(files):
+    print('rm ' + f)
+    if i == len(files) - 1:
+        print('')
+        print('')
+
+
+# In[6]:
+
+
+# test = io.read_pickled_object(os.path.join(data_path, 'processed', 'full_run_Kang_trainers_k.pickle'))
+# res = pd.read_csv(os.path.join(data_path, 'processed', 'full_run_Kang_k_fold_validation_results.csv'), index_col = 0)
 
