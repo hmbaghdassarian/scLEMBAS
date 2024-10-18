@@ -156,7 +156,7 @@ spectral_radius_params = {'n_probes_spectral': 5,
                           'subset_n_spectral': 10}
 target_spectral_radius = 0.9
 
-regularization_params = {'input_lambda_L2': 0, # doesn't matter if setting the requires grad to False
+regularization_params_default = {'input_lambda_L2': 0, # doesn't matter if setting the requires grad to False
                          'bn_weights_lambda_l2': 1e-7, 
                          'bn_bias_lambda_L2': 0, # don't incorporate because of KL divergence
                          'output_weights_lambda_L2': 1e-7,
@@ -186,10 +186,17 @@ train_batch_iter = [256, 512, 1024, 2048]
 if os.path.isfile(os.path.join(data_path, 'processed', 'Kang_k_fold_validation_results.csv')):
     res = pd.read_csv(os.path.join(data_path, 'processed', 'Kang_k_fold_validation_results.csv'), index_col = 0)
 else:
-    res = pd.DataFrame(columns = ['max_epochs', 'max_lr', 'train_batch_size', 'k', 'emd_loss_total'])
+    res = pd.DataFrame(columns = ['max_epochs', 'max_lr', 'train_batch_size', 'k', 'emd_loss_total', 
+                                 'KL_regularization'])
+
+if (res.shape[0] == 0) or (not np.any(res.k == max(k_fold_cells))):
+    best_emd_loss = np.inf
+else:
+    
+    best_emd_loss = res.loc[:res[res.k == max(k_fold_cells)].index.max(),:].groupby(['max_epochs', 'max_lr', 'train_batch_size']).emd_loss_total.mean().min()
 
 stim_map = {'STIM': 1, 'CTRL': 0}
-best_emd_loss = np.inf
+max_err_iter = 5
 
 
 # In[52]:
@@ -233,11 +240,12 @@ for max_epochs in max_epochs_iter:
                         if (max(trainers_k) != k - 1):
                             raise ValueError('Something went wrong in loading new files')
                         for _k in trainers_k:
-                            a = trainers_k[_k].hyper_params['max_epochs'] == max_epochs
-                            b = trainers_k[_k].hyper_params['maximum_learning_rate'] == max_lr
-                            c = trainers_k[_k].hyper_params['train_batch_size'] == train_batch
-                            if not (a and b and c):
-                                raise ValueError('Something went wrong in loading new files')    
+                            if not isinstance(trainers_k[_k], float): # not nan
+                                a = trainers_k[_k].hyper_params['max_epochs'] == max_epochs
+                                b = trainers_k[_k].hyper_params['maximum_learning_rate'] == max_lr
+                                c = trainers_k[_k].hyper_params['train_batch_size'] == train_batch
+                                if not (a and b and c):
+                                    raise ValueError('Something went wrong in loading new files')    
                         
                         
                     print('epochs: {}, lr: {:.4f}, train batch size: {}, k: {}'.format(max_epochs, max_lr, train_batch, k))
@@ -247,6 +255,7 @@ for max_epochs in max_epochs_iter:
                     val_cells = k_fold_cells[k]['val_cells']
 
                     # tune other parameters as a function of those being adjusted
+                    regularization_params = regularization_params_default.copy()
                     other_params = {**other_params_default,
                                     **{'train_batch_size': train_batch,
                                        'validation_batch_size': len(val_cells)}}
@@ -278,45 +287,94 @@ for max_epochs in max_epochs_iter:
                                        train_seed = seed, 
                                        track_test = False,
                                        track_validation = False)
-                    mod = trainer.train_model(verbose = False)
-                    trainers_k[k] = trainer
-                    io.write_pickled_object(trainers_k, os.path.join(data_path, 'processed', 'Kang_trainers_k.pickle'))
+                    try:
+                        mod = trainer.train_model(verbose = False)
+                        err = False
+                    except:
+                        err = True
+                        err_iter = 0
+                        while err and (err_iter < max_err_iter): 
+                            try: # try with higher regularization of KL which prevents NaN errors
+                                if err_iter <3:
+                                    kl_scaler = 2
+                                else:
+                                    kl_scaler = 10
+                                regularization_params['vae_scaling_KL'] *= kl_scaler
+                                training_params = {**lr_params, **other_params, **regularization_params, **spectral_radius_params}
 
-                    # prediction on in-distribution gene expression inputs, per condition
-                    emd_loss_tot = 0
-                    for cond in k_fold_cells[k]['val_cond']:
-                        loss_fn = SamplesLoss("sinkhorn", p=2, blur=0.05).to(device)
-                        stim, ct = cond.split('^')
+                                mod = SignalingModel(net = sn_ppis,
+                                                     X_in = pd.DataFrame(tf_adata.obs.stim.cat.codes, columns = ['IFNB1']),
+                                                     y_out = tf_adata.to_df().copy(), 
+                                                     expr = adata.to_df().copy(), 
+                                                     covariates = tf_adata.obs.copy(),
+                                                     categorical_covariate_keys = ['seurat_annotations'],
+                                                     projection_amplitude_in = projection_amplitude_in, 
+                                                     projection_amplitude_out = projection_amplitude_out,
+                                                     weight_label = weight_label, source_label = source_label, target_label = target_label,
+                                                     bionet_params = bionet_params, 
+                                                     dtype = torch.float32, device = device, seed = seed)
+                                # model setup
+                                mod.input_layer.weights.requires_grad = False # don't learn scaling factors for the ligand input concentrations
+                                mod.signaling_network.prescale_weights(target_radius = target_spectral_radius) # spectral radius
 
-                        vall_cells_cond = tf_adata.obs[(tf_adata.obs.index.isin(val_cells)) & (tf_adata.obs['condition'] == cond)].index.tolist()
-                        y_val = mod.df_to_tensor(trainer.y_validation.loc[vall_cells_cond, :])
-
-                        # in distribution gene expression!
-                        expr_val = mod.df_to_tensor(mod.expr.loc[train_cells, :])
-
-                        # set the stimulation condition we want to predict
-                        X_val = pd.DataFrame(data = {'IFNB1': [stim_map[stim]]*len(train_cells)})
-                        X_val = mod.df_to_tensor(X_val)
-
-                        # set the cell type we want to predict
-                        cov_idx_map = dict(zip(mod.signaling_network.covariates['seurat_annotations'], 
-                                               mod.signaling_network.covariates_idx['seurat_annotations']))
-                        covariates_idx_val = torch.tensor([cov_idx_map[ct]]*len(train_cells), device = mod.device, dtype = torch.int64).view(-1,1)
-
-
-                        mod.eval()
-                        with torch.inference_mode():
-                            y_predicted, _, _ = mod(X_in = X_val, covariates_idx = covariates_idx_val, expr = expr_val)
-
-                        emd_loss_tot += loss_fn(y_predicted, y_val).detach().cpu().item()
-                        del expr_val, X_val, covariates_idx_val, y_predicted, loss_fn
+                                # training loop
+                                trainer = TrainSC(mod = mod,
+                                                   prediction_optimizer = torch.optim.Adam,
+                                                   prediction_loss_fn = SamplesLoss("sinkhorn", p=2, blur=0.05).to(device), #torch.nn.MSELoss(reduction='mean'),
+                                                  discriminator_params = discriminator_params,
+                                                   hyper_params = training_params,
+                                                   train_split = {'train': train_cells, 'test': None, 'validation': val_cells}, 
+                                                   train_seed = seed, 
+                                                   track_test = False,
+                                                   track_validation = False)
+                                mod = trainer.train_model(verbose = False)
+                                err = False
+                            except: 
+                                err_iter += 1
+                    if err:
+                        emd_loss_tot = np.nan 
                         torch.cuda.empty_cache()
+                    else:        
+                        
+                        # prediction on in-distribution gene expression inputs, per condition
+                        emd_loss_tot = 0
+                        for cond in k_fold_cells[k]['val_cond']:
+                            loss_fn = SamplesLoss("sinkhorn", p=2, blur=0.05).to(device)
+                            stim, ct = cond.split('^')
+
+                            vall_cells_cond = tf_adata.obs[(tf_adata.obs.index.isin(val_cells)) & (tf_adata.obs['condition'] == cond)].index.tolist()
+                            y_val = mod.df_to_tensor(trainer.y_validation.loc[vall_cells_cond, :])
+
+                            # in distribution gene expression!
+                            expr_val = mod.df_to_tensor(mod.expr.loc[train_cells, :])
+
+                            # set the stimulation condition we want to predict
+                            X_val = pd.DataFrame(data = {'IFNB1': [stim_map[stim]]*len(train_cells)})
+                            X_val = mod.df_to_tensor(X_val)
+
+                            # set the cell type we want to predict
+                            cov_idx_map = dict(zip(mod.signaling_network.covariates['seurat_annotations'], 
+                                                   mod.signaling_network.covariates_idx['seurat_annotations']))
+                            covariates_idx_val = torch.tensor([cov_idx_map[ct]]*len(train_cells), device = mod.device, dtype = torch.int64).view(-1,1)
+
+
+                            mod.eval()
+                            with torch.inference_mode():
+                                y_predicted, _, _ = mod(X_in = X_val, covariates_idx = covariates_idx_val, expr = expr_val)
+
+                            emd_loss_tot += loss_fn(y_predicted, y_val).detach().cpu().item()
+                            del expr_val, X_val, covariates_idx_val, y_predicted, loss_fn
+                            torch.cuda.empty_cache()
 
                     emd_loss_k.append(emd_loss_tot)
-                    res.loc[res.shape[0], :] = [max_epochs, max_lr, train_batch, k, emd_loss_tot]
+                    res.loc[res.shape[0], :] = [max_epochs, max_lr, train_batch, k, emd_loss_tot, 
+                                               regularization_params['vae_scaling_KL']]
+                    
+                    trainers_k[k] = trainer
+                    io.write_pickled_object(trainers_k, os.path.join(data_path, 'processed', 'Kang_trainers_k.pickle'))
                     res.to_csv(os.path.join(data_path, 'processed', 'Kang_k_fold_validation_results.csv'))
                     
-            emd_loss_mean = np.mean(emd_loss_k)
+            emd_loss_mean = np.nanmean(emd_loss_k)
             if emd_loss_mean < best_emd_loss:
                 best_emd_loss = emd_loss_mean
                 for k, trainer in trainers_k.items():
@@ -326,17 +384,23 @@ for max_epochs in max_epochs_iter:
                 torch.cuda.empty_cache()
 
 
+# In[120]:
+
+
+isinstance(np.nan, float)
+
+
 # In[53]:
 
 
-files = [os.path.join(data_path, 'processed', 'Kang_k_fold_validation_results.csv'), 
-         os.path.join(models_path, 'Kang_best_trainer_*'), 
-         os.path.join(data_path, 'processed', 'Kang_trainers_k.pickle')]
-for i, f in enumerate(files):
-    print('rm ' + f)
-    if i == len(files) - 1:
-        print('')
-        print('')
+# files = [os.path.join(data_path, 'processed', 'Kang_k_fold_validation_results.csv'), 
+#          os.path.join(models_path, 'Kang_best_trainer_*'), 
+#          os.path.join(data_path, 'processed', 'Kang_trainers_k.pickle')]
+# for i, f in enumerate(files):
+#     print('rm ' + f)
+#     if i == len(files) - 1:
+#         print('')
+#         print('')
 
 
 # In[6]:
