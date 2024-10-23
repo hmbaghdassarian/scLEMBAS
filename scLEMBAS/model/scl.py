@@ -104,12 +104,16 @@ class SignalingModel(torch.nn.Module):
         self._gradient_seed_counter = 0
         self.projection_amplitude_out = projection_amplitude_out
 
-        edge_list, node_labels, edge_MOA = self.parse_network(net, ban_list, weight_label, source_label, target_label)
+        # creates self.node_idx_map
+        edge_list, edge_MOA = self.parse_network(net, ban_list, weight_label, source_label, target_label)
 
 
-        # filter for nodes in the network, sorting by node_labels order
-        self.X_in = X_in.loc[:, np.intersect1d(X_in.columns.values, node_labels)]
-        self.y_out = y_out.loc[:, np.intersect1d(y_out.columns.values, node_labels)]
+        ## filter for nodes in the network, sorting in alphabetical order (as node_labels and node_idx_map is)
+#         self.X_in = X_in.loc[:, np.intersect1d(X_in.columns.values, node_labels)]
+#         self.y_out = y_out.loc[:, np.intersect1d(y_out.columns.values, node_labels)]
+        # filter for nodes in the network, sorting in order of the node_idx_map
+        self.X_in = X_in[sorted([col for col in self.node_idx_map if col in X_in.columns], key=self.node_idx_map.get)]
+        self.y_out = y_out[sorted([col for col in self.node_idx_map if col in y_out.columns], key=self.node_idx_map.get)]
         self.expr = expr
 
         # define model layers
@@ -122,7 +126,7 @@ class SignalingModel(torch.nn.Module):
             self.signaling_network = BioNetSimple(edge_list = edge_list, 
                                                 edge_MOA = edge_MOA,
                                                 input_node_idx = self.input_layer.input_node_idx,
-                                                n_network_nodes = len(node_labels), 
+                                                n_network_nodes = len(self.node_idx_map), 
                                                 bionet_params = bionet_params, 
                                                 activation_function = activation_function, 
                                                 dtype = self.dtype, device = self.device, seed = self.seed)
@@ -131,7 +135,7 @@ class SignalingModel(torch.nn.Module):
                 self.signaling_network = BioNetCat(edge_list = edge_list, 
                                                    edge_MOA = edge_MOA,
                                                    input_node_idx = self.input_layer.input_node_idx,
-                                                   n_network_nodes = len(node_labels), 
+                                                   n_network_nodes = len(self.node_idx_map), 
                                                    bionet_params = bionet_params, 
                                                    activation_function = activation_function, 
                                                    covariates = covariates, 
@@ -141,7 +145,7 @@ class SignalingModel(torch.nn.Module):
                 self.signaling_network = BioNetSC(edge_list = edge_list, 
                                                   edge_MOA = edge_MOA,
                                                   input_node_idx = self.input_layer.input_node_idx,
-                                                  n_network_nodes = len(node_labels),
+                                                  n_network_nodes = len(self.node_idx_map),
                                                   n_genes = self.expr.shape[1],
                                                   bionet_params = bionet_params, 
                                                   activation_function = activation_function, 
@@ -199,7 +203,7 @@ class SignalingModel(torch.nn.Module):
     
         # create an edge list with node incides
         node_labels = sorted(pd.concat([net[source_label], net[target_label]]).unique())
-        self.node_idx_map = {idx: node_name for node_name, idx in enumerate(node_labels)}
+        self.node_idx_map = {node_name: idx for idx, node_name in enumerate(node_labels)}
         
         source_indices = net[source_label].map(self.node_idx_map).values
         target_indices = net[target_label].map(self.node_idx_map).values
@@ -214,7 +218,7 @@ class SignalingModel(torch.nn.Module):
         edge_list = np.array((target_indices, source_indices)) 
         edge_MOA = np.array([[edge_MOA==1],[edge_MOA==-1]]).squeeze() # convert to boolean
 
-        return edge_list, node_labels, edge_MOA
+        return edge_list, edge_MOA
 
     def df_to_tensor(self, df: pd.DataFrame):
         """Converts a pandas dataframe to the appropriate torch.tensor"""
