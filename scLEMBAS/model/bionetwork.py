@@ -259,7 +259,7 @@ class BioNetBase(nn.Module):
         loss = lambda_L1 * torch.sum(torch.abs(self.weights * sign_mismatch))
         return loss
 
-    def get_SS_loss(self, Y_full: torch.Tensor, spectral_loss_factor: float, subset_n: int = 10, **kwargs):
+    def get_SS_loss(self, Y_full: torch.Tensor, spectral_loss_factor: float, subset_n: int = 5, **kwargs):
         """_summary_
     
         Parameters
@@ -270,7 +270,8 @@ class BioNetBase(nn.Module):
         spectral_loss_factor : float
             _description_
         subset_n : int, optional
-            _description_, by default 10
+            _description_, by default 5
+            default was 10 when using `_depr_get_SS_deviation`
     
         Returns
         -------
@@ -295,7 +296,30 @@ class BioNetBase(nn.Module):
     
         return loss, aprox_spectral_radius
     
-    def _get_SS_deviation(self, Y_full_sub, n_probes: int = 5, power_steps: int = 50):
+    def _get_SS_deviation(self, Y_full_sub, n_probes: int = 5, power_steps: int = 5):
+        """Quicker version of spectral radius implemented by Olof Nordenstorm."""
+        x_prime = self.onestepdelta_activation_factor(Y_full_sub, self.bionet_params['leak'])     
+        x_prime = x_prime.unsqueeze(2)
+        
+        T = x_prime * self.weights
+        if self.seed:
+            set_seeds(self.seed + self._ss_seed_counter)
+        delta = torch.randn((Y_full_sub.shape[0], Y_full_sub.shape[1], n_probes), dtype=Y_full_sub.dtype, device=Y_full_sub.device)
+        for i in range(power_steps):
+            new = delta / torch.norm(delta,dim=1).unsqueeze(1)
+            delta = torch.matmul(T, new)
+
+        new_delta = torch.matmul(T, delta)
+        batch_eigen_not_norm=torch.einsum('ijk,ijk->ik',new_delta,delta)
+        normalize=torch.einsum('ijk,ijk->ik',delta,delta)
+        batch_SR_values,_=torch.max(torch.abs(batch_eigen_not_norm/normalize),axis=1) # spectral radius approx 
+
+        aprox_spectral_radius = torch.mean(batch_SR_values, axis=0)      
+        SS_deviation = batch_SR_values
+    
+        return SS_deviation, aprox_spectral_radius
+    
+    def _depr_get_SS_deviation(self, Y_full_sub, n_probes: int = 5, power_steps: int = 50):
         x_prime = self.onestepdelta_activation_factor(Y_full_sub, self.bionet_params['leak'])     
         x_prime = x_prime.unsqueeze(2)
         
