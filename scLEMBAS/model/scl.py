@@ -24,11 +24,9 @@ class SignalingModel(torch.nn.Module):
                  ban_list: List[str] = None, weight_label: str = 'mode_of_action', 
                  source_label: str = 'source', target_label: str = 'target',
                  bionet_params: Dict[str, float] = None, 
-                 activation_function: str='MML',
-                 
-#                  decoder_hyper_params : Dict[str, Any] = Encoder.DEFAULT_HYPER_PARAMS,
-                 
-                 dtype: torch.dtype=torch.float32, device: str = 'cpu', seed: int = 888):
+                 activation_function: str='MML',                 
+                 dtype: torch.dtype=torch.float32, device: str = 'cpu', seed: int = 888,
+                rand_y: bool = False):
         """Parse the signaling network and build the model layers.
 
         Parameters
@@ -96,6 +94,8 @@ class SignalingModel(torch.nn.Module):
             whether to use gpu ("cuda") or cpu ("cpu"), by default "cpu"
         seed : int
             random seed for torch and numpy operations, by default 888
+        rand_y : bool
+            if True, won't reorder the output feature labels alphabetically as is standardly done, allows for testing against baseline random models when True, by default False
         """
         super().__init__()
         self.dtype = dtype
@@ -113,7 +113,10 @@ class SignalingModel(torch.nn.Module):
 #         self.y_out = y_out.loc[:, np.intersect1d(y_out.columns.values, node_labels)]
         # filter for nodes in the network, sorting in order of the node_idx_map
         self.X_in = X_in[sorted([col for col in self.node_idx_map if col in X_in.columns], key=self.node_idx_map.get)]
-        self.y_out = y_out[sorted([col for col in self.node_idx_map if col in y_out.columns], key=self.node_idx_map.get)]
+        if not rand_y: 
+            self.y_out = y_out[sorted([col for col in self.node_idx_map if col in y_out.columns], key=self.node_idx_map.get)]
+        else:
+            self.y_out = y_out
         self.expr = expr
 
         # define model layers
