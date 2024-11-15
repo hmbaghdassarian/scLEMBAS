@@ -173,12 +173,14 @@ def _pca_simple(adata: AnnData, n_components: int = 50, random_state: int = 888)
         data matrix in `.X` of shape n_obs × n_vars. Rows correspond to cells and columns to features.
     n_components : int, optional
         Number of principal components to compute, by default 50
+    zero_center: 
     random_state : int, optional
         Change to use different initial states for the optimization, by default 888
     """
     pca_mod = PCA(n_components=n_components, random_state = random_state)
-    pca_mod.fit(adata.X)
-    X_pca = pca_mod.transform(adata.X) # need to separate fit_transform otherwise won't be able to reproducibly run .transform
+    X = adata.X
+    pca_mod.fit(X)
+    X_pca = pca_mod.transform(X) # need to separate fit_transform otherwise won't be able to reproducibly run .transform
     adata.obsm["X_pca"] = X_pca
     adata.varm["PCs"] = pca_mod.components_.T
     
@@ -1108,10 +1110,12 @@ def get_alignment_score(adata, batch_key, k: int = 15, normalize: bool = True):
         alignment_score /= max_alignment_score
     return alignment_score
 
-def exponential_discriminator_weight(n_epochs: int, 
-                                     min_penalty_weight: float | int, 
-                                     max_penalty_weight: float | int, 
-                                    a: float | int = 1, b: float | int = 0.007):
+def discriminator_weight_curve(n_epochs: int,
+                               min_penalty_weight: float | int,
+                               max_penalty_weight: float | int,
+                               a: float | int = 1,
+                               b: float | int = 0.3, 
+                              curve_type: Literal['power', 'exponential'] = 'power'):
     """Generates an exponential curve across epochs which can be used as the penalty weight for 
     adverserial training. This allows the discriminator to learn in preliminary epochs, then 
     the VAE/generator to learn in a manner that tricks the discriminator in later epochs.
@@ -1125,9 +1129,11 @@ def exponential_discriminator_weight(n_epochs: int,
     max_penalty_weight : float | int
         the maximum starting penalty
     a : float | int, optional
-        a parameter in eponential curve y = a * b ^ x, by default 1
+        'a' parameter in the power curve y = a * x^b, by default 1
+        'a' parameter in eponential curve y = a * b ^ x
     b : float | int, optional
-        b parameter in eponential curve y = a * b ^ x, by default 0.007
+        'b' parameter in the power curve y = a * x^b, by default 0.3
+        'b' parameter in eponential curve y = a * b ^ x
     """
     
     
@@ -1136,9 +1142,13 @@ def exponential_discriminator_weight(n_epochs: int,
     learn at first, then allows generator to learn how to trick the discriminator."""
     
     epochs = np.linspace(0, n_epochs- 1, n_epochs)
-    dpw = a * np.exp(b * epochs)
-    dpw = (dpw - dpw.min()) / (dpw.max() - dpw.min()) # normalize
-    discriminator_penalty_weight = min_penalty_weight + (max_penalty_weight - min_penalty_weight) * dpw
-    discriminator_penalty_weight = discriminator_penalty_weight.tolist()
+    if curve_type == 'power':
+        dpw = a * (epochs ** b)
+        dpw = min_penalty_weight + (max_penalty_weight - min_penalty_weight) * (dpw / dpw.max()) # normalize        
+    elif curve_type == 'exponential':
+        dpw = a * np.exp(b * epochs)
+        dpw = (dpw - dpw.min()) / (dpw.max() - dpw.min()) # normalize
+        dpw = min_penalty_weight + (max_penalty_weight - min_penalty_weight) * dpw
+    discriminator_penalty_weight = dpw.tolist()
     
-    return discriminator_penalty_weight, epochs
+    return discriminator_penalty_weight
