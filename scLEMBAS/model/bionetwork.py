@@ -111,6 +111,8 @@ class BioNetBase(nn.Module):
         raise ValueError('This must be overwritten by the class that inherits it')
     def make_mask(self):
         raise ValueError('This must be overwritten by the class that inherits it')
+    def implement_mask(self):
+        raise ValueError('This must be overwritten by the class that inherits it')
     def forward(self):
         raise ValueError('This must be overwritten by the class that inherits it')
 
@@ -409,6 +411,11 @@ class BioNetSimple(BioNetBase):
         # or have an unknown mechanism of action masked (True)
         self.mask_MOA = self.weights_MOA == 0
 
+    def implement_mask(self):
+        """Fill the non-interacting nodes in adj matrix and ligand inputs in bias with 0"""
+        self.weights.data.masked_fill_(mask = self.mask, value = 0.0) # fill non-interacting edges with 0
+        self.bias_global.data.masked_fill_(mask = self.bias_mask, value = 0.0)
+        
     def forward(self, X_full: torch.Tensor, covariates_idx = None, expr = None):
         """Learn the edeg weights within the signaling network topology.
 
@@ -424,10 +431,6 @@ class BioNetSimple(BioNetBase):
         Y_full :  torch.Tensor
             the signaling network scaled by learned interaction weights. Shape is (samples x network nodes).
         """
-        # implement masks
-        self.weights.data.masked_fill_(mask = self.mask, value = 0.0) # fill non-interacting edges with 0
-        self.bias_global.data.masked_fill_(mask = self.bias_mask, value = 0.0)
-
         bias_tot = self.bias_global
         X_bias = X_full.T + bias_tot # this is the bias with the projection_amplitude included
         X_new = torch.zeros_like(X_bias) #initialize hidden state values at 0
@@ -449,7 +452,7 @@ class BioNetSimple(BioNetBase):
 class BioNetCat(BioNetBase):
     """Builds the RNN on the signaling network topology, accounting for categorical covariates of the samples (e.g. cell line, genetic background, etc.)."""
     
-    DEFAULT_PARAMETERS = {**BioNetBase.DEFAULT_PARAMETERS, **{'cat_max_norm': 1}}
+    DEFAULT_PARAMETERS = {**BioNetBase.DEFAULT_PARAMETERS, **{'cat_max_norm': 100}}
 
     def __init__(self, edge_list: np.array, 
                  edge_MOA: np.array, 
@@ -567,6 +570,15 @@ class BioNetCat(BioNetBase):
     def covariates_to_tensor(self, sample_ids):
         """Returns the covariates by index in torch.Tensor format for a specified list of samples.""" 
         return torch.tensor(self.covariates_idx.loc[sample_ids, :].values, device = self.device, dtype = torch.int64)
+   
+    def implement_mask(self):
+        """Fill the non-interacting nodes in adj matrix and ligand inputs in bias with 0"""
+        self.weights.data.masked_fill_(mask = self.mask, value = 0.0) # fill non-interacting edges with 0
+#         self.bias_global.data.masked_fill_(mask = self.bias_mask, value = 0.0)
+
+        for idx, cat_group in enumerate(self.cat_embeddings.keys()):
+            self.cat_embeddings[cat_group].weight.data.masked_fill(mask = self.cat_embeddings_mask[cat_group], 
+                                                                  value = 0.0)
     
 
     def forward(self, X_full: torch.Tensor, covariates_idx: torch.Tensor, expr = None):
@@ -588,16 +600,11 @@ class BioNetCat(BioNetBase):
         Y_full :  torch.Tensor
             the signaling network scaled by learned interaction weights. Shape is (samples x network nodes).
         """
-        # implement mask
-        self.weights.data.masked_fill_(mask = self.mask, value = 0.0) # fill non-interacting edges with 0
-#         self.bias_global.data.masked_fill_(mask = self.bias_mask, value = 0.0)
-
-        bias_cats = torch.zeros_like(X_full.T, device = self.device, dtype = self.dtype)
+        
         # add categorical covariates
+        bias_cats = torch.zeros_like(X_full.T, device = self.device, dtype = self.dtype)
         for cat_group_idx in range(covariates_idx.shape[1]):
             cat_group = self._cat_group_idx[cat_group_idx]
-            self.cat_embeddings[cat_group].weight.data.masked_fill_(mask = self.cat_embeddings_mask[cat_group], 
-                                                                    value = 0.0)
             bias_cats += self.cat_embeddings[cat_group](covariates_idx[:,cat_group_idx]).T
     #             # the indexing above would be the equivalent of this:
     #             embedding = self.cat_embeddings[cat_group].weight.clone()
@@ -681,6 +688,16 @@ class BioNetSC(BioNetCat):
         weight_values[self.edge_MOA[1,:]] = -weight_values[self.edge_MOA[1,:]] # make those that are inhibiting negative
 
         return weight_values
+    
+    def implement_mask(self):
+        """Fill the non-interacting nodes in adj matrix and ligand inputs in bias with 0"""
+        self.weights.data.masked_fill_(mask = self.mask, value = 0.0) # fill non-interacting edges with 0
+
+        for idx, cat_group in enumerate(self.cat_embeddings.keys()):
+            self.cat_embeddings[cat_group].weight.data.masked_fill(mask = self.cat_embeddings_mask[cat_group], 
+                                                                  value = 0.0)
+            
+        # bias global is still in the forward pass because it is generated during teh forward pass
 
     def forward(self, X_full: torch.Tensor, covariates_idx: torch.Tensor, expr: torch.Tensor):
         """Learn the edeg weights within the signaling network topology.
@@ -702,15 +719,10 @@ class BioNetSC(BioNetCat):
         bias_global : torch.Tensor
             the context-independent bias term output by the VAE. Shape is (samples x network nodes).
         """
-        # implement masks
-        self.weights.data.masked_fill_(mask = self.mask, value = 0.0) # fill non-interacting edges with 0
-
         bias_cats = torch.zeros_like(X_full.T, device = self.device, dtype = self.dtype)
         # add categorical covariates
         for cat_group_idx in range(covariates_idx.shape[1]):
             cat_group = self._cat_group_idx[cat_group_idx]
-            self.cat_embeddings[cat_group].weight.data.masked_fill_(mask = self.cat_embeddings_mask[cat_group], 
-                                                                    value = 0.0)
             bias_cats += self.cat_embeddings[cat_group](covariates_idx[:,cat_group_idx]).T
     #             # the indexing above would be the equivalent of this:
     #             embedding = self.cat_embeddings[cat_group].weight.clone()

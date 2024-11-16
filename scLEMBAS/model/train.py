@@ -407,19 +407,7 @@ class TrainSimple(TrainBase):
             a list of the spectral_radius across training iterations
         """
         start_time = time.time()
-        
-        #TODELETE:
-        with torch.no_grad():
-            self.sn_weights = {'mean': [np.mean(np.abs(self.mod.signaling_network.weights[np.logical_not(self.mod.signaling_network.mask.detach().to('cpu').numpy())].to('cpu').detach().numpy().flatten()))], 
-                      'median': [np.median(np.abs(self.mod.signaling_network.weights[np.logical_not(self.mod.signaling_network.mask.detach().to('cpu').numpy())].to('cpu').detach().numpy().flatten()))], 
-                      'std': [np.std(self.mod.signaling_network.weights[np.logical_not(self.mod.signaling_network.mask.detach().to('cpu').numpy())].to('cpu').detach().numpy().flatten())]}
-            self.sn_bias = {'mean': [np.mean(np.abs(self.mod.signaling_network.bias_global[np.logical_not(self.mod.signaling_network.bias_mask.detach().to('cpu').numpy())].to('cpu').detach().numpy().flatten()))], 
-                          'median': [np.median(np.abs(self.mod.signaling_network.bias_global[np.logical_not(self.mod.signaling_network.bias_mask.detach().to('cpu').numpy())].to('cpu').detach().numpy().flatten()))], 
-                          'std': [np.std(self.mod.signaling_network.bias_global[np.logical_not(self.mod.signaling_network.bias_mask.detach().to('cpu').numpy())].to('cpu').detach().numpy().flatten())]}
-        
-    
-        
-        
+        self.mod.signaling_network.implement_mask()
         for e in trange(self.hyper_params['max_epochs']):
             cur_lr = self.prediction_optimizer.param_groups[0]['lr']
             # set learning rate
@@ -464,25 +452,13 @@ class TrainSimple(TrainBase):
                                             output_weights_lambda_L2=self.hyper_params['output_weights_lambda_L2'],
                                             output_bias_lambda_L2=self.hyper_params['output_bias_lambda_L2'])
                 param_reg = input_param_reg + sn_param_reg + output_param_reg
-        #             total_loss = fit_loss + sign_reg + ligand_reg + param_reg + stability_loss + uniform_reg
                 total_loss = prediction_loss + sign_reg + param_reg + stability_loss + uniform_reg
         
                 # gradient
                 total_loss.backward()
                 self.mod.add_gradient_noise(noise_level = self.hyper_params['gradient_noise_scale'])
                 self.prediction_optimizer.step()
-        
-                # store                         
-                # cur_eig.append(spectral_radius)
-                # cur_loss_pred_train.append(prediction_loss.item())
-                # cur_loss_tot_train.append(total_loss.item())
-                # cur_pearson_train.append(train_pearson_r)
-                # cur_sign_loss.append(sign_reg.item())
-                # cur_stab_loss.append(stability_loss.item())
-                # cur_uni_loss.append(uniform_reg.item())
-                # cur_in_loss.append(input_param_reg.item())
-                # cur_sn_loss.append(sn_param_reg.item())
-                # cur_out_loss.append(output_param_reg.item())
+                self.mod.signaling_network.implement_mask() # moved out of forward pass to ensure after last backpass these are 0
 
                 sv = np.array([e + 1, batch, cur_lr, time.time() - start_time, spectral_radius, 
                     self.mod.signaling_network.count_sign_mismatch(), 
@@ -498,18 +474,7 @@ class TrainSimple(TrainBase):
                 torch.cuda.empty_cache()
                 
             self.lr_scheduler.step()
-            
-            #TO DELETE:
-            with torch.no_grad():
-                self.sn_weights['mean'] += [np.mean(np.abs(self.mod.signaling_network.weights[np.logical_not(self.mod.signaling_network.mask.detach().to('cpu').numpy())].to('cpu').detach().numpy().flatten()))]
-                self.sn_weights['median'] += [np.median(np.abs(self.mod.signaling_network.weights[np.logical_not(self.mod.signaling_network.mask.detach().to('cpu').numpy())].to('cpu').detach().numpy().flatten()))]
-                self.sn_weights['std'] += [np.std(self.mod.signaling_network.weights[np.logical_not(self.mod.signaling_network.mask.detach().to('cpu').numpy())].to('cpu').detach().numpy().flatten())]
 
-                self.sn_bias['mean'] += [np.mean(np.abs(self.mod.signaling_network.bias_global[np.logical_not(self.mod.signaling_network.bias_mask.detach().to('cpu').numpy())].to('cpu').detach().numpy().flatten()))]
-                self.sn_bias['median'] += [np.median(np.abs(self.mod.signaling_network.bias_global[np.logical_not(self.mod.signaling_network.bias_mask.detach().to('cpu').numpy())].to('cpu').detach().numpy().flatten()))]
-                self.sn_bias['std'] += [np.std(self.mod.signaling_network.bias_global[np.logical_not(self.mod.signaling_network.bias_mask.detach().to('cpu').numpy())].to('cpu').detach().numpy().flatten())]
-            
-#            cur_lr = lr_scheduler.get_lr()[0]
             # test/validation
             if self.track_validation or self.track_test:
                 self.mod.eval()
@@ -638,6 +603,7 @@ class TrainCat(TrainBase):
             a list of the spectral_radius across training iterations
        """
         start_time = time.time()
+        self.mod.signaling_network.implement_mask()
         for e in trange(self.hyper_params['max_epochs']):
             # set learning rate
             cur_lr = self.prediction_optimizer.param_groups[0]['lr']
@@ -688,18 +654,7 @@ class TrainCat(TrainBase):
                 tot_pred_loss.backward()
                 self.mod.add_gradient_noise(noise_level = self.hyper_params['gradient_noise_scale'])
                 self.prediction_optimizer.step()
-
-                # store
-                # cur_eig.append(spectral_radius)
-                # cur_loss_pred_train.append(prediction_loss.item())
-                # cur_loss_tot_train.append(tot_pred_loss.item())
-                # cur_pearson_train.append(train_pearson_r)
-                # cur_sign_loss.append(sign_reg.item())
-                # cur_stab_loss.append(stability_loss.item())
-                # cur_uni_loss.append(uniform_reg.item())
-                # cur_in_loss.append(input_param_reg.item())
-                # cur_sn_loss.append(sn_param_reg.item())
-                # cur_out_loss.append(output_param_reg.item())
+                self.mod.signaling_network.implement_mask() # moved out of forward pass to ensure after last backpass these are 0
 
                 sv = np.array([e + 1, batch, cur_lr, time.time() - start_time, spectral_radius, 
                     self.mod.signaling_network.count_sign_mismatch(), 
@@ -921,6 +876,7 @@ class TrainSC(TrainBase):
             a list of the spectral_radius across training iterations
        """
         start_time = time.time()
+        self.mod.signaling_network.implement_mask()
         for e in trange(self.hyper_params['max_epochs']):
             cur_lr = self.prediction_optimizer.param_groups[0]['lr']
             self.discriminator['_cur_lr'] = self.discriminator['optimizer'].param_groups[0]['lr']
@@ -1026,6 +982,9 @@ class TrainSC(TrainBase):
                 tot_pred_loss.backward()
                 self.mod.add_gradient_noise(noise_level = self.hyper_params['gradient_noise_scale'])
                 self.prediction_optimizer.step()
+                self.mod.signaling_network.implement_mask() # moved out of forward pass to ensure after last backpass these are 0
+                # bias global masking can stay in forward pass because it is generated during the forward pass and 
+                # won't be updated in the back pass
 
 
                 sv = np.array([e + 1, batch, cur_lr, self.discriminator['_cur_lr'], 
