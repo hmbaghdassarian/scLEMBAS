@@ -235,7 +235,10 @@ def embed_tf_activity(tf_adata: AnnData,
                       pc_rank: str | int = 'automate',
                      resolution: float | List[float] = 1, 
                      nmi_label: str = None, 
-                     run_umap = True):
+                      n_neighbors: int = 15, 
+                      run_pca: bool = True,
+                     run_umap: bool  = True, 
+                     cluster_data: bool = True):
     """Runs dimensionality reduction and clustering of cells from their TF activity using default scanpy parameters.
 
     Parameters
@@ -255,8 +258,17 @@ def embed_tf_activity(tf_adata: AnnData,
     resolution : float | List[float], optional
         The resolution parameter for leiden clustering. If a list, will iterate through all resolutions, maximizing
         NMI between the clusters and the nmi_label in `tf_adata.obs`
+    nmi_label : str, optional
+        A column in `tf_adata.obs`. If resolution is a list, will identify the resolution that maximizes the 
+        NMI between leiden clusters and nmi_label
+    n_neighbors : int
+        The number of neighbors to use, passed to `sc.pp.neighbors`, by default 15
+    run_pca : bool, optional
+        Whether to run umap or not, by default True
     run_umap : bool, optional
         Whether to run umap or not, by default True
+    cluster_data : bool, optional
+        Wheter to run leiden clustering or not, by default True
 
     Returns
     -------
@@ -268,39 +280,50 @@ def embed_tf_activity(tf_adata: AnnData,
 #         n_comps = min(tf_adata.shape)
     if isinstance(resolution, list) and nmi_label not in tf_adata.obs.columns:
         raise ValueError('The nmi_label should be in the AnnData obs')
-     
-    if scanpy_pca:
-        sc.tl.pca(data = tf_adata, n_comps = n_components)
-    else:
-        _pca_simple(adata = tf_adata, n_components = n_components) 
+    if not run_pca and 'pca' not in tf_adata.uns:
+        raise ValueError('Need to calculate or run PCA')
     
-    if pc_rank == 'automate':
-        pc_rank = _compute_elbow(adata = tf_adata)
-    tf_adata.uns["pca"]['pca_rank'] = pc_rank
+    if run_pca:
+        if scanpy_pca:
+            sc.tl.pca(data = tf_adata, n_comps = n_components)
+        else:
+            _pca_simple(adata = tf_adata, n_components = n_components) 
+
+        if pc_rank == 'automate':
+            pc_rank = _compute_elbow(adata = tf_adata)
+        else:
+            pc_rank = n_components
+        tf_adata.uns["pca"]['pca_rank'] = pc_rank
 
     # if not np.allclose(tf_adata.obsm['X_pca'], tf_adata.uns['pca']['pca_mod'].transform(tf_adata.X)): 
     #     raise ValueError('Unexpected disagreement when running PCA.transform')
     
-    sc.pp.neighbors(adata = tf_adata, n_pcs=pc_rank) # construct neighborhood graph
+    sc.pp.neighbors(adata = tf_adata, 
+                    n_pcs=tf_adata.uns["pca"]['pca_rank'], 
+                    n_neighbors = n_neighbors,
+                    use_rep = 'X_pca')
     if run_umap:
         scanpy_umap(adata = tf_adata)
 
     # cluster
-    if not isinstance(resolution, list):
-        sc.tl.leiden(adata = tf_adata, resolution = resolution) # cluster
-    else: # identify the leiden resolution that maximizes NMI with a pre-existing metadata label
-        print('Iterate through leiden resolutions')
-        best_res = None
-        best_nmi = -np.inf
-        for res in tqdm(resolution):
-            sc.tl.leiden(adata = tf_adata, resolution = res)
-            nmi_val = normalized_mutual_info_score(tf_adata.obs.leiden, tf_adata.obs[nmi_label])
-            if nmi_val > best_nmi:
-                best_nmi = nmi_val
-                best_res = res
-        sc.tl.leiden(adata = tf_adata, resolution = best_res)
+    if cluster_data:
+        if not isinstance(resolution, list):
+            sc.tl.leiden(adata = tf_adata, resolution = resolution) # cluster
+        else: # identify the leiden resolution that maximizes NMI with a pre-existing metadata label
+            print('Iterate through leiden resolutions')
+            best_res = None
+            best_nmi = -np.inf
+            for res in tqdm(resolution):
+                sc.tl.leiden(adata = tf_adata, resolution = res)
+                nmi_val = normalized_mutual_info_score(tf_adata.obs.leiden, tf_adata.obs[nmi_label])
+                if nmi_val > best_nmi:
+                    best_nmi = nmi_val
+                    best_res = res
+            sc.tl.leiden(adata = tf_adata, resolution = best_res)
+
+        tf_adata.obs.rename(columns = {'leiden': cluster_col_name}, inplace = True)
     
-    tf_adata.obs.rename(columns = {'leiden': cluster_col_name}, inplace = True)
+#     return best_nmi, best_res
     
 def pairwise_pearson_correlation(X, Y):
     # Center the data by subtracting the mean of each row
@@ -1062,7 +1085,8 @@ def get_k_neighbors(adata, cell_id, k):
     return neighbor_ids
 
 def get_alignment_score(adata, batch_key, k: int = 15, normalize: bool = True):
-    """Alignment score as described in https://doi.org/10.1038/nbt.4096
+    """Modified alignment score as described in https://doi.org/10.1038/s41587-020-00748-9. This is modified from
+    the alignment score described in https://doi.org/10.1038/nbt.4096.
 
     Parameters
     ----------
@@ -1081,9 +1105,9 @@ def get_alignment_score(adata, batch_key, k: int = 15, normalize: bool = True):
         the alignment score. Minimum value is 0. Highest value is 1 if normalized. Larger values mean
         fewer batch effects
     """
-    w = adata.obs.value_type.value_counts()
+    w = adata.obs[batch_key].value_counts()
     w /= w.sum()
-    knn_tracker = dict(zip(adata.obs.value_type.unique(), adata.obs.value_type.nunique() * [[]]))
+    knn_tracker = dict(zip(adata.obs[batch_key].unique(), adata.obs[batch_key].nunique() * [[]]))
 
     for cell_id in tqdm(adata.obs.index):
         batch = adata.obs.loc[cell_id, batch_key]

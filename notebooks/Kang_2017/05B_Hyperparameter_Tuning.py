@@ -7,11 +7,12 @@
 # 
 # We run the EMD loss on in-distribution gene expression (asking the counter-factual of predicting out of distribtion conditions from in-distribution gene expression inputs). What would the TF activity of a measured cell look like in an unmeasured condition?
 
-# In[2]:
+# In[1]:
 
 
 import os
 import glob
+import itertools
 
 import torch
 import torch.nn as nn
@@ -22,7 +23,7 @@ import scanpy as sc
 import numpy as np
 
 
-# In[3]:
+# In[2]:
 
 
 import sys
@@ -31,10 +32,10 @@ sys.path.insert(1, os.path.join(sclembas))
 from scLEMBAS import io
 from scLEMBAS.model.scl import SignalingModel
 from scLEMBAS.model.train import TrainSC
-from scLEMBAS.preprocess import exponential_discriminator_weight
+from scLEMBAS.preprocess import discriminator_weight_curve
 
 
-# In[4]:
+# In[3]:
 
 
 n_cores = 20
@@ -53,7 +54,7 @@ models_path = os.path.join(data_path, 'processed', 'models')
 
 # Load the data:
 
-# In[9]:
+# In[4]:
 
 
 adata = sc.read_h5ad(os.path.join(data_path, 'processed', 'kang_expr_scored.h5ad'))
@@ -63,7 +64,7 @@ tf_adata = io.read_tfad(os.path.join(data_path, 'processed', 'Kang_tf_activity.h
 tf_adata.obs['condition'] = tf_adata.obs['stim'].astype(str) + '^' + tf_adata.obs['seurat_annotations'].astype(str)
 
 
-# In[10]:
+# In[5]:
 
 
 data_split_path = os.path.join(os.path.join(data_path, 'processed', 'data_split_barcodes'))
@@ -72,9 +73,10 @@ k_fold_cells = {}
 for k in range(5):
     k_fold_cells[k] = {fk: open(os.path.join(data_split_path, 'kang_' + str(k) + '_' + fk + '.txt')).read().splitlines()
                       for fk in fold_keys}
+    
 
 
-# In[11]:
+# In[6]:
 
 
 source_label = 'source_genesymbol'
@@ -86,7 +88,7 @@ inhibition_label = 'consensus_inhibition'
 
 # Setup the parameters:
 
-# In[12]:
+# In[7]:
 
 
 def generate_lr_params(n_epochs, max_lr, lr_scaling_factor = 10, lr_decay = 0.9):
@@ -123,7 +125,7 @@ def generate_discriminator_params(n_epochs, max_lr, discriminator_penalty_weight
     return discriminator_params
 
 
-# In[13]:
+# In[8]:
 
 
 # vae
@@ -141,7 +143,7 @@ bionet_params = {'target_steps': 100,
                  'exp_factor':50, 
                  'tolerance': 1e-5, 
                  'leak':1e-2, 
-                'cat_max_norm': 1} 
+                'cat_max_norm': 100} 
 vae_params = {'vae_batch_momentum': 0.01, 'vae_layer_norm': False, 'vae_dropout_rate': 0.1,
               'vae_activation_fn': nn.LeakyReLU,
               'vae_n_hidden_nodes': vae_n_hidden_nodes, 
@@ -170,21 +172,70 @@ regularization_params_default = {'input_lambda_L2': 0, # doesn't matter if setti
                         'vae_scaling_KL': 1e-2}
 
 
+# In[9]:
+
+
+# discriminator params
+max_penalty_weight = 7.75
+b = 0.6
+
+
 # Iterate:
 
-# In[14]:
+# In[10]:
 
 
-max_epochs_iter = [100, 300, 600, 900, 1500]
+def try_train(training_params, discriminator_params, train_cells, val_cells):
+    mod = SignalingModel(net = sn_ppis,
+                     X_in = pd.DataFrame(tf_adata.obs.stim.cat.codes, columns = ['IFNB1']),
+                     y_out = tf_adata.to_df().copy(), 
+                     expr = adata.to_df().copy(), 
+                     covariates = tf_adata.obs.copy(),
+                     categorical_covariate_keys = ['seurat_annotations'],
+                     projection_amplitude_in = projection_amplitude_in, 
+                     projection_amplitude_out = projection_amplitude_out,
+                     weight_label = weight_label, source_label = source_label, target_label = target_label,
+                     bionet_params = bionet_params, 
+                     dtype = torch.float32, device = device, seed = seed)
+    # model setup
+    mod.input_layer.weights.requires_grad = False # don't learn scaling factors for the ligand input concentrations
+    mod.signaling_network.prescale_weights(target_radius = target_spectral_radius) # spectral radius
+
+    # training loop
+    trainer = TrainSC(mod = mod,
+                       prediction_optimizer = torch.optim.Adam,
+                       prediction_loss_fn = SamplesLoss("sinkhorn", p=2, blur=0.05).to(device), #torch.nn.MSELoss(reduction='mean'),
+                      discriminator_params = discriminator_params,
+                       hyper_params = training_params,
+                       train_split = {'train': train_cells, 'test': None, 'validation': val_cells}, 
+                       train_seed = seed, 
+                       track_test = False,
+                       track_validation = False)
+    mod = trainer.train_model(verbose = False)
+    
+    return trainer, mod
+
+
+# In[11]:
+
+
+max_epochs_iter = [600, 900, 1200]
 max_lr_iter = [1e-3, 1e-4]
-train_batch_iter = [256, 512, 1024, 2048]
+train_batch_iter = [256, 512, 1024]
+
+combs = list(itertools.product(max_epochs_iter, max_lr_iter, train_batch_iter))
+
+# subset = 0.2 # 20% of grid
+# np.random.seed(seed)
+# choice_idx = sorted(np.random.choice(range(len(combs)), int(np.floor(subset*len(combs)))))
+# combs = [comb for idx, comb in enumerate(combs) if idx in choice_idx]
 
 
-# In[15]:
+# In[12]:
 
 
-if os.path.isfile(os.path.join(data_path, 'processed', 'Kang_k_fold_validation_results_v2.csv')):
-    res = pd.read_csv(os.path.join(data_path, 'processed', 'Kang_k_fold_validation_results_v2.csv'), index_col = 0)
+if os.path.isfile(os.path.join(data_path, 'processed', 'Kang_k_fold_validation_results.csv')):
+    res = pd.read_csv(os.path.join(data_path, 'processed', 'Kang_k_fold_validation_results.csv'), index_col = 0)
 else:
     res = pd.DataFrame(columns = ['max_epochs', 'max_lr', 'train_batch_size', 'k', 'emd_loss_total', 
                                  'KL_regularization'])
@@ -206,202 +257,194 @@ else:
 
     if mean_emd.shape[0] != 0:
         best_emd_loss = mean_emd.emd_loss_total.min()
+        
+        # get the standard deviation for early stopping
+        best_params = mean_emd.emd_loss_total.idxmin()
+        best_params = mean_emd.emd_loss_total.idxmin()
+        best_all = res[(res.max_epochs == best_params[0]) & (res.max_lr == best_params[1]) & (res.train_batch_size == best_params[2])]
+        if best_all.shape[0] != len(k_fold_cells):
+            raise ValueError('Something went wrong in loading the results')
+        best_emd_std = best_all.emd_loss_total.std()
+        
     else:
         best_emd_loss = np.inf
 
 stim_map = {'STIM': 1, 'CTRL': 0}
-max_err_iter = 5
+max_err_iter = 4
 
 
 # In[52]:
 
 
-for max_epochs in max_epochs_iter:
+for hyperparams in combs:
+    max_epochs, max_lr, train_batch = hyperparams
     
-    discriminator_penalty_weight, _ = exponential_discriminator_weight(n_epochs = max_epochs,
-                                                                   min_penalty_weight = 0.1,
-                                                                   max_penalty_weight = 4, 
-                                                                  a = 1, 
-                                                                  b = 0.007)
-    for max_lr in max_lr_iter:
+    discriminator_penalty_weight = discriminator_weight_curve(n_epochs = max_epochs,
+                                                              min_penalty_weight = 0.1,
+                                                              max_penalty_weight = max_penalty_weight,
+                                                              a = 1,
+                                                              b = b, 
+                                                              curve_type = 'power')
+    
         
-        lr_params = generate_lr_params(n_epochs = max_epochs, max_lr = max_lr, lr_scaling_factor = 10, lr_decay = 0.9)
-        discriminator_params = generate_discriminator_params(n_epochs = max_epochs, max_lr = max_lr, 
-                              discriminator_penalty_weight = discriminator_penalty_weight, 
-                              lr_scaling_factor = 10, lr_decay = 0.9)
+    lr_params = generate_lr_params(n_epochs = max_epochs, max_lr = max_lr, lr_scaling_factor = 10, lr_decay = 0.9)
+    discriminator_params = generate_discriminator_params(n_epochs = max_epochs, max_lr = max_lr, 
+                          discriminator_penalty_weight = discriminator_penalty_weight, 
+                          lr_scaling_factor = 10, lr_decay = 0.9)
         
-        for train_batch in train_batch_iter:
-            curr_res = res[(res.max_epochs == max_epochs) & (res.max_lr == max_lr) & 
-                           (res.train_batch_size == train_batch)]
-            contains_na = False
-            if curr_res.shape[0] == 0: # no k's run
-                emd_loss_k = []
-                trainers_k = {}
+    curr_res = res[(res.iloc[:, :len(hyperparams)] == list(hyperparams)).all(axis = 1)]
+    
+    if curr_res.shape[0] != len(k_fold_cells): # if all k's haven't been run 
+        early_stop = False
+        if curr_res.shape[0] == 0: # no k's run
+            emd_loss_k = []
+            trainers_k = {}
+        else:
+            if not curr_res.emd_loss_total.isna().any():
+                emd_loss_k = curr_res.emd_loss_total.tolist()
+                trainers_k = io.read_pickled_object(os.path.join(data_path, 'processed', 'Kang_trainers_k.pickle'))
+                # early stopping: if after 3 folds, the mean is more than 1.5 stds above the mean of the best run, stop
+                if (len(emd_loss_k) >= 3) and (best_emd_loss != np.inf) and np.mean(emd_loss_k) > best_emd_loss + (1.5*best_emd_std):
+                    early_stop = True
             else:
-                if not curr_res.emd_loss_total.isna().any():
-                    emd_loss_k = curr_res.emd_loss_total.tolist()
-                    trainers_k = io.read_pickled_object(os.path.join(data_path, 'processed', 'Kang_trainers_k_v2.pickle'))
-                else:
-                    contains_na = True
-            if not contains_na:
-                for k in k_fold_cells:
-                    if curr_res[curr_res.k == k].shape[0] == 1:
-                        run = False
-                        pass
-                    else:
-                        run = True
-                        # sanity checks
-                        if k in trainers_k:
-                            raise ValueError('Something went wrong in loading new files')
-                        elif len(trainers_k) > 0:
-                            if (max(trainers_k) != k - 1):
-                                raise ValueError('Something went wrong in loading new files')
-                            for _k in trainers_k:
-                                if not isinstance(trainers_k[_k], float): # not nan
-                                    a = trainers_k[_k].hyper_params['max_epochs'] == max_epochs
-                                    b = trainers_k[_k].hyper_params['maximum_learning_rate'] == max_lr
-                                    c = trainers_k[_k].hyper_params['train_batch_size'] == train_batch
-                                    if not (a and b and c):
-                                        raise ValueError('Something went wrong in loading new files')    
+                early_stop = True
+        if not early_stop:
+#             run = False
+            for k in sorted(set(k_fold_cells).difference(curr_res.k)):
+#                 run = True
+
+                # sanity checks
+                if k in trainers_k:
+                    raise ValueError('A: Something went wrong in loading new files')
+                elif len(trainers_k) > 0:
+                    if (max(trainers_k) != k - 1):
+                        raise ValueError('B: Something went wrong in loading new files')
+                    for _k in trainers_k:
+                        if not isinstance(trainers_k[_k], float): # not nan
+                            a = trainers_k[_k].hyper_params['max_epochs'] == max_epochs
+                            b = trainers_k[_k].hyper_params['maximum_learning_rate'] == max_lr
+                            c = trainers_k[_k].hyper_params['train_batch_size'] == train_batch
+                            if not (a and b and c):
+                                raise ValueError('C: Something went wrong in loading new files')    
 
 
-                        print('epochs: {}, lr: {:.4f}, train batch size: {}, k: {}'.format(max_epochs, max_lr, train_batch, k))
-                        print('------')
+                print('epochs: {}, lr: {:.4f}, train batch size: {}, k: {}'.format(max_epochs, max_lr, train_batch, k))
+                print('------')
 
-                        train_cells = k_fold_cells[k]['train_cells']
-                        val_cells = k_fold_cells[k]['val_cells']
+                train_cells = k_fold_cells[k]['train_cells']
+                val_cells = k_fold_cells[k]['val_cells']
 
-                        # tune other parameters as a function of those being adjusted
-                        regularization_params = regularization_params_default.copy()
-                        other_params = {**other_params_default,
-                                        **{'train_batch_size': train_batch,
-                                           'validation_batch_size': len(val_cells)}}
+                # tune other parameters as a function of those being adjusted
+                regularization_params = regularization_params_default.copy()
+                other_params = {**other_params_default,
+                                **{'train_batch_size': train_batch,
+                                   'validation_batch_size': len(val_cells)}}
+                training_params = {**lr_params, **other_params, **regularization_params, **spectral_radius_params}
+
+                err = True
+                err_iter = -1
+                while err and (err_iter < max_err_iter):
+                    try:
+                        trainer, mod = try_train(training_params, discriminator_params, train_cells, val_cells)
+                        err = False
+                    except:
+                        kl_scaler = 2 if err_iter < 3 else 10
+                        regularization_params['vae_scaling_KL'] *= kl_scaler
                         training_params = {**lr_params, **other_params, **regularization_params, **spectral_radius_params}
-
-
-                        mod = SignalingModel(net = sn_ppis,
-                                             X_in = pd.DataFrame(tf_adata.obs.stim.cat.codes, columns = ['IFNB1']),
-                                             y_out = tf_adata.to_df().copy(), 
-                                             expr = adata.to_df().copy(), 
-                                             covariates = tf_adata.obs.copy(),
-                                             categorical_covariate_keys = ['seurat_annotations'],
-                                             projection_amplitude_in = projection_amplitude_in, 
-                                             projection_amplitude_out = projection_amplitude_out,
-                                             weight_label = weight_label, source_label = source_label, target_label = target_label,
-                                             bionet_params = bionet_params, 
-                                             dtype = torch.float32, device = device, seed = seed)
-                        # model setup
-                        mod.input_layer.weights.requires_grad = False # don't learn scaling factors for the ligand input concentrations
-                        mod.signaling_network.prescale_weights(target_radius = target_spectral_radius) # spectral radius
-
-                        # training loop
-                        trainer = TrainSC(mod = mod,
-                                           prediction_optimizer = torch.optim.Adam,
-                                           prediction_loss_fn = SamplesLoss("sinkhorn", p=2, blur=0.05).to(device), #torch.nn.MSELoss(reduction='mean'),
-                                          discriminator_params = discriminator_params,
-                                           hyper_params = training_params,
-                                           train_split = {'train': train_cells, 'test': None, 'validation': val_cells}, 
-                                           train_seed = seed, 
-                                           track_test = False,
-                                           track_validation = False)
-                        try:
-                            mod = trainer.train_model(verbose = False)
-                            err = False
-                        except:
-                            err = True
-                            err_iter = 0
-                            while err and (err_iter < max_err_iter): 
-                                try: # try with higher regularization of KL which prevents NaN errors
-                                    if err_iter <3:
-                                        kl_scaler = 2
-                                    else:
-                                        kl_scaler = 10
-                                    regularization_params['vae_scaling_KL'] *= kl_scaler
-                                    training_params = {**lr_params, **other_params, **regularization_params, **spectral_radius_params}
-
-                                    mod = SignalingModel(net = sn_ppis,
-                                                         X_in = pd.DataFrame(tf_adata.obs.stim.cat.codes, columns = ['IFNB1']),
-                                                         y_out = tf_adata.to_df().copy(), 
-                                                         expr = adata.to_df().copy(), 
-                                                         covariates = tf_adata.obs.copy(),
-                                                         categorical_covariate_keys = ['seurat_annotations'],
-                                                         projection_amplitude_in = projection_amplitude_in, 
-                                                         projection_amplitude_out = projection_amplitude_out,
-                                                         weight_label = weight_label, source_label = source_label, target_label = target_label,
-                                                         bionet_params = bionet_params, 
-                                                         dtype = torch.float32, device = device, seed = seed)
-                                    # model setup
-                                    mod.input_layer.weights.requires_grad = False # don't learn scaling factors for the ligand input concentrations
-                                    mod.signaling_network.prescale_weights(target_radius = target_spectral_radius) # spectral radius
-
-                                    # training loop
-                                    trainer = TrainSC(mod = mod,
-                                                       prediction_optimizer = torch.optim.Adam,
-                                                       prediction_loss_fn = SamplesLoss("sinkhorn", p=2, blur=0.05).to(device), #torch.nn.MSELoss(reduction='mean'),
-                                                      discriminator_params = discriminator_params,
-                                                       hyper_params = training_params,
-                                                       train_split = {'train': train_cells, 'test': None, 'validation': val_cells}, 
-                                                       train_seed = seed, 
-                                                       track_test = False,
-                                                       track_validation = False)
-                                    mod = trainer.train_model(verbose = False)
-                                    err = False
-                                except: 
-                                    err_iter += 1
-                        if err:
-                            emd_loss_tot = np.nan 
-                            torch.cuda.empty_cache()
-                        else:        
-
-                            # prediction on in-distribution gene expression inputs, per condition
-                            emd_loss_tot = 0
-                            for cond in k_fold_cells[k]['val_cond']:
-                                loss_fn = SamplesLoss("sinkhorn", p=2, blur=0.05).to(device)
-                                stim, ct = cond.split('^')
-
-                                vall_cells_cond = tf_adata.obs[(tf_adata.obs.index.isin(val_cells)) & (tf_adata.obs['condition'] == cond)].index.tolist()
-                                y_val = mod.df_to_tensor(trainer.y_validation.loc[vall_cells_cond, :])
-
-                                # in distribution gene expression!
-                                expr_val = mod.df_to_tensor(mod.expr.loc[train_cells, :])
-
-                                # set the stimulation condition we want to predict
-                                X_val = pd.DataFrame(data = {'IFNB1': [stim_map[stim]]*len(train_cells)})
-                                X_val = mod.df_to_tensor(X_val)
-
-                                # set the cell type we want to predict
-                                cov_idx_map = dict(zip(mod.signaling_network.covariates['seurat_annotations'], 
-                                                       mod.signaling_network.covariates_idx['seurat_annotations']))
-                                covariates_idx_val = torch.tensor([cov_idx_map[ct]]*len(train_cells), device = mod.device, dtype = torch.int64).view(-1,1)
-
-
-                                mod.eval()
-                                with torch.inference_mode():
-                                    y_predicted, _, _ = mod(X_in = X_val, covariates_idx = covariates_idx_val, expr = expr_val)
-
-                                emd_loss_tot += loss_fn(y_predicted, y_val).detach().cpu().item()
-                                del expr_val, X_val, covariates_idx_val, y_predicted, loss_fn
-                                torch.cuda.empty_cache()
-
-                        emd_loss_k.append(emd_loss_tot)
-                        res.loc[res.shape[0], :] = [max_epochs, max_lr, train_batch, k, emd_loss_tot, 
-                                                   regularization_params['vae_scaling_KL']]
-
-                        trainers_k[k] = trainer
-                        io.write_pickled_object(trainers_k, os.path.join(data_path, 'processed', 'Kang_trainers_k_v2.pickle'))
-                        res.to_csv(os.path.join(data_path, 'processed', 'Kang_k_fold_validation_results_v2.csv'))
-
-                emd_loss_mean = np.nanmean(emd_loss_k)
-                if emd_loss_mean < best_emd_loss:
-                    best_emd_loss = emd_loss_mean
-                    for k, trainer in trainers_k.items():
-                        io.write_pickled_object(trainer, os.path.join(models_path, 'Kang_best_trainer_' + str(k) + '_v2.pickle'))
-                if run:
-                    del trainers_k, trainer, mod
+                        err_iter += 1
+                if err:
+                    emd_loss_tot = np.nan 
                     torch.cuda.empty_cache()
-            else:
-                for row in range(len(k_fold_cells) - curr_res.shape[0]):
-                    res.loc[res.shape[0], :] = [max_epochs, max_lr, train_batch_size, 
-                                               res.loc[res.shape[0] - 1, 'k'] + 1, 
-                                                      np.nan, np.nan]
-                res.to_csv(os.path.join(data_path, 'processed', 'Kang_k_fold_validation_results_v2.csv'))
+                else:        
+
+                    # prediction on in-distribution gene expression inputs, per condition
+                    emd_loss_tot = 0
+                    for cond in k_fold_cells[k]['val_cond']:
+                        loss_fn = SamplesLoss("sinkhorn", p=2, blur=0.05).to(device)
+                        stim, ct = cond.split('^')
+
+                        vall_cells_cond = tf_adata.obs[(tf_adata.obs.index.isin(val_cells)) & (tf_adata.obs['condition'] == cond)].index.tolist()
+                        y_val = mod.df_to_tensor(trainer.y_validation.loc[vall_cells_cond, :])
+
+                        # in distribution gene expression!
+                        expr_val = mod.df_to_tensor(mod.expr.loc[train_cells, :])
+
+                        # set the stimulation condition we want to predict
+                        X_val = pd.DataFrame(data = {'IFNB1': [stim_map[stim]]*len(train_cells)})
+                        X_val = mod.df_to_tensor(X_val)
+
+                        # set the cell type we want to predict
+                        cov_idx_map = dict(zip(mod.signaling_network.covariates['seurat_annotations'], 
+                                               mod.signaling_network.covariates_idx['seurat_annotations']))
+                        covariates_idx_val = torch.tensor([cov_idx_map[ct]]*len(train_cells), device = mod.device, dtype = torch.int64).view(-1,1)
+
+
+                        mod.eval()
+                        with torch.inference_mode():
+                            y_predicted, _, _ = mod(X_in = X_val, covariates_idx = covariates_idx_val, expr = expr_val)
+
+                        emd_loss_tot += loss_fn(y_predicted, y_val).detach().cpu().item()
+                        del expr_val, X_val, covariates_idx_val, y_predicted, loss_fn
+                        torch.cuda.empty_cache()
+
+                emd_loss_k.append(emd_loss_tot)
+                res.loc[res.shape[0], :] = [max_epochs, max_lr, train_batch, k, emd_loss_tot, 
+                                           regularization_params['vae_scaling_KL']]
+
+                trainers_k[k] = trainer
+                io.write_pickled_object(trainers_k, os.path.join(data_path, 'processed', 'Kang_trainers_k.pickle'))
+                res.to_csv(os.path.join(data_path, 'processed', 'Kang_k_fold_validation_results.csv'))
+
+            emd_loss_mean = np.nanmean(emd_loss_k)
+            if emd_loss_mean < best_emd_loss:
+                best_emd_loss = emd_loss_mean
+                best_emd_std = np.std(emd_loss_k)
+                for k, trainer in trainers_k.items():
+                    io.write_pickled_object(trainer, os.path.join(models_path, 'Kang_best_trainer_' + str(k) + '.pickle'))
+#             if run:
+            del trainers_k, trainer, mod
+            torch.cuda.empty_cache()
+        else:
+            for row in range(len(k_fold_cells) - curr_res.shape[0]):
+                res.loc[res.shape[0], :] = [max_epochs, max_lr, train_batch_size, 
+                                           res.loc[res.shape[0] - 1, 'k'] + 1, 
+                                                  np.nan, np.nan]
+            res.to_csv(os.path.join(data_path, 'processed', 'Kang_k_fold_validation_results.csv'))
+
+
+# In[31]:
+
+
+# files = [os.path.join(data_path, 'processed', 'Kang_k_fold_validation_results.csv')] 
+# #          os.path.join(models_path, 'Kang_best_trainer_*'), 
+# #          os.path.join(data_path, 'processed', 'Kang_trainers_k.pickle')]
+# for i, f in enumerate(files):
+#     print('rm ' + f)
+#     if i == len(files) - 1:
+#         print('')
+#         print('')
+
+
+# In[15]:
+
+
+# res2 = pd.read_csv(os.path.join(data_path, 'processed', 'Kang_k_fold_validation_results.csv'), 
+#                    index_col = 0)
+# res = pd.read_csv(os.path.join(data_path, 'processed', 'Kang_k_fold_validation_results.csv'), index_col = 0)
+# i = 10
+# res.iloc[i:i+5, :]
+# res2.iloc[i:i+5, :]
+
+
+# In[32]:
+
+
+# res.groupby(['max_epochs', 'max_lr', 'train_batch_size'])['emd_loss_total'].mean().sort_values()
+
+
+# In[6]:
+
+
+# test = io.read_pickled_object(os.path.join(data_path, 'processed', 'full_run_Kang_trainers_k.pickle'))
+# res = pd.read_csv(os.path.join(data_path, 'processed', 'full_run_Kang_k_fold_validation_results.csv'), index_col = 0)
+

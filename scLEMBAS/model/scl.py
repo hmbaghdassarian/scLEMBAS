@@ -62,7 +62,7 @@ class SignalingModel(torch.nn.Module):
                 - 'leak': parameter to tune extent of leaking, analogous to leaky ReLU, by default 0.01
                 - 'spectral_target': _description_, by default np.exp(np.log(params['tolerance'])/params['target_steps'])
                 - 'exp_factor': _description_, by default 20
-                - 'cat_max_norm' : passed to `max_norm` argument of nn.Embedding when generating categorical embeddings (only if covariates is not None)
+                - 'cat_max_norm' : passed to `max_norm` argument of nn.Embedding when generating categorical embeddings (only if covariates is not None); a value of 100 keeps the categorical embeddings close to the standard normal distribution, like the global bias
             vae hyper params. This is only used for single-cell. Keyword arguments to pass to the encoder. Keys include:
                 n_hidden_nodes : List[int], optional
                     number of hidden nodes per hidden layer, by default [64]
