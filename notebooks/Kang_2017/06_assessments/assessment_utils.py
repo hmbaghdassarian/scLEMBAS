@@ -8,8 +8,14 @@ import torch
 import scanpy as sc
 import pandas as pd
 
+
+rev_stim = {'STIM': 'CTRL', 'CTRL': 'STIM'}
+
+stim_map = {'STIM': 1, 'CTRL': 0}
+rev_stim_map = {v:k for k,v in stim_map.items()}
+
 def get_prediction(mod, tf_adata, counterfactual_type, cf_map, 
-                   train_cells_all, test_conds, stim_map, rev_stim, rev_stim_map):
+                   train_cells_all, test_conds):
     """Gets and formats the model predictions from the counterfactual"""
     cov_idx_map = dict(zip(mod.signaling_network.covariates['seurat_annotations'], 
                            mod.signaling_network.covariates_idx['seurat_annotations']))
