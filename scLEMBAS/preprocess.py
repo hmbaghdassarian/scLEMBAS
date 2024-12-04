@@ -4,7 +4,7 @@ Preprocessing functions for single-cell AnnData objects.
 import itertools
 from itertools import repeat
 import multiprocessing
-from tqdm import tqdm
+from tqdm import tqdm, trange
 import warnings
 from typing import List, Literal, Optional, Tuple
 
@@ -525,11 +525,18 @@ def _par_pairwisedistance(comb, X, obs, label, normal, seed, n_perm, null_sample
     null_centrals = []
     cds = []
     null_md[label + '_null'] = null_md[label].tolist()
-    lc = label_counts.loc[list(comb), :]
+    lc = label_counts.loc[list(comb), :] 
     if exclude_null_cells is not None and lc[lc['diff'] != 0].shape[0] != 0:
-        frac_vals = lc.og/lc.og.sum()
-        np.random.seed(seed)
-        null_md[label + '_null'] = np.random.choice(frac_vals.index, size=null_md.shape[0], p=frac_vals.values)
+        n_cells_null = int(lc.og.sum())
+        if n_cells_null > null_md.shape[0]:
+            n_cells_null = null_md.shape[0]
+        if comb[0] != comb[1]:
+            frac_vals = lc.og/n_cells_null
+            np.random.seed(seed)
+            null_cell_labels = list(np.random.choice(frac_vals.index, size=n_cells_null, p=frac_vals.values))
+        else:
+            null_cell_labels = [comb[0]]*n_cells_null
+        null_md[label + '_null'] = null_cell_labels + ['']*(null_md.shape[0] - n_cells_null)
     for i in range(n_perm):
         null_md.index = null_samples[:, i]          
         null_distances = _get_pairwise_distance(X = X, md = null_md, label = label + '_null', comb = comb, 
@@ -677,11 +684,11 @@ def quantify_cluster_distance(tf_adata,
         # of PCs to use when calculating distance, by default the one automatically selected in 
         preprocess.embed_tf_activity
         only used when `use_pcs` = True
-    n_prem : int, optional
+    n_perm : int, optional
         number of permutations from which to create the null distribution, by default 100
-    alternative : str, optional
-        specifies the comparison of the actual distance statistic to the null distribution, by default greater
-        even correlations should be greater, because we invert their values (switch the signs)
+    alternative : Literal['two-sided', 'less', 'greater'], optional
+        specifies the comparison of the actual distance statistic relative the null distribution, by default greater
+        **correlation values are inverted such that they should be consistent with the interpretation of euclidean and manhattan distance
     seed : int, optional
         random seed for numpy operations, by default 888, by default 888
     n_cores : int, optional
@@ -716,7 +723,7 @@ def quantify_cluster_distance(tf_adata,
     if n_cores is None or n_cores <= 1:
         distances_df = pd.DataFrame(columns = ['central_tendency', 'pval', 'CL', 'CU', 'median_cd', 'CL_cd', 'CU_cd'])
         # iterate through the pairwise cell label combinations
-        for comb in tqdm(label_combinations):    
+        for comb in tqdm(label_combinations): #tqdm(label_combinations): 
             # get actual value stats
             pairwise_distances = _get_pairwise_distance(X = X, md = tf_adata.obs, label = label, comb = comb, 
                                                        distance_metric = distance_metric)
@@ -742,11 +749,19 @@ def quantify_cluster_distance(tf_adata,
             # generate labels in proportion to what they were prior to dropping, if they do not exist in the numbers as before
             # otherwise, assign as many cells as before
             null_md[label + '_null'] = null_md[label].tolist()
-            lc = label_counts.loc[list(comb), :]
+            lc = label_counts.loc[list(comb), :] 
             if exclude_null_cells is not None and lc[lc['diff'] != 0].shape[0] != 0:
-                frac_vals = lc.og/lc.og.sum()
-                np.random.seed(seed)
-                null_md[label + '_null'] = np.random.choice(frac_vals.index, size=null_md.shape[0], p=frac_vals.values)
+                n_cells_null = int(lc.og.sum())
+                if n_cells_null > null_md.shape[0]:
+                    n_cells_null = null_md.shape[0]
+                if comb[0] != comb[1]:
+                    frac_vals = lc.og/n_cells_null
+                    np.random.seed(seed)
+                    null_cell_labels = list(np.random.choice(frac_vals.index, size=n_cells_null, p=frac_vals.values))
+                else:
+                    null_cell_labels = [comb[0]]*n_cells_null
+                null_md[label + '_null'] = null_cell_labels + ['']*(null_md.shape[0] - n_cells_null)
+            
             for i in range(n_perm):
                 null_md.index = null_samples[:, i]          
                 null_distances = _get_pairwise_distance(X = X, md = null_md, label = label + '_null', comb = comb, 
