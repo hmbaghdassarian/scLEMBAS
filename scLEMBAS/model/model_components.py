@@ -164,8 +164,8 @@ class ProjectOutput(nn.Module):
     #     device : str
     #         set to use gpu ("cuda") or cpu ("cpu")
     #     """
-    #     self.output_node_order = self.output_node_order.to(device)
-
+    #     self.output_node_order = self.output_node_order.to(device)    
+    
 class FCLayers(nn.Module):
     """
     Generates standard, fully-connected neural-network.
@@ -235,8 +235,27 @@ class FCLayers(nn.Module):
                                                                        device = self.device, dtype = self.dtype) if self.layer_norm else None),
                                   ('activation', self.activation_fn() if self.activation_fn else None),
                                   ('dropout', nn.Dropout(p=self.dropout_rate) if (self.dropout_rate and self.dropout_rate > 0) else None)])
-
+#         self._initialize_weights(all_layers['linear'])  # Initialize weights based on activation function
         return nn.Sequential(OrderedDict((k, v) for k, v in all_layers.items() if v is not None))
+    
+    def _initialize_weights(self, layer):
+        """Initialize weights based on the activation function."""
+        if isinstance(self.activation_fn, type):
+            if self.activation_fn == nn.LeakyReLU:
+                nn.init.kaiming_uniform_(layer.weight, nonlinearity='leaky_relu')
+            elif self.activation_fn == nn.ReLU or issubclass(self.activation_fn, nn.ReLU):
+                nn.init.kaiming_uniform_(layer.weight, nonlinearity='relu')
+            elif self.activation_fn == nn.Tanh or issubclass(self.activation_fn, nn.Tanh):
+                nn.init.xavier_uniform_(layer.weight)
+            elif self.activation_fn == nn.Sigmoid or issubclass(self.activation_fn, nn.Sigmoid):
+                nn.init.xavier_uniform_(layer.weight)
+            else:
+                nn.init.kaiming_uniform_(layer.weight)  # Default to He initialization
+        else:
+            nn.init.kaiming_uniform_(layer.weight)  # Default initialization
+
+        if layer.bias is not None:
+            nn.init.zeros_(layer.bias)
 
     def forward(self, x):
         return self.fc_layers(x)   
