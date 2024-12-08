@@ -5,15 +5,37 @@ import torch
 import scanpy as sc
 import pandas as pd
 
+from typing import List, Literal
+
 
 rev_stim = {'STIM': 'CTRL', 'CTRL': 'STIM'}
 
 stim_map = {'STIM': 1, 'CTRL': 0}
 rev_stim_map = {v:k for k,v in stim_map.items()}
 
-def get_prediction(mod, tf_adata, counterfactual_type, cf_map, 
-                   train_cells_all, test_conds):
-    """Gets and formats the model predictions from the counterfactual"""
+def get_prediction(mod, tf_adata: List[str], 
+                   counterfactual_type: Literal['in_distribution', 'opposite'], cf_map, 
+                   train_cells_all, test_conds, return_bias: bool = False):
+    """Get prediction from a model given a counterfactual
+
+    Parameters
+    ----------
+    mod : _type_
+        _description_
+    tf_adata : _type_
+        all the actual data
+    counterfactual_type : Literal['in_distribution', 'opposite']
+        in distribution will be all train cells to each test cond
+        opposite will be within the same cell type, predicting the test cond from the opposit stimulation condition
+    cf_map : _type_
+        keys are the label for the counterfactual, values are the list of cells in that counterfactual that aren't 'opposite' ('opposite' calculated internally)
+    train_cells_all : List[str]
+        all cells the model was trained on 
+    test_conds : List[str]
+        cell type^stimulation to predict
+    return_bias : bool, optional
+        whether to return bias terms (True) or prediction (False), by default False
+    """
     cov_idx_map = dict(zip(mod.signaling_network.covariates['seurat_annotations'], 
                            mod.signaling_network.covariates_idx['seurat_annotations']))
     cov_rev_map = {v:k for k,v in cov_idx_map.items()}
@@ -54,9 +76,28 @@ def get_prediction(mod, tf_adata, counterfactual_type, cf_map,
         else: 
             full_covariates = torch.cat((full_covariates, covariates_idx_test), dim = 0)
             
+            
     mod.eval()
     with torch.inference_mode():
         y_predicted, Y_full, biases = mod(X_in = full_X, covariates_idx = full_covariates, expr = full_expr)
+        if return_bias:
+            bias_global, bias_mu, bias_log_sigma_squared = biases
+            bias_sigma = torch.exp(bias_log_sigma_squared/2.) + mod.signaling_network.vae.var_min
+
+            # add in categorical information
+            bias_cats = torch.zeros_like(bias_global.T, device = mod.device, dtype = mod.dtype)
+            for cat_group_idx in range(full_covariates.shape[1]):
+                cat_group = mod.signaling_network._cat_group_idx[cat_group_idx]
+                mod.signaling_network.cat_embeddings[cat_group].weight.data.masked_fill_(mask = mod.signaling_network.cat_embeddings_mask[cat_group], 
+                                                                            value = 0.0)
+                bias_cats += mod.signaling_network.cat_embeddings[cat_group](full_covariates[:,cat_group_idx]).T
+            bias_tot = bias_global.T + bias_cats
+            
+            obs = pd.DataFrame(full_covariates.detach().cpu().numpy())
+            obs.columns = ['seurat_annotations']
+            obs.seurat_annotations = obs.seurat_annotations.map(cov_rev_map)
+            
+            return bias_global, bias_mu, bias_sigma, bias_cats, bias_tot, obs
         
     obs = pd.DataFrame(full_covariates.detach().cpu().numpy())
     obs.columns = ['seurat_annotations']
