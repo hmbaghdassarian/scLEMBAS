@@ -82,7 +82,7 @@ inhibition_label = 'consensus_inhibition'
 res = pd.read_csv(os.path.join(data_path, 'processed', 'Kang_k_fold_validation_results.csv'), index_col = 0)
 best_emd_mean, best_hyperparams, best_emd = get_best_hyperparams(res)
 trainers_best = {k: io.read_pickled_object(os.path.join(models_path, 'Kang_best_trainer_' + str(k) + '.pickle')) for k in range(best_emd.shape[0])}
-trainers_best['all'] = io.read_pickled_object(os.path.join(data_path, 'processed', 'Kang_fullbest_trainer.pickle'))
+# trainers_best['all'] = io.read_pickled_object(os.path.join(data_path, 'processed', 'Kang_fullbest_trainer.pickle'))
 
 test_cells = open(os.path.join(data_path, 'processed', 'data_split_barcodes', 'kang_test.txt')).read().splitlines()
 test_conds = sorted(tf_adata.obs.loc[test_cells, 'condition'].unique())
@@ -144,54 +144,54 @@ def forward_nobias(mod, X_in, covariates_idx, expr,
 
 def forward_noadj(mod, X_in, covariates_idx, expr):
     """Sets signaling network weights to 0 during forward pass"""
-    X_full = mod.input_layer(X_in) 
+    mod.eval()
+    with torch.inference_mode():
+        X_full = mod.input_layer(X_in) 
 
-    bias_cats = torch.zeros_like(X_full.T, device = mod.signaling_network.device, dtype = mod.signaling_network.dtype)
-    for cat_group_idx in range(covariates_idx.shape[1]):
-        cat_group = mod.signaling_network._cat_group_idx[cat_group_idx]
-        bias_cats += mod.signaling_network.cat_embeddings[cat_group](covariates_idx[:,cat_group_idx]).T
-    bias_mu, bias_log_sigma_squared, bias_global = mod.signaling_network.vae(expr)
-    bias_global.data.masked_fill_(mask = mod.signaling_network.bias_mask.T.expand(bias_global.shape[0], -1), value = 0.0) # apply bias mask
-    bias_tot = bias_global.T + bias_cats
+        bias_cats = torch.zeros_like(X_full.T, device = mod.signaling_network.device, dtype = mod.signaling_network.dtype)
+        for cat_group_idx in range(covariates_idx.shape[1]):
+            cat_group = mod.signaling_network._cat_group_idx[cat_group_idx]
+            bias_cats += mod.signaling_network.cat_embeddings[cat_group](covariates_idx[:,cat_group_idx]).T
+        bias_mu, bias_log_sigma_squared, bias_global = mod.signaling_network.vae(expr)
+        bias_global.data.masked_fill_(mask = mod.signaling_network.bias_mask.T.expand(bias_global.shape[0], -1), value = 0.0) # apply bias mask
+        bias_tot = bias_global.T + bias_cats
 
-    X_bias = X_full.T + bias_tot
-    X_new = torch.zeros_like(X_bias) #initialize hidden state values at 0
-    for t in range(mod.signaling_network.bionet_params['max_steps']): # like an RNN, updating from previous time step
-        X_old = X_new
-        X_new = torch.mm(torch.zeros(mod.signaling_network.weights.shape, 
-                                     device = mod.signaling_network.device, 
-                                    requires_grad=False), 
-                         X_new) # scale matrix by edge weights
-        X_new = X_new + X_bias  # add original values and bias       
-        X_new = mod.signaling_network.activation(X_new, mod.signaling_network.bionet_params['leak'])
+        X_bias = X_full.T + bias_tot
+        X_new = torch.zeros_like(X_bias) 
+#         mod.signaling_network.weights.data.fill_(0) # set signaling network weights to 0
+        for t in range(mod.signaling_network.bionet_params['max_steps']): 
+            X_old = X_new
+#             X_new = torch.mm(mod.signaling_network.weights,X_new) # scale matrix by edge weights
+            X_new = torch.mm(
+                torch.zeros(mod.signaling_network.weights.shape,
+                            device = mod.signaling_network.device, 
+                            requires_grad=False),
+                X_new
+                            )
+            X_new = X_new + X_bias  # add original values and bias       
+            X_new = mod.signaling_network.activation(X_new, mod.signaling_network.bionet_params['leak'])
 
-    Y_full = X_new.T
+        Y_full = X_new.T
 
-    Y_hat = mod.output_layer(Y_full)
-    
-    del Y_full, bias_cats, bias_mu, bias_log_sigma_squared, bias_global, bias_tot, X_bias, X_new, X_old
-    del X_in, covariates_idx, expr
-    torch.cuda.empty_cache() 
-    gc.collect()
+        Y_hat = mod.output_layer(Y_full)
+
+        del Y_full, bias_cats, bias_mu, bias_log_sigma_squared, bias_global, bias_tot, X_bias, X_new, X_old
+        del X_in, covariates_idx, expr
+        torch.cuda.empty_cache() 
+        gc.collect()
     return Y_hat
 
 
-# In[84]:
-
-
-torch.zeros(3,2, requires_grad = False)
-
-
-# In[ ]:
-
-
-
-
-
-# In[ ]:
-
-
-
+# if torch.all(mod.signaling_network.weights == 0):  # Skip computation if weights are zero
+#     for t in range(mod.signaling_network.bionet_params['max_steps']):
+#         X_new = X_new + X_bias  # Only add bias
+#         X_new = mod.signaling_network.activation(X_new, mod.signaling_network.bionet_params['leak'])
+# else:
+#     for t in range(mod.signaling_network.bionet_params['max_steps']): 
+#         X_old = X_new
+#         X_new = torch.mm(mod.signaling_network.weights, X_new)  # scale matrix by edge weights
+#         X_new = X_new + X_bias  # add original values and bias       
+#         X_new = mod.signaling_network.activation(X_new, mod.signaling_network.bionet_params['leak'])
 
 
 # In[67]:
@@ -278,27 +278,24 @@ for k, trainer_k in trainers_best.items():
             json.dump(res_all, json_file, indent=4)
 
 
-# In[68]:
+# In[151]:
 
 
+with open(os.path.join(data_path, 'processed', author + '_remove_components.json'), 'r') as json_file:
+    res_all = json.load(json_file)
 
 
-
-# In[82]:
-
-
-fig, ax = plt.subplots()
-
-viz_df = pd.DataFrame(res_all[counterfactual_type])
-viz_df = viz_df.melt(id_vars='fold', var_name='Prediction Type', value_name='EMD Loss')
-sns.boxplot(data = viz_df, x = 'Prediction Type', y = 'EMD Loss', ax = ax, zorder = 0)
-sns.scatterplot(data = viz_df, x = 'Prediction Type', y = 'EMD Loss', color = 'gray', ax = ax)
-ax.set_xticklabels(ax.get_xticklabels(), rotation=30, ha='center')
-("")
+# In[152]:
 
 
-# In[ ]:
+fig, ax = plt.subplots(ncols = 2, figsize = (10,5))
 
-
-
+for i, counterfactual_type in enumerate(['in_distribution', 'opposite']):
+    viz_df = pd.DataFrame(res_all[counterfactual_type])
+    viz_df = viz_df.melt(id_vars='fold', var_name='Prediction Type', value_name='EMD Loss')
+    sns.boxplot(data = viz_df, x = 'Prediction Type', y = 'EMD Loss', ax = ax[i], zorder = 0)
+    sns.scatterplot(data = viz_df, x = 'Prediction Type', y = 'EMD Loss', color = 'gray', ax = ax[i])
+    ax[i].set_xticklabels(ax[i].get_xticklabels(), rotation=30, ha='center')
+    ax[i].set_title(counterfactual_type)
+    ("")
 
