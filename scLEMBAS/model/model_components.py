@@ -12,6 +12,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+from ..utilities import set_seeds
+
 class ProjectInput(nn.Module):
     """Generate all nodes for the signaling network and linearly scale input ligand values by NN parameters."""
     def __init__(self, node_idx_map: Dict[str, int], input_labels: np.array, projection_amplitude: Union[int, float] = 1, dtype: torch.dtype=torch.float32, device: str = 'cpu'):
@@ -280,6 +282,7 @@ class GaussianVariationalEncoder(nn.Module):
                  activation_fn: nn.Module | None = nn.LeakyReLU,
                  dtype: torch.dtype=torch.float32,
                  device: str = 'cpu', 
+                 seed: int = 888
                 ):
         """Initialize variational decoder.
 
@@ -310,11 +313,14 @@ class GaussianVariationalEncoder(nn.Module):
             datatype to store values in torch, by default torch.float32
         device : str, optional
             whether to use gpu ("cuda") or cpu ("cpu"), by default "cpu"
+        seed : int
+            random seed for torch and numpy operations, by default 888
         """
         super().__init__()
 
         self.dtype = dtype
         self.device = device
+        self.seed = seed
         
         # self.z_transformation = _identity # z has gaussian distribution
         # self.var_activation = torch.exp # ensure positivity of variance
@@ -329,7 +335,9 @@ class GaussianVariationalEncoder(nn.Module):
         else:
             layers_dim = [n_features] + n_hidden_nodes
             n_encode_in, n_encode_out = n_hidden_nodes[-1], n_latent
-
+        
+        if self.seed:
+            set_seeds(self.seed)
         self.hidden_layers = FCLayers(layers = layers_dim,
                                       batch_momentum = batch_momentum,
                                       layer_norm = layer_norm,
@@ -361,6 +369,7 @@ class GaussianVariationalEncoder(nn.Module):
         # z = self.z_transformation(dist.rsample())
         
         # reparameterization 
+        set_seeds(self.seed)
         epsilon = torch.randn_like(z_mu, dtype = self.dtype, device = self.device)
         z = z_mu + z_sigma*epsilon #self.z_transformation(z_m + z_sigma*epsilon)
 

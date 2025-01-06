@@ -664,7 +664,8 @@ class BioNetSC(BioNetCat):
                                    layer_norm = self.bionet_params['vae_layer_norm'], 
                                    dropout_rate = self.bionet_params['vae_dropout_rate'], 
                                    activation_fn = self.bionet_params['vae_activation_fn'], 
-                                              device = self.device, dtype = self.dtype
+                                              device = self.device, dtype = self.dtype, 
+                                              seed = seed
                                   )
 
     def initialize_weight_values(self):
