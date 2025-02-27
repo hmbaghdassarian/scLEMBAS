@@ -780,8 +780,8 @@ class TrainSC(TrainBase):
         
         
         """
-        if not (type(mod.signaling_network) is BioNetSC):
-            raise ValueError('You must use the correct training class to match the BioNet class.')
+#         if not (type(mod.signaling_network) is BioNetSC):
+#             raise ValueError('You must use the correct training class to match the BioNet class.')
 
         super().__init__(mod = mod, 
                            prediction_optimizer = prediction_optimizer, 

@@ -633,8 +633,7 @@ class BioNetSC(BioNetCat):
     """Builds the RNN on the signaling network topology, accounting for single-cell inputs."""
     
     DEFAULT_PARAMETERS = {**BioNetCat.DEFAULT_PARAMETERS, 
-                          **GaussianVariationalEncoder.DEFAULT_HYPER_PARAMS}
-                          
+                          **GaussianVariationalEncoder.DEFAULT_HYPER_PARAMS}                          
 
     def __init__(self, edge_list: np.array, 
                  edge_MOA: np.array, 
@@ -740,6 +739,7 @@ class BioNetSC(BioNetCat):
         for t in range(self.bionet_params['max_steps']): # like an RNN, updating from previous time step
             X_old = X_new
             X_new = torch.mm(self.weights, X_new) # scale matrix by edge weights
+            
             X_new = X_new + X_bias  # add original values and bias       
             X_new = self.activation(X_new, self.bionet_params['leak'])
             

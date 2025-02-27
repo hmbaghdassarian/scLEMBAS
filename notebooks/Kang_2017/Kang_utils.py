@@ -4,8 +4,19 @@
 import torch
 import scanpy as sc
 import pandas as pd
+import numpy as np
 
-from typing import List, Literal
+from sklearn.metrics import normalized_mutual_info_score
+
+from geomloss import SamplesLoss
+
+from typing import List, Literal, Optional
+
+import sys
+import os
+sclembas = '/home/hmbaghda/Projects/scLEMBAS'
+sys.path.insert(1, os.path.join(sclembas))
+from scLEMBAS.preprocess import embed_tf_activity
 
 
 rev_stim = {'STIM': 'CTRL', 'CTRL': 'STIM'}
@@ -15,7 +26,11 @@ rev_stim_map = {v:k for k,v in stim_map.items()}
 
 def get_prediction(mod, tf_adata: List[str], 
                    counterfactual_type: Literal['in_distribution', 'opposite'], cf_map, 
-                   train_cells_all, test_conds, return_bias: bool = False):
+                   train_cells_all, test_conds, 
+                   return_bias: bool = False,
+                  remove_type: Literal['none', 'global_bias', 'categorical_bias', 'total_bias', 'adj'] = 'none', 
+                  return_loss: bool = True, 
+                  test_cells: Optional[List[str]] = None):
     """Get prediction from a model given a counterfactual
 
     Parameters
@@ -35,17 +50,32 @@ def get_prediction(mod, tf_adata: List[str],
         cell type^stimulation to predict
     return_bias : bool, optional
         whether to return bias terms (True) or prediction (False), by default False
+    remove_type : Literal['none', 'global_bias', 'categorical_bias', 'total_bias', 'adj'], optional
+        which components of bias/adj matrix to include in the prediction, by default 'all_bias'; 
+        only incorporated if return_bias = False
+        any bias component includes the full adjacency matrix
+        - 'none': includes all components in the prediction
+        - 'categorical_bias': includes global but excludes categorical bias in the prediction
+        - 'global_bias': includes categorical but excludes global bias in the prediction
+        - 'total_bias': does not include bias in the prediction (just input and signaling weights)
+        - 'adj': includes all bias but sets signaling weights to 0
+    return_loss : bool
+        whether to calculate the prediction loss with actual test data, by default True
+    test_cells : 
+        the list of test cell barcodes, necessary if return_loss = True
     """
+    
+    # ----------------SETUP----------------
     cov_idx_map = dict(zip(mod.signaling_network.covariates['seurat_annotations'], 
                            mod.signaling_network.covariates_idx['seurat_annotations']))
     cov_rev_map = {v:k for k,v in cov_idx_map.items()}
-    
-    
-    full_expr, full_X, full_covariates = None, None, None
 
+
+    full_expr, full_X, full_covariates = None, None, None
+            
+    
     for cond in test_conds:
         stim, ct = cond.split('^')
-
         if counterfactual_type == 'opposite':
             train_cells_cond = tf_adata.obs[(tf_adata.obs['condition'] == rev_stim[stim] + '^' + ct)].index.tolist()
             if len(set(train_cells_cond).difference(train_cells_all)) != 0:
@@ -77,39 +107,103 @@ def get_prediction(mod, tf_adata: List[str],
             full_covariates = torch.cat((full_covariates, covariates_idx_test), dim = 0)
             
             
-    mod.eval()
-    with torch.inference_mode():
-        y_predicted, Y_full, biases = mod(X_in = full_X, covariates_idx = full_covariates, expr = full_expr)
-        if return_bias:
-            bias_global, bias_mu, bias_log_sigma_squared = biases
-            bias_sigma = torch.exp(bias_log_sigma_squared/2.) + mod.signaling_network.vae.var_min
-
-            # add in categorical information
-            bias_cats = torch.zeros_like(bias_global.T, device = mod.device, dtype = mod.dtype)
-            for cat_group_idx in range(full_covariates.shape[1]):
-                cat_group = mod.signaling_network._cat_group_idx[cat_group_idx]
-                mod.signaling_network.cat_embeddings[cat_group].weight.data.masked_fill_(mask = mod.signaling_network.cat_embeddings_mask[cat_group], 
-                                                                            value = 0.0)
-                bias_cats += mod.signaling_network.cat_embeddings[cat_group](full_covariates[:,cat_group_idx]).T
-            bias_tot = bias_global.T + bias_cats
-            
-            obs = pd.DataFrame(full_covariates.detach().cpu().numpy())
-            obs.columns = ['seurat_annotations']
-            obs.seurat_annotations = obs.seurat_annotations.map(cov_rev_map)
-            
-            return bias_global, bias_mu, bias_sigma, bias_cats, bias_tot, obs
-        
+    # metadata setup
     obs = pd.DataFrame(full_covariates.detach().cpu().numpy())
     obs.columns = ['seurat_annotations']
     obs.seurat_annotations = obs.seurat_annotations.map(cov_rev_map)
     obs['stim'] = pd.Series(full_X.detach().cpu().numpy().reshape(-1)).map(rev_stim_map)
     obs['condition'] = obs['stim'].astype(str) + '^' + obs['seurat_annotations'].astype(str)
-    
+
+    # ----------------FORWARD PASS----------------
+    X_in, covariates_idx, expr = full_X, full_covariates, full_expr
+    mod.eval()
+    with torch.inference_mode():
+        X_full = mod.input_layer(X_in) # input ligands to signaling network
+
+        bias_cats = torch.zeros_like(X_full.T, device = mod.signaling_network.device, dtype = mod.signaling_network.dtype)
+        # add categorical covariates
+        for cat_group_idx in range(covariates_idx.shape[1]):
+            cat_group = mod.signaling_network._cat_group_idx[cat_group_idx]
+            bias_cats += mod.signaling_network.cat_embeddings[cat_group](covariates_idx[:,cat_group_idx]).T
+
+        bias_mu, bias_log_sigma_squared, bias_global = mod.signaling_network.vae(expr)
+        bias_global.data.masked_fill_(mask = mod.signaling_network.bias_mask.T.expand(bias_global.shape[0], -1), value = 0.0) # apply bias mask
+
+        # this should be equivalent to dividing bias_tot by 0, but since we get out individual components 
+        # we should scale each individual component
+        if 'bias_tot_scaler' in mod.signaling_network.bionet_params:
+            bias_global /= mod.signaling_network.bionet_params['bias_tot_scaler']
+            bias_cats /= mod.signaling_network.bionet_params['bias_tot_scaler']
+
+        if return_bias:
+            bias_tot = bias_global.T + bias_cats
+            bias_sigma = torch.exp(bias_log_sigma_squared/2.) + mod.signaling_network.vae.var_min
+            return bias_global, bias_mu, bias_sigma, bias_cats, bias_tot, obs
+
+        if remove_type in ['none', 'adj']:
+            bias_tot = bias_global.T + bias_cats # include all biases
+        elif remove_type == 'categorical_bias':
+            bias_tot = bias_global.T # don't include categorical bias
+        elif remove_type == 'global_bias':
+            bias_tot = bias_cats # don't include global bias
+        elif remove_type == 'total_bias':
+            bias_tot = torch.zeros_like(X_full.T, device = mod.signaling_network.device, dtype = mod.signaling_network.dtype) # don't include bias    
+        else:
+            raise ValueError('Incorrect remove_type specified')
+
+        X_bias = X_full.T + bias_tot # this is the bias with the projection_amplitude included
+        X_new = torch.zeros_like(X_bias) #initialize hidden state values at 0
+
+        for t in range(mod.signaling_network.bionet_params['max_steps']): # like an RNN, updating from previous time step
+            X_old = X_new
+            
+            if remove_type == 'adj':
+                X_multiplier = torch.zeros(mod.signaling_network.weights.shape,
+                            device = mod.signaling_network.device, 
+                            requires_grad=False)
+            else:
+                X_multiplier = mod.signaling_network.weights
+                if 'signaling_weights_scaler' in mod.signaling_network.bionet_params: #DEV
+                    X_multiplier *= mod.signaling_network.bionet_params['signaling_weights_scaler']
+            
+            X_new = torch.mm(X_multiplier, X_new) # scale matrix by edge weights
+            X_new = X_new + X_bias  # add original values and bias       
+            X_new = mod.signaling_network.activation(X_new, mod.signaling_network.bionet_params['leak'])
+
+            if (t % 10 == 0) and (t > 20):
+                diff = torch.max(torch.abs(X_new - X_old))    
+                if diff.lt(mod.signaling_network.bionet_params['tolerance']):
+                    break
+
+        Y_full = X_new.T
+
+        y_predicted = mod.output_layer(Y_full)
+        
+    if return_loss:
+        if test_cells is None:
+            raise ValueError('Must provide the list of test cell barcodes')
+        tot_loss = 0
+        for cond in test_conds:
+            stim, ct = cond.split('^')
+
+            test_cells_cond = tf_adata.obs[(tf_adata.obs.index.isin(test_cells)) & (tf_adata.obs['condition'] == cond)].index.tolist()
+            y_test = mod.df_to_tensor(tf_adata.to_df().loc[test_cells_cond, :])  
+
+            loss_fn = SamplesLoss("sinkhorn", p=2, blur=0.05).to(mod.device)
+            tot_loss += loss_fn(y_predicted[obs[obs.condition == cond].index,:], y_test).detach().cpu().item() 
+    else:
+        tot_loss = None
+        
+
     y_predicted = pd.DataFrame(y_predicted.detach().cpu().numpy())
     y_predicted.columns = mod.y_out.columns
     tf_adata_predicted = sc.AnnData(X = y_predicted, obs = obs)
     
-    return tf_adata_predicted
+    del X_full, full_expr, full_X, full_covariates
+    del bias_mu, bias_log_sigma_squared, bias_global
+    del X_bias, X_old, X_new, Y_full
+
+    return tf_adata_predicted, tot_loss
 
 
 
@@ -133,3 +227,136 @@ def get_best_hyperparams(res,
                    (res.train_batch_size == best_hyperparams['train_batch_size'])]
     
     return best_emd_mean, best_hyperparams, best_emd
+
+
+def adata_dimviz_bias(adata, reduction_type, cat, subset_size = None, seed = 888):
+    viz_df = pd.DataFrame(adata.obsm['X_' + reduction_type])
+    viz_df = pd.concat([viz_df, pd.DataFrame(adata.obs[cat]).reset_index(drop = True)], ignore_index = True, axis = 1)
+
+    viz_df.columns = [reduction_type.upper() + str(i+1) for i in range(viz_df.shape[1])]
+    viz_df.columns = viz_df.columns[:-1].tolist() + [cat]
+    
+    nmi = normalized_mutual_info_score(adata.obs.leiden, adata.obs[cat])
+    
+    if subset_size is not None:
+        cell_prop = viz_df[cat].value_counts()/viz_df.shape[0]
+        index_to_keep = []
+        for cell_type in viz_df[cat].unique():
+            np.random.seed(seed)
+            index_to_keep += np.random.choice(viz_df[viz_df[cat] == cell_type].index, 
+                                              size = int(np.round(cell_prop.loc[cell_type]*subset_size)), 
+                                              replace = False).tolist()
+        viz_df = viz_df.loc[index_to_keep, :]
+    
+    return viz_df,nmi
+
+def adata_dimviz_prediction(adata, reduction_type, cats, max_condition_size = None, seed = 888):
+    viz_df = pd.DataFrame(adata.obsm['X_' + reduction_type])
+    for cat in cats:
+        viz_df = pd.concat([viz_df, pd.DataFrame(adata.obs[cat]).reset_index(drop = True)], ignore_index = True, axis = 1)
+    if reduction_type=='umap':
+        viz_df.columns = [reduction_type.upper() + str(i+1) for i in range(viz_df.shape[1])]
+    elif reduction_type=='pca':
+        viz_df.columns = [reduction_type.upper()[:-1] + str(i+1) for i in range(viz_df.shape[1])]
+    viz_df.columns = viz_df.columns[:-len(cats)].tolist() + cats
+    
+    if max_condition_size is not None:
+#         cell_prop = viz_df.condition.value_counts()/viz_df.shape[0]
+#         index_to_keep = []
+#         for cond in viz_df.condition.unique():
+#             np.random.seed(seed)
+#             index_to_keep += np.random.choice(viz_df[viz_df.condition == cond].index, 
+#                                               size = int(np.round(cell_prop.loc[cond]*subset_size)), 
+#                                               replace = False).tolist()
+#         viz_df = viz_df.loc[index_to_keep, :]
+        
+        
+        vc = viz_df.condition.value_counts()
+        subset_conds = vc[vc > max_condition_size].index.tolist()
+
+        drop_idx = []
+        for subset_cond in subset_conds: 
+            np.random.seed(seed)
+            drop_idx += list(np.random.choice(viz_df[viz_df.condition == subset_cond].index, 
+                             vc[subset_cond] - subset_size, 
+                            replace = False))
+        viz_df.drop(index = drop_idx, inplace = True)
+
+    
+    return viz_df
+
+
+def prepare_for_metrics(tf_adata, 
+                tf_adata_predicted, 
+                resolution,
+                calculation_type: Literal['embed', 'project'] = 'project',
+                n_neighbors: int = 15, 
+                run_umap = True, 
+                       ):
+    """Combine predictions with actual values and then recalculate neighbors/clusters. 
+    Project will project predictions to space calculated on actual values
+    Embed will jointly embed the actual and predicted values."""
+    
+
+    tf_adata_actual = tf_adata.copy()
+    tf_adata_actual.obs['batch'] = 'actual'
+
+    tf_adata_predicted = tf_adata_predicted.copy()
+    tf_adata_predicted.obs['batch'] = 'predicted'
+    
+    tf_adata_ = sc.concat([tf_adata_actual, tf_adata_predicted])
+    tf_adata_.obs['barcode'] = tf_adata_.obs.index.tolist()
+
+    if len(set(tf_adata_.obs_names)) < len(tf_adata_.obs_names):
+        tf_adata_.obs_names_make_unique()
+    
+    if calculation_type == 'project': # project the predicted data into the actual data space
+        # project new data into PCA space
+        pc_rank = tf_adata.uns["pca"]['pca_rank']
+        pca_mod = tf_adata.uns['pca']['pca_mod']
+        tf_adata_.obsm['X_pca'] = pca_mod.transform(tf_adata_.to_df().values)
+        tf_adata_.uns['pca'] = tf_adata.uns['pca'].copy()
+        
+        # neihgbors/clustering
+        embed_tf_activity(tf_adata = tf_adata_,
+                          scanpy_pca = None,
+                          cluster_col_name = 'new_TF_clusters',
+                          n_components = None,
+                          pc_rank = None,
+                          resolution = resolution,
+                          n_neighbors = n_neighbors,
+                          nmi_label = None,
+                          run_pca = False, 
+                          run_umap = False, 
+                          cluster_data = True)
+        
+        # project from PCA space into UMAP space
+        if run_umap:
+            from scanpy.tools._utils import _choose_representation
+            from scanpy._utils import NeighborsView
+            
+            neighbors = NeighborsView(tf_adata_, 'neighbors')
+            X_pca = _choose_representation(
+                tf_adata_,
+                use_rep=neighbors['params'].get("use_rep", None),
+                n_pcs=neighbors['params'].get("n_pcs", None),
+                silent=True,
+            )
+
+            tf_adata_.obsm['X_umap'] = tf_adata_actual.uns['umap']['umap_mod'].transform(X_pca)
+            tf_adata_.uns['umap'] = tf_adata_actual.uns['umap'].copy()
+        
+
+    elif calculation_type == 'embed': # embed the combined data again
+        embed_tf_activity(tf_adata = tf_adata_,
+                          scanpy_pca = True,
+                          cluster_col_name = 'new_TF_clusters',
+                          n_components = 50,
+                          pc_rank = 'automate',
+                          resolution = resolution,
+                          n_neighbors = n_neighbors,
+                          nmi_label = None,
+                          run_pca = True, 
+                          run_umap = run_umap, 
+                         cluster_data = True)
+    return tf_adata_
