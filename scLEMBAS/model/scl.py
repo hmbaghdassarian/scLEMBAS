@@ -3,6 +3,7 @@ Constructs the full LEMBAS model.
 """
 from typing import List, Dict, Union, Annotated, Optional, Any
 from annotated_types import Ge
+import itertools
 
 import pandas as pd
 import numpy as np
@@ -103,10 +104,15 @@ class SignalingModel(torch.nn.Module):
         self.seed = seed
         self._gradient_seed_counter = 0
         self.projection_amplitude_out = projection_amplitude_out
+        
+        input_combs = itertools.combinations([X_in, y_out, expr], 2)
+        for comb in input_combs:
+            if (comb[0].index != comb[1].index).any():
+                raise ValueError('The X, y, and expr inputs do not have the same samples')
+        del input_combs
 
         # creates self.node_idx_map
         edge_list, edge_MOA = self.parse_network(net, ban_list, weight_label, source_label, target_label)
-
 
         ## filter for nodes in the network, sorting in alphabetical order (as node_labels and node_idx_map is)
 #         self.X_in = X_in.loc[:, np.intersect1d(X_in.columns.values, node_labels)]
@@ -116,6 +122,7 @@ class SignalingModel(torch.nn.Module):
         if not rand_y: 
             self.y_out = y_out[sorted([col for col in self.node_idx_map if col in y_out.columns], key=self.node_idx_map.get)]
         else:
+            raise ValueError('make sure this is functioning as expected')
             self.y_out = y_out
         self.expr = expr
 

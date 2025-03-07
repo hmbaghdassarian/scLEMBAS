@@ -128,10 +128,13 @@ def get_prediction(mod, tf_adata: List[str],
 
         bias_mu, bias_log_sigma_squared, bias_global = mod.signaling_network.vae(expr)
         bias_global.data.masked_fill_(mask = mod.signaling_network.bias_mask.T.expand(bias_global.shape[0], -1), value = 0.0) # apply bias mask
+        
+        if 'bias_global_scaler' in mod.signaling_network.bionet_params:
+            bias_global /= mod.signaling_network.bionet_params['bias_global_scaler']
 
-        # this should be equivalent to dividing bias_tot by 0, but since we get out individual components 
+        # this is equivalent to dividing bias_tot by the scalers, but since we get out individual components 
         # we should scale each individual component
-        if 'bias_tot_scaler' in mod.signaling_network.bionet_params:
+        elif 'bias_tot_scaler' in mod.signaling_network.bionet_params:
             bias_global /= mod.signaling_network.bionet_params['bias_tot_scaler']
             bias_cats /= mod.signaling_network.bionet_params['bias_tot_scaler']
 
@@ -156,17 +159,18 @@ def get_prediction(mod, tf_adata: List[str],
 
         for t in range(mod.signaling_network.bionet_params['max_steps']): # like an RNN, updating from previous time step
             X_old = X_new
-            
+
             if remove_type == 'adj':
-                X_multiplier = torch.zeros(mod.signaling_network.weights.shape,
+                X_new = torch.mm(torch.zeros(mod.signaling_network.weights.shape,
                             device = mod.signaling_network.device, 
-                            requires_grad=False)
+                            requires_grad=False), X_new)
             else:
-                X_multiplier = mod.signaling_network.weights
                 if 'signaling_weights_scaler' in mod.signaling_network.bionet_params: #DEV
-                    X_multiplier *= mod.signaling_network.bionet_params['signaling_weights_scaler']
-            
-            X_new = torch.mm(X_multiplier, X_new) # scale matrix by edge weights
+                     X_new = torch.mm(mod.signaling_network.weights*mod.signaling_network.bionet_params['signaling_weights_scaler'],
+                                      X_new) # scale matrix by edge weights
+                else:
+                    X_new = torch.mm(mod.signaling_network.weights, X_new) # scale matrix by edge weights
+
             X_new = X_new + X_bias  # add original values and bias       
             X_new = mod.signaling_network.activation(X_new, mod.signaling_network.bionet_params['leak'])
 
@@ -178,6 +182,17 @@ def get_prediction(mod, tf_adata: List[str],
         Y_full = X_new.T
 
         y_predicted = mod.output_layer(Y_full)
+        
+    if remove_type == 'none':
+        consistent_forward = True
+        y_predicted_, Y_full_, biases_ = mod(X_in, covariates_idx, expr)
+        for tt_1, tt_2 in zip([y_predicted, Y_full, bias_global, bias_mu, bias_log_sigma_squared], 
+                              [y_predicted_, Y_full_, *biases_]):
+            if not torch.equal(tt_1, tt_2):
+                consistent_forward = False
+        if not consistent_forward:
+            raise ValueError('Prediction here does not match forward pass')
+        del y_predicted_, Y_full_, biases_
         
     if return_loss:
         if test_cells is None:
@@ -193,8 +208,7 @@ def get_prediction(mod, tf_adata: List[str],
             tot_loss += loss_fn(y_predicted[obs[obs.condition == cond].index,:], y_test).detach().cpu().item() 
     else:
         tot_loss = None
-        
-
+      
     y_predicted = pd.DataFrame(y_predicted.detach().cpu().numpy())
     y_predicted.columns = mod.y_out.columns
     tf_adata_predicted = sc.AnnData(X = y_predicted, obs = obs)

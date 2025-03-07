@@ -135,7 +135,7 @@ class TrainBase:
                 - '<param>_lambda_L2' : L2 regularization penalty term for most of the model weights and biases. Note, recommend setting bn_bias_lambda_l2 to 0 when using TrainSC/BioNetSC singce the bias term is regularized by the KL divergence instead. 
                 - 'moa_lambda_L1' : L1 regularization penalty term for incorrect interaction mechanism of action (inhibiting/stimulating)
                 - 'ligand_lambda_L2' : DEPRECATED, DO NOT ADD KEY/VALUE PAIR. L2 regularization penalty term for ligand biases. 
-                - 'uniform_lambda_L2' : L2 regularization penalty term for a uniform distribution fo the RNN adjacency matrix weight values
+                - 'uniform_lambda_L2' : L2 regularization penalty term for a uniform distribution for the node activity output
                 - 'uniform_max' : max value of uniform distribution
                 - 'uniform_min' : min value of uniform distribution
                 - 'vae_lambda_l2': L2 regularization to weights and biases of linear layer of the VAE
@@ -474,7 +474,6 @@ class TrainSimple(TrainBase):
                 torch.cuda.empty_cache()
                 
             self.lr_scheduler.step()
-
             # test/validation
             if self.track_validation or self.track_test:
                 self.mod.eval()
@@ -518,17 +517,31 @@ class TrainSimple(TrainBase):
             # sv += [np.mean(loss_val_all), np.mean(pearson_val_all)] if self.track_validation else []
 
             # self.stats_df.loc[e, :] = sv
-            
-            if e % (self.hyper_params['max_epochs']/100) == 0:
+                    
+            if e % (self.hyper_params['max_epochs']/100) == 0 or e == self.hyper_params['max_epochs']:
                 param_names = []
                 for name, param in self.mod.named_parameters():
-                    if torch.isnan(param).any():
+                    if torch.isnan(param).any() or torch.isinf(param).any():
                         param_names.append(name)
                 if len(param_names) > 0:
-                    log_error = 'NaN values found in model parameters at epoch {}'.format(e)
+                    log_error = 'NaN/inf values found in model parameters at epoch {}'.format(e)
                     log_error += ' for layers ' + ', '.join(param_names)
                     logging.error(log_error)
                     raise ValueError('NaN values found in model parameters at epoch {}'.format(e))
+                
+                # masks implemented correctly
+                correct_masking = True
+                mask_coords = torch.nonzero(self.mod.signaling_network.mask.detach())
+                if not (self.mod.signaling_network.weights.detach()[mask_coords[:, 0], mask_coords[:, 1]] == 0).all():
+                    correct_masking = False                    
+                mask_coords = torch.nonzero(self.mod.signaling_network.bias_mask.detach())
+                if not (self.bias_global.detach()[mask_coords[:, 0], mask_coords[:, 1]] == 0).all():
+                    correct_masking = False
+                if not correct_masking:
+                    log_error = 'Masking is not being implemented correctly'
+                    logging.error(log_error)
+                    raise ValueError(log_error)
+                    
                 if verbose:
                     self.print_stats(e)
             if np.logical_and(e % self.hyper_params['reset_optimizer_epoch'] == 0, e>0):
@@ -712,16 +725,33 @@ class TrainCat(TrainBase):
             # sv += [np.mean(loss_val_all), np.mean(pearson_val_all)] if self.track_validation else []
             # self.stats_df.loc[e, :] = sv
 
-            if e % (self.hyper_params['max_epochs']/100) == 0:
+                    
+            if e % (self.hyper_params['max_epochs']/100) == 0 or e == self.hyper_params['max_epochs']:
+                # exploding/vanishing gradients
                 param_names = []
                 for name, param in self.mod.named_parameters():
-                    if torch.isnan(param).any():
+                    if torch.isnan(param).any() or torch.isinf(param).any():
                         param_names.append(name)
                 if len(param_names) > 0:
-                    log_error = 'NaN values found in model parameters at epoch {}'.format(e)
+                    log_error = 'NaN/inf values found in model parameters at epoch {}'.format(e)
                     log_error += ' for layers ' + ', '.join(param_names)
                     logging.error(log_error)
                     raise ValueError('NaN values found in model parameters at epoch {}'.format(e))
+                
+                # masks implemented correctly
+                correct_masking = True
+                for idx, cat_group in enumerate(self.mod.signaling_network.cat_embeddings.keys()):
+                    mask_coords = torch.nonzero(self.mod.signaling_network.cat_embeddings_mask[cat_group].detach())
+                    embedding_vals = self.mod.signaling_network.cat_embeddings[cat_group].weight.detach()
+                    if not (embedding_vals[mask_coords[:, 0], mask_coords[:, 1]] == 0).all():
+                        correct_masking = False
+                mask_coords = torch.nonzero(self.mod.signaling_network.mask.detach())
+                if not (self.mod.signaling_network.weights.detach()[mask_coords[:, 0], mask_coords[:, 1]] == 0).all():
+                    correct_masking = False
+                if not correct_masking:
+                    log_error = 'Masking is not being implemented correctly'
+                    logging.error(log_error)
+                    raise ValueError(log_error)
                 if verbose:
                     self.print_stats(e)
 
@@ -1034,16 +1064,36 @@ class TrainSC(TrainBase):
                             self.stats['test'] = np.vstack((self.stats['test'], np.array([e +1, batch, loss_test])))
                             del y_pred_test, _
 
-            if e % (self.hyper_params['max_epochs']/100) == 0:
+            if e % (self.hyper_params['max_epochs']/100) == 0 or e == self.hyper_params['max_epochs']:
+                # vanishing/exploding gradients
                 param_names = []
                 for name, param in self.mod.named_parameters():
-                    if torch.isnan(param).any():
+                    if torch.isnan(param).any() or torch.isinf(param).any():
                         param_names.append(name)
                 if len(param_names) > 0:
-                    log_error = 'NaN values found in model parameters at epoch {}'.format(e)
+                    log_error = 'NaN/inf values found in model parameters at epoch {}'.format(e)
                     log_error += ' for layers ' + ', '.join(param_names)
                     logging.error(log_error)
                     raise ValueError(log_error)
+                    
+                # masks implemented correctly
+                correct_masking = True
+                for idx, cat_group in enumerate(self.mod.signaling_network.cat_embeddings.keys()):
+                    mask_coords = torch.nonzero(self.mod.signaling_network.cat_embeddings_mask[cat_group].detach())
+                    embedding_vals = self.mod.signaling_network.cat_embeddings[cat_group].weight.detach()
+                    if not (embedding_vals[mask_coords[:, 0], mask_coords[:, 1]] == 0).all():
+                        correct_masking = False
+                mask_coords = torch.nonzero(self.mod.signaling_network.mask.detach())
+                if not (self.mod.signaling_network.weights.detach()[mask_coords[:, 0], mask_coords[:, 1]] == 0).all():
+                    correct_masking = False
+                mask_coords = torch.nonzero(self.mod.signaling_network.bias_mask.T.expand(bias_global.shape[0], -1))
+                if not (bias_global.detach()[mask_coords[:, 0], mask_coords[:, 1]] == 0).all():
+                    correct_masking = False
+                if not correct_masking:
+                    log_error = 'Masking is not being implemented correctly'
+                    logging.error(log_error)
+                    raise ValueError(log_error)
+                    
                 if verbose:
                     self.print_stats(e)
 

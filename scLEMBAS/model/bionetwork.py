@@ -558,6 +558,7 @@ class BioNetCat(BioNetBase):
         ############################
         
         # embed the categorical data
+        set_seeds(self.seed)
         self.cat_embeddings = nn.ModuleDict(
                         {
                             covariate_cat: nn.Embedding(num_embeddings = len(covariate_cat_map), 
@@ -577,7 +578,7 @@ class BioNetCat(BioNetBase):
 #         self.bias_global.data.masked_fill_(mask = self.bias_mask, value = 0.0)
 
         for idx, cat_group in enumerate(self.cat_embeddings.keys()):
-            self.cat_embeddings[cat_group].weight.data.masked_fill(mask = self.cat_embeddings_mask[cat_group], 
+            self.cat_embeddings[cat_group].weight.data.masked_fill_(mask = self.cat_embeddings_mask[cat_group], 
                                                                   value = 0.0)
     
 
@@ -694,7 +695,7 @@ class BioNetSC(BioNetCat):
         self.weights.data.masked_fill_(mask = self.mask, value = 0.0) # fill non-interacting edges with 0
 
         for idx, cat_group in enumerate(self.cat_embeddings.keys()):
-            self.cat_embeddings[cat_group].weight.data.masked_fill(mask = self.cat_embeddings_mask[cat_group], 
+            self.cat_embeddings[cat_group].weight.data.masked_fill_(mask = self.cat_embeddings_mask[cat_group], 
                                                                   value = 0.0)
             
         # bias global is still in the forward pass because it is generated during teh forward pass
