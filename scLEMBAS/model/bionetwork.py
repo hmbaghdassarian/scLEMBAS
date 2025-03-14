@@ -155,6 +155,8 @@ class BioNetBase(nn.Module):
         params = update_with_defaults(default_parameters = self.DEFAULT_PARAMETERS, 
                                       user_parameters = attributes, 
                                       additional_parameters = ['spectral_target'])
+        # spectral_target not in defaults because default is to calculate
+        # it as a function of 'tolerance' and 'target_steps'
         if 'spectral_target' not in params.keys():
             params['spectral_target'] = np.exp(np.log(params['tolerance'])/params['target_steps'])
     
@@ -186,7 +188,9 @@ class BioNetBase(nn.Module):
         """
 
         weight_values = self.initialize_weight_values()
-        weights = torch.zeros(self.n_network_nodes, self.n_network_nodes, dtype=self.dtype, device = self.device) # adjacency matrix
+        
+        # adjaceny matrix: rows are targets, columns are sources
+        weights = torch.zeros(self.n_network_nodes, self.n_network_nodes, dtype=self.dtype, device = self.device)
         weights[self.edge_list] = weight_values
         self.weights = nn.Parameter(weights)
         
@@ -432,7 +436,7 @@ class BioNetSimple(BioNetBase):
             the signaling network scaled by learned interaction weights. Shape is (samples x network nodes).
         """
         bias_tot = self.bias_global
-        X_bias = X_full.T + bias_tot # this is the bias with the projection_amplitude included
+        X_bias = X_full.T + bias_tot # this is the bias and ligand input combined
         X_new = torch.zeros_like(X_bias) #initialize hidden state values at 0
         
         for t in range(self.bionet_params['max_steps']): # like an RNN, updating from previous time step
@@ -613,7 +617,7 @@ class BioNetCat(BioNetBase):
     #             bias_tot += torch.matmul(one_hot, embedding)
         
         bias_tot = self.bias_global + bias_cats
-        X_bias = X_full.T + bias_tot # this is the bias with the projection_amplitude included
+        X_bias = X_full.T + bias_tot # this is the bias and ligand input combined
         X_new = torch.zeros_like(X_bias) #initialize hidden state values at 0
         
         for t in range(self.bionet_params['max_steps']): # like an RNN, updating from previous time step
@@ -734,7 +738,7 @@ class BioNetSC(BioNetCat):
         bias_global.data.masked_fill_(mask = self.bias_mask.T.expand(bias_global.shape[0], -1), value = 0.0) # apply bias mask
         
         bias_tot = bias_global.T + bias_cats
-        X_bias = X_full.T + bias_tot # this is the bias with the projection_amplitude included
+        X_bias = X_full.T + bias_tot # this is the bias and ligand input combined
         X_new = torch.zeros_like(X_bias) #initialize hidden state values at 0
         
         for t in range(self.bionet_params['max_steps']): # like an RNN, updating from previous time step

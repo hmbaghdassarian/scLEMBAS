@@ -196,7 +196,8 @@ def get_prediction(mod, tf_adata: List[str],
         
     if return_loss:
         if test_cells is None:
-            raise ValueError('Must provide the list of test cell barcodes')
+            # TODO: do not make test_cells an argument in the function, this line suffices
+            test_cells = tf_adata.obs[tf_adata.obs.condition.isin(test_conds)].index.tolist()
         tot_loss = 0
         for cond in test_conds:
             stim, ct = cond.split('^')
