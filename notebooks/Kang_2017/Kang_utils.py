@@ -1,5 +1,6 @@
 """Common functions used across multiple scripts"""
 
+import gc
 
 import torch
 import scanpy as sc
@@ -51,6 +52,7 @@ def get_prediction(mod, tf_adata: List[str],
     return_bias : bool, optional
         whether to return bias terms (True) or prediction (False), by default False
     remove_type : Literal['none', 'global_bias', 'categorical_bias', 'total_bias', 'adj'], optional
+        can be a string or a list of strings
         which components of bias/adj matrix to include in the prediction, by default 'all_bias'; 
         only incorporated if return_bias = False
         any bias component includes the full adjacency matrix
@@ -59,11 +61,27 @@ def get_prediction(mod, tf_adata: List[str],
         - 'global_bias': includes categorical but excludes global bias in the prediction
         - 'total_bias': does not include bias in the prediction (just input and signaling weights)
         - 'adj': includes all bias but sets signaling weights to 0
+        the only list of strings are combining either categorical or global bias with adj, since in these cases just removing one of the two bias components still leaves two components in the model, making it hard to decouple effects. 
+        
     return_loss : bool
         whether to calculate the prediction loss with actual test data, by default True
     test_cells : 
         the list of test cell barcodes, necessary if return_loss = True
     """
+    
+    # ----------------CHECKS----------------
+    if type(remove_type) != list:
+        remove_type = [remove_type]
+    if len(remove_type) not in [1,2]:
+        raise ValueError('Cannot remove more than two components at once')
+    if len(set(remove_type).difference(['none', 'global_bias', 'categorical_bias', 'total_bias', 'adj'])) > 0:
+        raise ValeuError('Incorrect remove_type specified')
+    if len(remove_type) == 2:
+        if sorted(remove_type) not in [['adj', 'categorical_bias'], ['adj', 'global_bias']]:
+            raise ValueError('Can only specify multiple remove types when ')
+    if remove_type != ['none'] and return_bias:
+        raise ValueError('Have not considered looking at the bias components without the full forward pass')
+
     
     # ----------------SETUP----------------
     cov_idx_map = dict(zip(mod.signaling_network.covariates['seurat_annotations'], 
@@ -72,8 +90,8 @@ def get_prediction(mod, tf_adata: List[str],
 
 
     full_expr, full_X, full_covariates = None, None, None
-            
-    
+
+
     for cond in test_conds:
         stim, ct = cond.split('^')
         if counterfactual_type == 'opposite':
@@ -105,8 +123,8 @@ def get_prediction(mod, tf_adata: List[str],
             full_covariates = covariates_idx_test
         else: 
             full_covariates = torch.cat((full_covariates, covariates_idx_test), dim = 0)
-            
-            
+
+
     # metadata setup
     obs = pd.DataFrame(full_covariates.detach().cpu().numpy())
     obs.columns = ['seurat_annotations']
@@ -128,7 +146,7 @@ def get_prediction(mod, tf_adata: List[str],
 
         bias_mu, bias_log_sigma_squared, bias_global = mod.signaling_network.vae(expr)
         bias_global.data.masked_fill_(mask = mod.signaling_network.bias_mask.T.expand(bias_global.shape[0], -1), value = 0.0) # apply bias mask
-        
+
         if 'bias_global_scaler' in mod.signaling_network.bionet_params:
             bias_global /= mod.signaling_network.bionet_params['bias_global_scaler']
 
@@ -143,13 +161,13 @@ def get_prediction(mod, tf_adata: List[str],
             bias_sigma = torch.exp(bias_log_sigma_squared/2.) + mod.signaling_network.vae.var_min
             return bias_global, bias_mu, bias_sigma, bias_cats, bias_tot, obs
 
-        if remove_type in ['none', 'adj']:
+        if remove_type == ['none'] or remove_type == ['adj']:
             bias_tot = bias_global.T + bias_cats # include all biases
-        elif remove_type == 'categorical_bias':
+        elif 'categorical_bias' in remove_type:
             bias_tot = bias_global.T # don't include categorical bias
-        elif remove_type == 'global_bias':
+        elif 'global_bias' in remove_type:
             bias_tot = bias_cats # don't include global bias
-        elif remove_type == 'total_bias':
+        elif remove_type == ['total_bias']:
             bias_tot = torch.zeros_like(X_full.T, device = mod.signaling_network.device, dtype = mod.signaling_network.dtype) # don't include bias    
         else:
             raise ValueError('Incorrect remove_type specified')
@@ -157,33 +175,40 @@ def get_prediction(mod, tf_adata: List[str],
         X_bias = X_full.T + bias_tot # this is the bias with the projection_amplitude included
         X_new = torch.zeros_like(X_bias) #initialize hidden state values at 0
 
-        for t in range(mod.signaling_network.bionet_params['max_steps']): # like an RNN, updating from previous time step
-            X_old = X_new
+        if 'adj' in remove_type: 
+            X_new = mod.signaling_network.activation(X_bias,
+                                                     mod.signaling_network.bionet_params['leak'])
+            # this is the equivalen of setting the signaling network weights to 0 in the 
+            # iteration below because this makes X_new = 0 at every element in the forward pass
 
-            if remove_type == 'adj':
-                X_new = torch.mm(torch.zeros(mod.signaling_network.weights.shape,
-                            device = mod.signaling_network.device, 
-                            requires_grad=False), X_new)
-            else:
+            # see commented out remove_type == 'adj' below for the equivalent
+        else:
+            for t in range(mod.signaling_network.bionet_params['max_steps']): # like an RNN, updating from previous time step
+                X_old = X_new
+
+    #             if remove_type == 'adj':
+    #                 X_new = torch.mm(torch.zeros(mod.signaling_network.weights.shape,
+    #                             device = mod.signaling_network.device, 
+    #                             requires_grad=False), X_new)
                 if 'signaling_weights_scaler' in mod.signaling_network.bionet_params: #DEV
                      X_new = torch.mm(mod.signaling_network.weights*mod.signaling_network.bionet_params['signaling_weights_scaler'],
                                       X_new) # scale matrix by edge weights
                 else:
                     X_new = torch.mm(mod.signaling_network.weights, X_new) # scale matrix by edge weights
 
-            X_new = X_new + X_bias  # add original values and bias       
-            X_new = mod.signaling_network.activation(X_new, mod.signaling_network.bionet_params['leak'])
+                X_new = X_new + X_bias  # add original values and bias       
+                X_new = mod.signaling_network.activation(X_new, mod.signaling_network.bionet_params['leak'])
 
-            if (t % 10 == 0) and (t > 20):
-                diff = torch.max(torch.abs(X_new - X_old))    
-                if diff.lt(mod.signaling_network.bionet_params['tolerance']):
-                    break
+                if (t % 10 == 0) and (t > 20):
+                    diff = torch.max(torch.abs(X_new - X_old))    
+                    if diff.lt(mod.signaling_network.bionet_params['tolerance']):
+                        break
 
         Y_full = X_new.T
 
         y_predicted = mod.output_layer(Y_full)
-        
-    if remove_type == 'none':
+
+    if remove_type == ['none']:
         consistent_forward = True
         y_predicted_, Y_full_, biases_ = mod(X_in, covariates_idx, expr)
         for tt_1, tt_2 in zip([y_predicted, Y_full, bias_global, bias_mu, bias_log_sigma_squared], 
@@ -193,7 +218,7 @@ def get_prediction(mod, tf_adata: List[str],
         if not consistent_forward:
             raise ValueError('Prediction here does not match forward pass')
         del y_predicted_, Y_full_, biases_
-        
+
     if return_loss:
         if test_cells is None:
             # TODO: do not make test_cells an argument in the function, this line suffices
@@ -209,14 +234,20 @@ def get_prediction(mod, tf_adata: List[str],
             tot_loss += loss_fn(y_predicted[obs[obs.condition == cond].index,:], y_test).detach().cpu().item() 
     else:
         tot_loss = None
-      
+
     y_predicted = pd.DataFrame(y_predicted.detach().cpu().numpy())
     y_predicted.columns = mod.y_out.columns
     tf_adata_predicted = sc.AnnData(X = y_predicted, obs = obs)
-    
+
     del X_full, full_expr, full_X, full_covariates
     del bias_mu, bias_log_sigma_squared, bias_global
-    del X_bias, X_old, X_new, Y_full
+    del X_bias, X_new, Y_full
+    if 'adj' not in remove_type:
+        del X_old
+
+    gc.collect()
+    torch.cuda.empty_cache()  # Clears the cached memory
+    torch.cuda.ipc_collect()
 
     return tf_adata_predicted, tot_loss
 

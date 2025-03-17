@@ -4,7 +4,6 @@
 # In[2]:
 
 
-
 import argparse
 
 def str_to_bool(value):
@@ -933,6 +932,12 @@ cf_map = {'in_distribution': train_cells}
 counterfactual_types = list(cf_map.keys()) + ['opposite']
 
 counterfactual_type = 'opposite'
+remove_components = ['none', 
+                         ['adj', 'categorical_bias'], 
+                         ['adj', 'global_bias'],
+                         'total_bias', 'adj',
+                         'categorical_bias',
+                         'global_bias']
 
 
 # In[177]:
@@ -942,7 +947,7 @@ counter = 0
 
 tf_res = {}
 loss_res = {}
-for remove_type in tqdm(['none', 'global_bias', 'categorical_bias', 'total_bias', 'adj']):
+for remove_type in tqdm(remove_components):
     tf_adata_predicted, tot_loss = get_prediction(mod = mod, 
                                                   tf_adata = tf_adata, 
                                                   counterfactual_type = counterfactual_type, 
@@ -954,6 +959,8 @@ for remove_type in tqdm(['none', 'global_bias', 'categorical_bias', 'total_bias'
                                                   return_loss = True, 
                                                  test_cells = test_cells, 
                                                  ) 
+    if type(remove_type) == list:
+        remove_type = '_'.join(remove_type)
     loss_res[remove_type] = tot_loss
 
 
@@ -996,7 +1003,9 @@ xtick_map = {'none': 'Full Model',
  'adj': 'Adjacency Matrix', 
  'total_bias': 'Total Bias', 
 'categorical_bias': 'Categorical Bias', 
-'global_bias': 'Global Bias'}
+'global_bias': 'Global Bias', 
+            'adj_categorical_bias': 'Adjacency Matrix and \n Categorical Bias', 
+            'adj_global_bias': 'Adjacency Matrix and \n Global Bias'}
 
 
 viz_df = loss_res.reset_index().rename(columns = {'index': 'Removed Model Component'})
@@ -1027,7 +1036,12 @@ tf_res_ = io.read_pickled_object(os.path.join(data_path, 'trash', fn + '_predict
 # In[184]:
 
 
-remove_components = ['none', 'global_bias', 'categorical_bias', 'total_bias', 'adj']
+remove_components = ['none', 
+                         ['adj', 'categorical_bias'], 
+                         ['adj', 'global_bias'],
+                         'total_bias', 'adj',
+                         'categorical_bias',
+                         'global_bias']
 cell_types = [tc.split('^')[1] for tc in test_conds]
 nrows = max(2, len(test_conds))
 ncols = len(remove_components)
@@ -1041,7 +1055,8 @@ counterfactual_type = 'opposite'
 fig, axes = plt.subplots(ncols = ncols, nrows = nrows, figsize = (5.1*ncols, 5.1*nrows))
 
 for j, remove_component in enumerate(remove_components):
-    
+    if type(remove_component) == list:
+        remove_component = '_'.join(remove_component)
     tf_res = tf_res_.copy()
     tf_adata_all = tf_res[remove_component]
     
@@ -1084,7 +1099,7 @@ for j, remove_component in enumerate(remove_components):
         else: 
             legend = False
         
-        if remove_component in ['global_bias', 'total_bias']:
+        if remove_component in ['global_bias', 'total_bias', 'adj_global_bias']:
             sns.scatterplot(data = viz_df_, x = 'PC1', y = 'PC2', hue = 'condition',
                             size = 'batch', sizes={"actual": 10, "predicted": 150}, 
                             style = 'batch', markers={"actual": '.', "predicted": '*'}, 
