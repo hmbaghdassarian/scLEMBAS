@@ -258,8 +258,9 @@ class SignalingModel(torch.nn.Module):
 
     def L2_reg(self,
                input_lambda_L2: Annotated[float, Ge(0)] = 0, 
-              bn_weights_lambda_l2: Annotated[float, Ge(0)] = 0, 
-              bn_bias_lambda_L2: Annotated[float, Ge(0)] = 0, 
+              bn_weights_lambda_L2: Annotated[float, Ge(0)] = 0, 
+              global_bias_lambda_L2: Optional[Annotated[float, Ge(0)]] = None, 
+              cat_bias_lambda_L2: Optional[Annotated[float, Ge(0)]] = None,
                bias_global = None,
               output_weights_lambda_L2: Annotated[float, Ge(0)] = 0, 
               output_bias_lambda_L2: Annotated[float, Ge(0)] = 0):
@@ -271,8 +272,8 @@ class SignalingModel(torch.nn.Module):
             the regularization parameter for the ProjectInput layer weights, by default 0 (no penalty)  
         bn_weights_lambda_l2 : Annotated[float, Ge(0)]
             the regularization parameter for the bionetwork layer weights, by default 0 (no penalty) 
-        bn_bias_lambda_L2 : Annotated[float, Ge(0)]
-            tthe regularization parameter for the bionetwork layer bias, by default 0 (no penalty)
+        global_bias_lambda_L2 : Annotated[float, Ge(0)]
+            tthe regularization parameter for the bionetwork layer bias (global if separated into global and categoriacl), by default 0 (no penalty)
         bias_global : 
             the global bias vector, only to be used with BioNetSC as it is not a stored parameter
         output_weights_lambda_L2 : Annotated[float, Ge(0)]
@@ -287,8 +288,9 @@ class SignalingModel(torch.nn.Module):
         """
         input_loss = self.input_layer.L2_reg(input_lambda_L2) 
         sn_loss = self.signaling_network.L2_reg(bias_global = bias_global, 
-                                                weights_lambda_L2 = bn_weights_lambda_l2, 
-                                                bias_lambda_L2 = bn_bias_lambda_L2) 
+                                                weights_lambda_L2 = bn_weights_lambda_L2, 
+                                                global_bias_lambda_L2 = global_bias_lambda_L2, 
+                                                cat_bias_lambda_L2 = cat_bias_lambda_L2) 
         output_loss = self.output_layer.L2_reg(weights_lambda_L2 = output_weights_lambda_L2, 
                                                bias_lambda_L2 = output_bias_lambda_L2)
         return input_loss, sn_loss, output_loss

@@ -84,7 +84,8 @@ class TrainBase:
                 'lr_decay': 0.9, 'lr_restart_factor': 1, 'warmup_epochs': 500}
     OTHER_PARAMS = {'train_batch_size': 512, 'test_batch_size': 512, 'validation_batch_size': 512, 
                     'network_noise_scale': 10, 'gradient_noise_scale': 1e-9}
-    REGULARIZATION_PARAMS = {'input_lambda_L2': 1e-6, 'bn_weights_lambda_l2': 1e-6, 'bn_bias_lambda_L2': 1e-6, 
+    REGULARIZATION_PARAMS = {'input_lambda_L2': 0, # assuming frozen weights
+                             'bn_weights_lambda_L2': 1e-6,  
                              'output_weights_lambda_L2': 1e-6,
                              'output_bias_lambda_L2': 1e-6,
                              'moa_lambda_L1': 0.1, #'ligand_lambda_L2': 1e-5, 
@@ -225,15 +226,15 @@ class TrainBase:
 #                 self._X_val = self.mod.df_to_tensor(self.X_val)
 #                 self._y_val = self.mod.df_to_tensor(self.y_val)
         self._initialize_tracking()
-
-    def _initialize_tracking(self):
+    def _initialize_tracking(self):  
         self._stats_cols = ['epoch', 'batch_index', 
-                            'learning_rate', 'iter_time', 'spectral_radius', #'eig_sigma', 
-                         'n_moa_violations', 
-                         'train_loss_total', 'train_loss_prediction', 'train_pearson', 
-                        'sign_reg_loss', 'stability_reg_loss', 'uniform_reg_loss', 
-                         'input_param_reg_loss', 'sn_param_reg_loss', 'output_param_reg_loss']        
-
+                    'learning_rate', 'iter_time', 'spectral_radius', #'eig_sigma', 
+                    'n_moa_violations', 
+                    'train_loss_total', 'train_loss_prediction', 'train_pearson', 
+                'sign_reg_loss', 'stability_reg_loss', 'uniform_reg_loss', 
+                    'input_param_reg_loss', 
+                    'sn_param_reg_weights_loss', 'sn_param_reg_bias_loss',
+                    'output_param_reg_weights_loss', 'output_param_reg_bias_loss']      
         self.stats = {}
         self.stats['train'] = np.empty((0, len(self._stats_cols)))
 
@@ -361,7 +362,9 @@ class TrainBase:
 
 class TrainSimple(TrainBase):
     """Training the signaling model for bulk data with no categorical covariates."""
-
+    HYPER_PARAMS = {**TrainBase.HYPER_PARAMS, 
+                    **{'global_bias_lambda_L2': 1e-6} 
+                   }
     def __init__(self, 
                   mod, 
                  prediction_optimizer: torch.optim, 
@@ -385,7 +388,6 @@ class TrainSimple(TrainBase):
                            train_seed = train_seed, 
                         track_test = track_test, 
                         track_validation = track_validation)
-        
         self.create_data_loader(include_covariates = False, include_expr = False)
   
     def train_model(self,
@@ -447,11 +449,13 @@ class TrainSimple(TrainBase):
                 uniform_reg = self.mod.uniform_regularization(lambda_L2 = self.hyper_params['uniform_lambda_L2']*cur_lr, Y_full = Y_full, 
                                                         target_min = self.hyper_params['uniform_min'], target_max = self.hyper_params['uniform_max']) # uniform distribution
                 input_param_reg, sn_param_reg, output_param_reg = self.mod.L2_reg(input_lambda_L2=self.hyper_params['input_lambda_L2'],
-                                            bn_weights_lambda_l2=self.hyper_params['bn_weights_lambda_l2'], 
-                                            bn_bias_lambda_L2=self.hyper_params['bn_bias_lambda_L2'], 
+                                                                                  bn_weights_lambda_L2=self.hyper_params['bn_weights_lambda_L2'], 
+                                            global_bias_lambda_L2=self.hyper_params['global_bias_lambda_L2'], 
+                                            bias_global = None, # unused argument
+                                            cat_bias_lambda_L2=None, # unused argument
                                             output_weights_lambda_L2=self.hyper_params['output_weights_lambda_L2'],
                                             output_bias_lambda_L2=self.hyper_params['output_bias_lambda_L2'])
-                param_reg = input_param_reg + sn_param_reg + output_param_reg
+                param_reg = input_param_reg + sum(sn_param_reg.values()) + sum(output_param_reg.values())
                 total_loss = prediction_loss + sign_reg + param_reg + stability_loss + uniform_reg
         
                 # gradient
@@ -464,8 +468,10 @@ class TrainSimple(TrainBase):
                     self.mod.signaling_network.count_sign_mismatch(), 
                     tot_pred_loss.item(), prediction_loss.item(), train_pearson_r, 
                     sign_reg.item(), stability_loss.item(), uniform_reg.item(), 
-                    input_param_reg.item(), sn_param_reg.item(), output_param_reg.item()
-                    ])
+                    input_param_reg.item()])
+                sv = np.concatenate([sv, 
+                                     np.array([v.item() for v in sn_param_reg.values()]), 
+                                     np.array([v.item() for v in output_param_reg.values()])])
                 self.stats['train'] = np.vstack((self.stats['train'], sv))
 
                 # free up CUDA mem
@@ -548,6 +554,11 @@ class TrainSimple(TrainBase):
                 self.prediction_optimizer.state = self.reset_state.copy()
         
         self.stats['train'] = pd.DataFrame(data = self.stats['train'], columns = self._stats_cols)
+        reg_idx = [col_idx for col_idx, col_name in enumerate(self.stats['train'].columns.tolist()) if col_name.startswith('sn_param_reg')]
+        self.stats['train'].insert(max(reg_idx) + 1, 'sn_param_reg_tot_loss', self.stats['train'].iloc[:, reg_idx].sum(axis = 1))
+
+        reg_idx = [col_idx for col_idx, col_name in enumerate(self.stats['train'].columns.tolist()) if col_name.startswith('output_param_reg')]
+        self.stats['train'].insert(max(reg_idx) + 1, 'output_param_reg_tot_loss', self.stats['train'].iloc[:, reg_idx].sum(axis = 1))
         if self.track_test:
             self.stats['test'] = pd.DataFrame(data = self.stats['test'], 
                                             columns = ['epoch', 'batch', 'test_loss_prediction', 'test_pearson'])
@@ -563,7 +574,9 @@ class TrainSimple(TrainBase):
 class TrainCat(TrainBase):
     """Training the signaling model for bulk data, accounting for categorical covariates of the samples (e.g. cell line, genetic background, etc.)."""
     
-    HYPER_PARAMS = TrainBase.HYPER_PARAMS
+    HYPER_PARAMS = {**TrainBase.HYPER_PARAMS, 
+                    **{'cat_bias_lambda_L2': 0} # since cat max norm has been implemented
+                   }
     
     def __init__(self,
                  mod, 
@@ -656,11 +669,14 @@ class TrainCat(TrainBase):
                 uniform_reg = self.mod.uniform_regularization(lambda_L2 = self.hyper_params['uniform_lambda_L2']*cur_lr, Y_full = Y_full, 
                                                         target_min = 0, target_max = self.hyper_params['uniform_max']) # uniform distribution
                 input_param_reg, sn_param_reg, output_param_reg = self.mod.L2_reg(input_lambda_L2=self.hyper_params['input_lambda_L2'],
-                                            bn_weights_lambda_l2=self.hyper_params['bn_weights_lambda_l2'], 
-                                            bn_bias_lambda_L2=self.hyper_params['bn_bias_lambda_L2'], 
+                                            bn_weights_lambda_L2=self.hyper_params['bn_weights_lambda_L2'], 
+                                            global_bias_lambda_L2=None,# unused argument 
+                                            #self.hyper_params['global_bias_lambda_L2'], 
+                                            bias_global = None, # unused argument
+                                            cat_bias_lambda_L2=self.hyper_params['cat_bias_lambda_L2'],
                                             output_weights_lambda_L2=self.hyper_params['output_weights_lambda_L2'],
                                             output_bias_lambda_L2=self.hyper_params['output_bias_lambda_L2'])
-                param_reg = input_param_reg + sn_param_reg + output_param_reg
+                param_reg = input_param_reg + sum(sn_param_reg.values()) + sum(output_param_reg.values())
                 tot_pred_loss = prediction_loss + sign_reg + param_reg + stability_loss + uniform_reg
                 
                 # gradient
@@ -673,8 +689,10 @@ class TrainCat(TrainBase):
                     self.mod.signaling_network.count_sign_mismatch(), 
                     tot_pred_loss.item(), prediction_loss.item(), train_pearson_r, 
                     sign_reg.item(), stability_loss.item(), uniform_reg.item(), 
-                    input_param_reg.item(), sn_param_reg.item(), output_param_reg.item()
-                    ])
+                    input_param_reg.item()])
+                sv = np.concatenate([sv, 
+                                     np.array([v.item() for v in sn_param_reg.values()]), 
+                                     np.array([v.item() for v in output_param_reg.values()])])
                 self.stats['train'] = np.vstack((self.stats['train'], sv))
 
                 # free up CUDA mem
@@ -759,6 +777,11 @@ class TrainCat(TrainBase):
                 self.prediction_optimizer.state = self.reset_state.copy()
 
         self.stats['train'] = pd.DataFrame(data = self.stats['train'], columns = self._stats_cols)
+        reg_idx = [col_idx for col_idx, col_name in enumerate(self.stats['train'].columns.tolist()) if col_name.startswith('sn_param_reg')]
+        self.stats['train'].insert(max(reg_idx) + 1, 'sn_param_reg_tot_loss', self.stats['train'].iloc[:, reg_idx].sum(axis = 1))
+
+        reg_idx = [col_idx for col_idx, col_name in enumerate(self.stats['train'].columns.tolist()) if col_name.startswith('output_param_reg')]
+        self.stats['train'].insert(max(reg_idx) + 1, 'output_param_reg_tot_loss', self.stats['train'].iloc[:, reg_idx].sum(axis = 1))
         if self.track_test:
             self.stats['test'] = pd.DataFrame(data = self.stats['test'], 
                                             columns = ['epoch', 'batch', 'test_loss_prediction', 'test_pearson'])
@@ -781,8 +804,9 @@ class TrainSC(TrainBase):
                              **{'optimizer': torch.optim.Adam,
                                 'discriminator_lambda_L2': 1e-5, 
                                'discriminator_penalty_weight': 1}}
-    HYPER_PARAMS = TrainBase.HYPER_PARAMS
-    HYPER_PARAMS['bn_bias_lambda_L2'] = 0 # KL divergence regularization deals with this
+    HYPER_PARAMS = {**TrainCat.HYPER_PARAMS, 
+                    **{'global_bias_lambda_L2': 0} # KL divergence regularization deals with this
+                   }
     
     def __init__(self,
                  mod, 
@@ -825,13 +849,15 @@ class TrainSC(TrainBase):
         self.create_data_loader(include_covariates = True, include_expr = True)
         self.initialize_discriminator(discriminator_params)
         
-    def _initialize_tracking(self):
+    def _initialize_tracking(self): 
         self._stats_cols = ['epoch', 'batch_index', 
                             'learning_rate', 'discriminator_learning_rate', 'iter_time', 'spectral_radius', #'eig_sigma', 
                          'n_moa_violations', 
                          'train_loss_total', 'train_loss_prediction', 
                         'sign_reg_loss', 'stability_reg_loss', 'uniform_reg_loss', 
-                         'input_param_reg_loss', 'sn_param_reg_loss', 'output_param_reg_loss', 
+                         'input_param_reg_loss', 
+                         'sn_param_reg_weights_loss', 'sn_param_reg_global_bias_loss', 'sn_param_reg_cat_bias_loss',
+                         'output_param_reg_weights_loss', 'output_param_reg_bias_loss',
                           'vae_param_reg_loss', 'kl_divergence', 'adverserial_loss','discriminator_loss_total', 
                                 'discriminator_loss_prediction', 'discriminator_param_reg_loss' ]        
 
@@ -977,12 +1003,14 @@ class TrainSC(TrainBase):
                 uniform_reg = self.mod.uniform_regularization(lambda_L2 = self.hyper_params['uniform_lambda_L2']*cur_lr, Y_full = Y_full, 
                                                         target_min = 0, target_max = self.hyper_params['uniform_max']) # uniform distribution
                 input_param_reg, sn_param_reg, output_param_reg = self.mod.L2_reg(input_lambda_L2=self.hyper_params['input_lambda_L2'],
-                                            bn_weights_lambda_l2=self.hyper_params['bn_weights_lambda_l2'], 
-                                            bn_bias_lambda_L2=self.hyper_params['bn_bias_lambda_L2'], 
+                                            bn_weights_lambda_L2=self.hyper_params['bn_weights_lambda_L2'], 
+                                            global_bias_lambda_L2=self.hyper_params['global_bias_lambda_L2'], 
                                             bias_global = bias_global,
+                                            cat_bias_lambda_L2=self.hyper_params['cat_bias_lambda_L2'],
                                             output_weights_lambda_L2=self.hyper_params['output_weights_lambda_L2'],
                                             output_bias_lambda_L2=self.hyper_params['output_bias_lambda_L2'])
-                param_reg = input_param_reg + sn_param_reg + output_param_reg
+
+                param_reg = input_param_reg + sum(sn_param_reg.values()) + sum(output_param_reg.values())
                 vae_reg = self.mod.signaling_network.vae.L2_reg(lambda_L2=self.hyper_params['vae_lambda_l2']) # VAE loss
                 param_reg += vae_reg
                    
@@ -1016,15 +1044,20 @@ class TrainSC(TrainBase):
                 # bias global masking can stay in forward pass because it is generated during the forward pass and 
                 # won't be updated in the back pass
 
-
                 sv = np.array([e + 1, batch, cur_lr, self.discriminator['_cur_lr'], 
                                time.time() - start_time, spectral_radius, 
                     self.mod.signaling_network.count_sign_mismatch(), 
                     tot_pred_loss.item(), prediction_loss.item(), #train_pearson_r, 
                     sign_reg.item(), stability_loss.item(), uniform_reg.item(), 
-                    input_param_reg.item(), sn_param_reg.item(), output_param_reg.item(),
-                    vae_reg.item(), kl_divergence.item(), 
-                               cur_disc_lambda*adverserial_loss.item(), discriminator_loss.item(), discriminator_loss_accuracy.item(), discriminator_reg.item()])
+                    input_param_reg.item()])
+                sv = np.concatenate([sv, 
+                                     np.array([v.item() for v in sn_param_reg.values()]), 
+                                     np.array([v.item() for v in output_param_reg.values()]), 
+                                     np.array([vae_reg.item(), kl_divergence.item(),
+                                               cur_disc_lambda*adverserial_loss.item(), discriminator_loss.item(), 
+                                               discriminator_loss_accuracy.item(), discriminator_reg.item()])])
+
+
                 self.stats['train'] = np.vstack((self.stats['train'], sv))
                 
                 # free up CUDA mem
@@ -1104,12 +1137,17 @@ class TrainSC(TrainBase):
         
         # format the tracking metrics
         self.stats['train'] = pd.DataFrame(data = self.stats['train'], columns = self._stats_cols)
+        reg_idx = [col_idx for col_idx, col_name in enumerate(self.stats['train'].columns.tolist()) if col_name.startswith('sn_param_reg')]
+        self.stats['train'].insert(max(reg_idx) + 1, 'sn_param_reg_tot_loss', self.stats['train'].iloc[:, reg_idx].sum(axis = 1))
+
+        reg_idx = [col_idx for col_idx, col_name in enumerate(self.stats['train'].columns.tolist()) if col_name.startswith('output_param_reg')]
+        self.stats['train'].insert(max(reg_idx) + 1, 'output_param_reg_tot_loss', self.stats['train'].iloc[:, reg_idx].sum(axis = 1))
         
         # sanity check
         loss_cols = [
                'train_loss_prediction', 'sign_reg_loss',
                'stability_reg_loss', 'uniform_reg_loss', 'input_param_reg_loss',
-               'sn_param_reg_loss', 'output_param_reg_loss', 'vae_param_reg_loss', 'kl_divergence']
+               'sn_param_reg_tot_loss', 'output_param_reg_tot_loss', 'vae_param_reg_loss', 'kl_divergence']
 
         reg_tot = self.stats['train'][loss_cols].sum(axis = 1)
         if not np.allclose(reg_tot - self.stats['train']['adverserial_loss'], self.stats['train']['train_loss_total']):

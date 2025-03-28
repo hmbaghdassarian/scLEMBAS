@@ -156,7 +156,8 @@ class ProjectOutput(nn.Module):
         """
         weight_loss = weights_lambda_L2 * torch.sum(torch.square(self.weights - self.projection_amplitude)) 
         biass_loss = bias_lambda_L2 * torch.sum(torch.square(self.bias))
-        return weight_loss + biass_loss
+#         return weight_loss + biass_loss
+        return OrderedDict({'weight_loss': weight_loss, 'bias_loss': biass_loss})
     
     # def set_device(self, device: str):
     #     """Sets torch.tensor objects to the device
