@@ -14,6 +14,8 @@ import torch.nn as nn
 
 from ..utilities import set_seeds
 
+from .model_utilities import L2_reg
+
 class ProjectInput(nn.Module):
     """Generate all nodes for the signaling network and linearly scale input ligand values by NN parameters."""
     def __init__(self, node_idx_map: Dict[str, int], input_labels: np.array, projection_amplitude: Union[int, float] = 1, dtype: torch.dtype=torch.float32, device: str = 'cpu'):
@@ -77,7 +79,7 @@ class ProjectInput(nn.Module):
             the regularization term
         """
         # if removed the `- self.projection_amplitude` part, would force weights to 0, thus shrinking ligand inputs
-        projection_L2 = lambda_L2 * torch.sum(torch.square(self.weights - self.projection_amplitude))  
+        projection_L2 = L2_reg(lambda_L2, parameter = (self.weights - self.projection_amplitude ))
         return projection_L2
 
 class ProjectOutput(nn.Module):
@@ -154,8 +156,8 @@ class ProjectOutput(nn.Module):
         projection_L2 : torch.Tensor
             the regularization term
         """
-        weight_loss = weights_lambda_L2 * torch.sum(torch.square(self.weights - self.projection_amplitude)) 
-        biass_loss = bias_lambda_L2 * torch.sum(torch.square(self.bias))
+        weight_loss = L2_reg(weights_lambda_L2, (self.weights - self.projection_amplitude))
+        biass_loss = L2_reg(bias_lambda_L2, self.bias)
 #         return weight_loss + biass_loss
         return OrderedDict({'weight_loss': weight_loss, 'bias_loss': biass_loss})
     
@@ -417,7 +419,7 @@ class GaussianVariationalEncoder(nn.Module):
                 regularization_loss += torch.sum(torch.square(layer.weight))
                 if layer.bias is not None:
                     regularization_loss += torch.sum(torch.square(layer.bias))
-        l2_loss = lambda_L2 * regularization_loss
+        l2_loss = torch.tensor(lambda_L2, device = self.device, dtype = self.dtype) * regularization_loss
         
         return l2_loss
     
@@ -479,6 +481,8 @@ class CatDiscriminator(nn.Module):
         else:
             raise ValueError('There are no distinct classes.')
 
+        self.device = device
+        self.dtype = dtype
         
         cat_layers = []
         cat_layers.append(FCLayers(layers = [n_features_in] + n_hidden_nodes, 
@@ -486,9 +490,9 @@ class CatDiscriminator(nn.Module):
                                    layer_norm = layer_norm, 
                                    dropout_rate = dropout_rate, 
                                    activation_fn = activation_fn, 
-                                   dtype = dtype, device = device))
+                                   dtype = self.dtype, device = self.device))
         cat_layers.append(FCLayers(layers = [n_hidden_nodes[-1], out_features], 
-                                   dtype = dtype, device = device,
+                                   dtype = self.dtype, device = self.device,
                                    batch_momentum = None, layer_norm = False, dropout_rate = None, activation_fn = None))
 
         self.classifier = nn.Sequential(*cat_layers)
@@ -523,6 +527,6 @@ class CatDiscriminator(nn.Module):
                 regularization_loss += torch.sum(torch.square(layer.weight))
                 if layer.bias is not None:
                     regularization_loss += torch.sum(torch.square(layer.bias))
-        l2_loss = lambda_L2 * regularization_loss
+        l2_loss = torch.tensor(lambda_L2, device = self.device, dtype = self.dtype) * regularization_loss
         
         return l2_loss

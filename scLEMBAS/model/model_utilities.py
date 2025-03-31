@@ -49,6 +49,17 @@ def update_with_defaults(default_parameters: dict, user_parameters: dict, additi
 
     return params
 
+def L2_reg(lambda_L2: float, parameter: torch.Tensor):
+    lambda_L2 = torch.tensor(lambda_L2, dtype = torch.float64, device = parameter.device)
+    return lambda_L2*torch.sum(torch.square(parameter))
+
+def L1_reg(lambda_L1: float, parameter: torch.Tensor):
+    lambda_L1 = torch.tensor(lambda_L1, dtype = torch.float64, device = parameter.device)
+    return lambda_L1*torch.sum(torch.abs(parameter))
+    
+  
+    
+
 # def get_spectral_radius(weights: nn.parameter.Parameter):
 #     """_summary_
 

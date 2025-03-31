@@ -233,7 +233,7 @@ class TrainBase:
                     'train_loss_total', 'train_loss_prediction', 'train_pearson', 
                 'sign_reg_loss', 'stability_reg_loss', 'uniform_reg_loss', 
                     'input_param_reg_loss', 
-                    'sn_param_reg_weights_loss', 'sn_param_reg_bias_loss',
+                    'sn_param_reg_weights_L2_loss', 'sn_param_reg_bias_L2_loss', 'sn_param_reg_bias_L1_loss',
                     'output_param_reg_weights_loss', 'output_param_reg_bias_loss']      
         self.stats = {}
         self.stats['train'] = np.empty((0, len(self._stats_cols)))
@@ -363,7 +363,8 @@ class TrainBase:
 class TrainSimple(TrainBase):
     """Training the signaling model for bulk data with no categorical covariates."""
     HYPER_PARAMS = {**TrainBase.HYPER_PARAMS, 
-                    **{'global_bias_lambda_L2': 1e-6} 
+                    **{'global_bias_lambda_L2': 1e-6, 
+                       'global_bias_lambda_L1': 0} 
                    }
     def __init__(self, 
                   mod, 
@@ -455,6 +456,8 @@ class TrainSimple(TrainBase):
                                             cat_bias_lambda_L2=None, # unused argument
                                             output_weights_lambda_L2=self.hyper_params['output_weights_lambda_L2'],
                                             output_bias_lambda_L2=self.hyper_params['output_bias_lambda_L2'])
+                sn_bias_l1_reg = self.mod.signaling_network.L1_reg_bias(global_bias_lambda_L1 = self.hyper_params['global_bias_lambda_L1'])
+                sn_param_reg = {**sn_param_reg, **sn_bias_l1_reg}
                 param_reg = input_param_reg + sum(sn_param_reg.values()) + sum(output_param_reg.values())
                 total_loss = prediction_loss + sign_reg + param_reg + stability_loss + uniform_reg
         
@@ -575,7 +578,8 @@ class TrainCat(TrainBase):
     """Training the signaling model for bulk data, accounting for categorical covariates of the samples (e.g. cell line, genetic background, etc.)."""
     
     HYPER_PARAMS = {**TrainBase.HYPER_PARAMS, 
-                    **{'cat_bias_lambda_L2': 0} # since cat max norm has been implemented
+                    **{'cat_bias_lambda_L2': 0, # since cat max norm has been implemented
+                       'cat_bias_lambda_L1': 0} 
                    }
     
     def __init__(self,
@@ -676,6 +680,8 @@ class TrainCat(TrainBase):
                                             cat_bias_lambda_L2=self.hyper_params['cat_bias_lambda_L2'],
                                             output_weights_lambda_L2=self.hyper_params['output_weights_lambda_L2'],
                                             output_bias_lambda_L2=self.hyper_params['output_bias_lambda_L2'])
+                sn_bias_l1_reg = self.mod.signaling_network.L1_reg_bias(cat_bias_lambda_L1 = self.hyper_params['cat_bias_lambda_L1'])
+                sn_param_reg = {**sn_param_reg, **sn_bias_l1_reg}
                 param_reg = input_param_reg + sum(sn_param_reg.values()) + sum(output_param_reg.values())
                 tot_pred_loss = prediction_loss + sign_reg + param_reg + stability_loss + uniform_reg
                 
@@ -805,7 +811,7 @@ class TrainSC(TrainBase):
                                 'discriminator_lambda_L2': 1e-5, 
                                'discriminator_penalty_weight': 1}}
     HYPER_PARAMS = {**TrainCat.HYPER_PARAMS, 
-                    **{'global_bias_lambda_L2': 0} # KL divergence regularization deals with this
+                    **{'global_bias_lambda_L2': 0, 'global_bias_lambda_L1': 0} # KL divergence regularization deals with this
                    }
     
     def __init__(self,
@@ -856,7 +862,8 @@ class TrainSC(TrainBase):
                          'train_loss_total', 'train_loss_prediction', 
                         'sign_reg_loss', 'stability_reg_loss', 'uniform_reg_loss', 
                          'input_param_reg_loss', 
-                         'sn_param_reg_weights_loss', 'sn_param_reg_global_bias_loss', 'sn_param_reg_cat_bias_loss',
+                         'sn_param_reg_weights_L2_loss', 'sn_param_reg_global_bias_L2_loss', 'sn_param_reg_cat_bias_L2_loss',
+                         'sn_param_reg_global_bias_L1_loss', 'sn_param_reg_cat_bias_L1_loss',
                          'output_param_reg_weights_loss', 'output_param_reg_bias_loss',
                           'vae_param_reg_loss', 'kl_divergence', 'adverserial_loss','discriminator_loss_total', 
                                 'discriminator_loss_prediction', 'discriminator_param_reg_loss' ]        
@@ -1009,7 +1016,10 @@ class TrainSC(TrainBase):
                                             cat_bias_lambda_L2=self.hyper_params['cat_bias_lambda_L2'],
                                             output_weights_lambda_L2=self.hyper_params['output_weights_lambda_L2'],
                                             output_bias_lambda_L2=self.hyper_params['output_bias_lambda_L2'])
-
+                sn_bias_l1_reg = self.mod.signaling_network.L1_reg_bias(bias_global = bias_global, 
+                                                                        global_bias_lambda_L1 = self.hyper_params['global_bias_lambda_L1'], 
+                                                                        cat_bias_lambda_L1 = self.hyper_params['cat_bias_lambda_L1'])
+                sn_param_reg = {**sn_param_reg, **sn_bias_l1_reg}
                 param_reg = input_param_reg + sum(sn_param_reg.values()) + sum(output_param_reg.values())
                 vae_reg = self.mod.signaling_network.vae.L2_reg(lambda_L2=self.hyper_params['vae_lambda_l2']) # VAE loss
                 param_reg += vae_reg
