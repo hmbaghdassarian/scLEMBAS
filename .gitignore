@@ -14,4 +14,4 @@
 **/*.out
 **/*trash*
 **/*backup*
-
+**/*tests*
