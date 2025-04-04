@@ -374,12 +374,12 @@ class GaussianVariationalEncoder(nn.Module):
         # reparameterization 
         set_seeds(self.seed)
         epsilon = torch.randn_like(z_mu, dtype = self.dtype, device = self.device)
-        z = z_mu + z_sigma*epsilon #self.z_transformation(z_m + z_sigma*epsilon)
+        z = z_mu + z_sigma*epsilon # re-parameterization trick
 
         return z_mu, z_log_sigma_squared, z
     
     @staticmethod
-    def KL_divergence(z_mu, z_log_sigma_squared, scaling_factor):
+    def KL_divergence_standard(z_mu, z_log_sigma_squared, scaling_factor):
         """Calculates KL divergence between the VAE estimated parameters and the standard normal distribution. 
 
         Parameters
@@ -397,6 +397,46 @@ class GaussianVariationalEncoder(nn.Module):
             the average KL divergence across samples. First, calculated for each sample, then averaged across samples.
         """
         kl_div = -0.5 * torch.sum(1 + z_log_sigma_squared - z_mu**2 - torch.exp(z_log_sigma_squared), axis = 1) # sample-wise kl divergance 
+        return scaling_factor*kl_div.mean() # average across samples
+    
+
+    def KL_divergence(self, z_mu, z_log_sigma_squared, scaling_factor, prior_mu, prior_sigma):
+        """Calculates KL divergence between the VAE estimated parameters and a normal distribution with mean prior_mu and std prior_sigma. 
+
+        Parameters
+        ----------
+        z_mu : torch.Tensor
+            the mean (mu) parameter for each feature in latent space
+        z_log_sigma_squared : torch.Tensor
+            the log-variance parameter for each feature in latent space
+        scaling_factor : float
+            scales the KL divergence by a constant, to make it more in line with other loss terms
+        prior_mu : torch.tensor
+            the desired mean of the distribution
+        prior_sigma : torch.tensor
+            the desired std of the distribution
+            
+        Returns
+        -------
+        kl_div : torch.Tensor
+            the average KL divergence across samples. First, calculated for each sample, then averaged across samples.
+        """
+        # if not torch.is_tensor(prior_mu):
+        #     prior_mu = torch.tensor(prior_mu, device=self.device, dtype=self.dtype)
+        # if not torch.is_tensor(prior_sigma):
+        #     prior_sigma = torch.tensor(prior_sigma, device=self.device, dtype=self.dtype)
+
+        if prior_mu == 0 and prior_sigma == 1:
+            return self.KL_divergence_standard(z_mu, z_log_sigma_squared, scaling_factor)
+        prior_mu = prior_mu.expand_as(z_mu)
+        prior_var = prior_sigma.pow(2).expand_as(z_mu)
+
+        var = torch.exp(z_log_sigma_squared)
+        kl_div = 0.5 * torch.sum(
+            torch.log(prior_var) - z_log_sigma_squared +
+            (var + (z_mu - prior_mu).pow(2)) / prior_var - 1,
+            dim=1
+        )
         return scaling_factor*kl_div.mean() # average across samples
 
     
@@ -419,7 +459,7 @@ class GaussianVariationalEncoder(nn.Module):
                 regularization_loss += torch.sum(torch.square(layer.weight))
                 if layer.bias is not None:
                     regularization_loss += torch.sum(torch.square(layer.bias))
-        l2_loss = torch.tensor(lambda_L2, device = self.device, dtype = self.dtype) * regularization_loss
+        l2_loss = lambda_L2 * regularization_loss
         
         return l2_loss
     

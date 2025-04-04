@@ -315,7 +315,7 @@ class SignalingModel(torch.nn.Module):
         loss = lambda_L2 * torch.sum(torch.square(self.signaling_network.bias_basal[self.input_layer.input_node_idx]))
         return loss
 
-    def uniform_regularization(self, lambda_L2: float, Y_full: torch.Tensor, 
+    def uniform_regularization(self, lambda_L2: torch.tensor, Y_full: torch.Tensor, 
                      target_min: float = 0.0, target_max: float = None):
         """Get the L2 regularization term for deviations of the nodes in Y_full from that of a uniform distribution between 
         `target_min` and `target_max`. 
@@ -323,7 +323,7 @@ class SignalingModel(torch.nn.Module):
     
         Parameters
         ----------
-        lambda_L2 : float
+        lambda_L2 : torch.tensor
             scaling factor for state loss
         Y_full : torch.Tensor
             the signaling network scaled by learned interaction weights. Shape is (samples x network nodes). 
@@ -338,8 +338,6 @@ class SignalingModel(torch.nn.Module):
         loss : torch.Tensor
             the regularization term
         """
-        lambda_L2 = torch.tensor(lambda_L2, dtype = Y_full.dtype, device = Y_full.device)
-        # loss = lambda_L2 * expected_uniform_distribution(Y_full, target_max = 1/self.projectionAmplitude)
         if not target_max:
             target_max = 1/self.projection_amplitude_out
         

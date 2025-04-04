@@ -89,9 +89,7 @@ class TrainBase:
                              'output_weights_lambda_L2': 1e-6,
                              'output_bias_lambda_L2': 1e-6,
                              'moa_lambda_L1': 0.1, #'ligand_lambda_L2': 1e-5, 
-                            'uniform_lambda_L2': 1e-4, 'uniform_min': 0, 'uniform_max': (1/1.2), 'spectral_loss_factor': 1e-5, 
-                            'vae_lambda_l2': 1e-5, 
-                            'vae_scaling_KL': 1e-2}
+                            'uniform_lambda_L2': 1e-4, 'uniform_min': 0, 'uniform_max': (1/1.2), 'spectral_loss_factor': 1e-5}
     SPECTRAL_RADIUS_PARAMS = {'n_probes_spectral': 5, 'power_steps_spectral': 5, 'subset_n_spectral': 5}
     HYPER_PARAMS = {**LR_PARAMS, **OTHER_PARAMS, **REGULARIZATION_PARAMS, **SPECTRAL_RADIUS_PARAMS}
 
@@ -170,12 +168,17 @@ class TrainBase:
         if not mod.signaling_network._prescaled_weights:
             warnings.warn('Recommended to run `self.mod.signaling_network.prescale_weights()` prior to training')
 
+        self.mod = mod
+        
         if not hyper_params:
             self.hyper_params = self.HYPER_PARAMS.copy()
         else:
             self.hyper_params = {k: v for k,v in {**self.HYPER_PARAMS, **hyper_params}.items() if k in self.HYPER_PARAMS}
         
-        self.mod = mod
+        for param, param_value in self.hyper_params.items():
+            if 'lambda' in param or 'vae' in param:
+                if not torch.is_tensor(param_value):
+                    self.hyper_params[param] = torch.tensor(param_value, device=self.mod.device, dtype=self.mod.dtype)   
 
         self.prediction_loss_fn = prediction_loss_fn
         self.prediction_optimizer = prediction_optimizer(self.mod.parameters(), 
@@ -225,7 +228,8 @@ class TrainBase:
 #                 # for running through model
 #                 self._X_val = self.mod.df_to_tensor(self.X_val)
 #                 self._y_val = self.mod.df_to_tensor(self.y_val)
-        self._initialize_tracking()
+        self._initialize_tracking()     
+    
     def _initialize_tracking(self):  
         self._stats_cols = ['epoch', 'batch_index', 
                     'learning_rate', 'iter_time', 'spectral_radius', #'eig_sigma', 
@@ -811,6 +815,8 @@ class TrainSC(TrainBase):
                                 'discriminator_lambda_L2': 1e-5, 
                                'discriminator_penalty_weight': 1}}
     HYPER_PARAMS = {**TrainCat.HYPER_PARAMS, 
+                    **{'vae_lambda_l2': 1e-5, 'vae_scaling_KL': 1e-2, 
+                       'vae_prior_mu': 0, 'vae_prior_sigma': 1},
                     **{'global_bias_lambda_L2': 0, 'global_bias_lambda_L1': 0} # KL divergence regularization deals with this
                    }
     
@@ -919,8 +925,6 @@ class TrainSC(TrainBase):
                                                               warmup_steps = self.discriminator['params']['warmup_epochs'],
                                                               last_epoch = -1)
 
-
-
     def train_model(self, verbose: bool = True):
         """Train the model
 
@@ -1028,7 +1032,9 @@ class TrainSC(TrainBase):
                 # can use MMD in the future if KL unstable
                 kl_divergence = self.mod.signaling_network.vae.KL_divergence(z_mu = bias_mu, 
                                                                              z_log_sigma_squared = bias_log_sigma_squared, 
-                                                                             scaling_factor = self.hyper_params['vae_scaling_KL'])
+                                                                             scaling_factor = self.hyper_params['vae_scaling_KL'], 
+                                                                             prior_mu = self.hyper_params['vae_prior_mu'], 
+                                                                             prior_sigma = self.hyper_params['vae_prior_sigma'])
                 
                 tot_pred_loss = prediction_loss + sign_reg + param_reg + stability_loss + uniform_reg + kl_divergence
 

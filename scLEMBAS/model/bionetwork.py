@@ -238,10 +238,9 @@ class BioNetBase(nn.Module):
         loss : torch.Tensor
             the regularization term
         """
-        lambda_L1 = torch.tensor(lambda_L1, dtype = self.dtype, device = self.device)
         sign_mismatch = self.get_sign_mistmatch() # will not penalize sign mismatches of unknown interactions
 
-        loss = lambda_L1 * torch.sum(torch.abs(self.weights * sign_mismatch))
+        loss = L1_reg(lambda_L1 , self.weights * sign_mismatch)
         return loss
 
     def get_SS_loss(self, Y_full: torch.Tensor, spectral_loss_factor: float, subset_n: int = 5, **kwargs):
@@ -685,7 +684,7 @@ class BioNetCat(BioNetBase):
         cat_bias_loss = 0
         for cat_embedding in self.cat_embeddings.values():
             cat_bias_loss += torch.sum(torch.abs(cat_embedding.weight))
-        cat_bias_loss *= torch.tensor(cat_bias_lambda_L1, device = self.device, dtype = self.dtype)
+        cat_bias_loss *= cat_bias_lambda_L1
         
         return OrderedDict({'cat_bias_L1_loss': cat_bias_loss})
 
@@ -719,7 +718,7 @@ class BioNetCat(BioNetBase):
         cat_bias_loss = 0
         for cat_embedding in self.cat_embeddings.values():
             cat_bias_loss += torch.sum(torch.square(cat_embedding.weight))
-        cat_bias_loss *= torch.tensor(cat_bias_lambda_L2, device = self.device, dtype = self.dtype)
+        cat_bias_loss *= cat_bias_lambda_L2
 
 #         bionet_L2 = weight_loss + cat_bias_loss
         return OrderedDict({'weight_L2_loss': weight_loss, 'cat_bias_L2_loss': cat_bias_loss})
@@ -872,7 +871,7 @@ class BioNetSC(BioNetCat):
         cat_bias_loss = 0
         for cat_embedding in self.cat_embeddings.values():
             cat_bias_loss += torch.sum(torch.abs(cat_embedding.weight))
-        cat_bias_loss *= torch.tensor(cat_bias_lambda_L1, device = self.device, dtype = self.dtype)
+        cat_bias_loss *= cat_bias_lambda_L1
         
         return OrderedDict({'global_bias_L1_loss': global_bias_loss, 'cat_bias_L1_loss': cat_bias_loss})
 
@@ -904,6 +903,6 @@ class BioNetSC(BioNetCat):
         cat_bias_loss = 0
         for cat_embedding in self.cat_embeddings.values():
             cat_bias_loss += torch.sum(torch.square(cat_embedding.weight))
-        cat_bias_loss *= torch.tensor(cat_bias_lambda_L2, device = self.device, dtype = self.dtype)
+        cat_bias_loss *= cat_bias_lambda_L2
         
         return OrderedDict({'weight_L2_loss': weight_loss, 'global_bias_L2_loss': global_bias_loss, 'cat_bias_L2_loss': cat_bias_loss})
