@@ -8,6 +8,11 @@ import pandas as pd
 import torch
 from torch import nn
 
+
+def freeze_model(model, requires_grad):
+    for param in model.parameters():
+        param.requires_grad = requires_grad
+
 def np_to_torch(arr: np.array, dtype: torch.float32, device: str = 'cpu'):
     """Convert a numpy array to a torch.tensor
 
@@ -49,11 +54,35 @@ def update_with_defaults(default_parameters: dict, user_parameters: dict, additi
 
     return params
 
-def L2_reg(lambda_L2: torch.tensor, parameter: torch.Tensor):
-    return lambda_L2*torch.sum(torch.square(parameter))
+def L2_reg(lambda_L2: float, parameter: torch.Tensor):
+    if lambda_L2 == 0:
+        return torch.tensor(0.0, device=parameter.device, dtype=parameter.dtype)
+    else:
+        return lambda_L2*torch.sum(torch.square(parameter))
 
-def L1_reg(lambda_L1: torch.tensor, parameter: torch.Tensor):
-    return lambda_L1*torch.sum(torch.abs(parameter))
+def L1_reg(lambda_L1: float, parameter: torch.Tensor):
+    if lambda_L1 == 0:
+        return torch.tensor(0.0, device=parameter.device, dtype=parameter.dtype)
+    else:
+        return lambda_L1*torch.sum(torch.abs(parameter))
+
+
+def kl_divergence_normal(empirical_values, mu=0.0, sigma=1.0, eps=1e-12):
+    """
+    KL divergence between empirical distribution of weights (assumed Gaussian) 
+    and N(mu, sigma^2). Only non-zero weights are considered.
+    
+    empirical_values is a 1D torch tensor of the empirical distribution that should match the target
+    mu is the target distribution mean, sigma is the target distribution standard deviation
+    epsilon is a minmum value to add to avoid dividing by zero
+    """
+    q_mean = empirical_values.mean()
+    q_std = empirical_values.std(unbiased=False) + eps
+
+    # KL divergence between N(q_mean, q_std^2) and N(mu, sigma^2)
+    kl = torch.log(sigma / q_std) + (q_std**2 + (q_mean - mu)**2) / (2 * sigma**2) - 0.5
+    return kl
+
     
   
     

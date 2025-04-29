@@ -454,14 +454,15 @@ class GaussianVariationalEncoder(nn.Module):
             the regularization term
         """
         regularization_loss = 0
-        for layer in self.modules():
-            if isinstance(layer, nn.Linear):
-                regularization_loss += torch.sum(torch.square(layer.weight))
-                if layer.bias is not None:
-                    regularization_loss += torch.sum(torch.square(layer.bias))
-        l2_loss = lambda_L2 * regularization_loss
+        if lambda_L2 != 0:
+            for layer in self.modules():
+                if isinstance(layer, nn.Linear):
+                    regularization_loss += torch.sum(torch.square(layer.weight))
+                    if layer.bias is not None:
+                        regularization_loss += torch.sum(torch.square(layer.bias))
+            regularization_loss = lambda_L2 * regularization_loss
         
-        return l2_loss
+        return regularization_loss
     
     
 class CatDiscriminator(nn.Module):
@@ -558,15 +559,16 @@ class CatDiscriminator(nn.Module):
         
         Returns
         -------
-        l2_loss : torch.Tensor
+        regularization_loss : torch.Tensor
             the regularization term
         """
         regularization_loss = 0
-        for layer in self.classifier.modules():
-            if isinstance(layer, nn.Linear):
-                regularization_loss += torch.sum(torch.square(layer.weight))
-                if layer.bias is not None:
-                    regularization_loss += torch.sum(torch.square(layer.bias))
-        l2_loss = torch.tensor(lambda_L2, device = self.device, dtype = self.dtype) * regularization_loss
+        if lambda_L2 != 0:
+            for layer in self.classifier.modules():
+                if isinstance(layer, nn.Linear):
+                    regularization_loss += torch.sum(torch.square(layer.weight))
+                    if layer.bias is not None:
+                        regularization_loss += torch.sum(torch.square(layer.bias))
+            regularization_loss = lambda_L2 * regularization_loss
         
-        return l2_loss
+        return regularization_loss

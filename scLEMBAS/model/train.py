@@ -16,7 +16,7 @@ from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 
 import scLEMBAS.utilities as utils
-from .model_utilities import update_with_defaults
+from .model_utilities import update_with_defaults, kl_divergence_normal
 from .bionetwork import BioNetSimple, BioNetCat, BioNetSC
 from .model_components import CatDiscriminator
 from .lr_schedulers import WarmupCosineAnnealingWarmRestarts
@@ -89,7 +89,9 @@ class TrainBase:
                              'output_weights_lambda_L2': 1e-6,
                              'output_bias_lambda_L2': 1e-6,
                              'moa_lambda_L1': 0.1, #'ligand_lambda_L2': 1e-5, 
-                            'uniform_lambda_L2': 1e-4, 'uniform_min': 0, 'uniform_max': (1/1.2), 'spectral_loss_factor': 1e-5}
+                            'uniform_lambda_L2': 1e-4, 'uniform_min': 0, 'uniform_max': (1/1.2), 'spectral_loss_factor': 1e-5, 
+                            'adj_scaling_KL': 0, 'adj_prior_mu': 0, 'adj_prior_sigma': 0.2
+                            }
     SPECTRAL_RADIUS_PARAMS = {'n_probes_spectral': 5, 'power_steps_spectral': 5, 'subset_n_spectral': 5}
     HYPER_PARAMS = {**LR_PARAMS, **OTHER_PARAMS, **REGULARIZATION_PARAMS, **SPECTRAL_RADIUS_PARAMS}
 
@@ -143,6 +145,10 @@ class TrainBase:
                 - 'n_probes_spectral' : 
                 - 'power_steps_spectral' : 
                 - 'subset_n_spectral' : 
+                - Implementation of a KL divergence regularization between unmasked bionetwork weights and a target normal distribution
+                    - 'adj_scaling_KL': scaling of the KL divergence value (multiplicative factor)
+                    - 'adj_prior_mu': target normal distribution mean
+                    - 'adj_prior_sigma': target normal distribution standard deviation
         train_split : Optional[Dict[str, Union[float, List[str]]]], optional
             dictionary with values as either a float representing the fraction of samples ot be assigned to each of train, test, 
             and validation OR a list of the sample IDs representing each split, by default 0.8, 0.2, and 0 respectively
@@ -231,14 +237,16 @@ class TrainBase:
         self._initialize_tracking()     
     
     def _initialize_tracking(self):  
-        self._stats_cols = ['epoch', 'batch_index', 
-                    'learning_rate', 'iter_time', 'spectral_radius', #'eig_sigma', 
-                    'n_moa_violations', 
-                    'train_loss_total', 'train_loss_prediction', 'train_pearson', 
-                'sign_reg_loss', 'stability_reg_loss', 'uniform_reg_loss', 
-                    'input_param_reg_loss', 
-                    'sn_param_reg_weights_L2_loss', 'sn_param_reg_bias_L2_loss', 'sn_param_reg_bias_L1_loss',
-                    'output_param_reg_weights_loss', 'output_param_reg_bias_loss']      
+        self._stats_cols = ['epoch', 'batch_index',
+                            'learning_rate', 'iter_time', 'spectral_radius', #'eig_sigma',
+                            'n_moa_violations',
+                            'train_loss_total', 'train_loss_prediction', 'train_pearson',
+                            'sign_reg_loss', 'stability_reg_loss', 'uniform_reg_loss',
+                            'input_param_reg_loss',
+                            'sn_param_reg_weights_kl_divergence',
+                            'sn_param_reg_weights_L2_loss', 
+                            'sn_param_reg_bias_L2_loss', 'sn_param_reg_bias_L1_loss',
+                            'output_param_reg_weights_loss', 'output_param_reg_bias_loss']      
         self.stats = {}
         self.stats['train'] = np.empty((0, len(self._stats_cols)))
 
@@ -463,7 +471,18 @@ class TrainSimple(TrainBase):
                 sn_bias_l1_reg = self.mod.signaling_network.L1_reg_bias(global_bias_lambda_L1 = self.hyper_params['global_bias_lambda_L1'])
                 sn_param_reg = {**sn_param_reg, **sn_bias_l1_reg}
                 param_reg = input_param_reg + sum(sn_param_reg.values()) + sum(output_param_reg.values())
-                total_loss = prediction_loss + sign_reg + param_reg + stability_loss + uniform_reg
+                
+                # NOTE: KL divergence is scaled to match loss magnitudes
+                # can use MMD in the future if KL unstable
+                
+                # for adj matrix 
+                unmasked_weights = self.mod.signaling_network.weights[~self.mod.signaling_network.mask]
+                kl_divergence_adj = self.hyper_params['adj_scaling_KL'] *kl_divergence_normal(empirical_values = unmasked_weights, 
+                                                         mu=self.hyper_params['adj_prior_mu'], 
+                                                         sigma=self.hyper_params['adj_prior_sigma'], 
+                                                         eps=1e-8)
+                
+                total_loss = prediction_loss + sign_reg + param_reg + stability_loss + uniform_reg + kl_divergence_adj
         
                 # gradient
                 total_loss.backward()
@@ -475,14 +494,14 @@ class TrainSimple(TrainBase):
                     self.mod.signaling_network.count_sign_mismatch(), 
                     tot_pred_loss.item(), prediction_loss.item(), train_pearson_r, 
                     sign_reg.item(), stability_loss.item(), uniform_reg.item(), 
-                    input_param_reg.item()])
+                    input_param_reg.item(), kl_divergence_adj.item()])
                 sv = np.concatenate([sv, 
                                      np.array([v.item() for v in sn_param_reg.values()]), 
                                      np.array([v.item() for v in output_param_reg.values()])])
                 self.stats['train'] = np.vstack((self.stats['train'], sv))
 
                 # free up CUDA mem
-                del sign_reg, stability_loss, uniform_reg, param_reg, fit_loss, train_pearson_r
+                del sign_reg, stability_loss, uniform_reg, param_reg, kl_divergence_adj, fit_loss, train_pearson_r
                 del X_in_, y_out_, covariates_idx_, X_full, Y_full, Y_hat
                 torch.cuda.empty_cache()
                 
@@ -583,7 +602,8 @@ class TrainCat(TrainBase):
     
     HYPER_PARAMS = {**TrainBase.HYPER_PARAMS, 
                     **{'cat_bias_lambda_L2': 0, # since cat max norm has been implemented
-                       'cat_bias_lambda_L1': 0} 
+                       'cat_bias_lambda_L1': 0, 
+                       'cat_bias_orthogonality_scaler': 1} 
                    }
     
     def __init__(self,
@@ -616,8 +636,14 @@ class TrainCat(TrainBase):
                            train_seed = train_seed, 
                         track_validation = track_validation, 
                         track_test = track_test)
+        
+        # add a column to the tracking dataframe
+        self._stats_cols.insert(self._stats_cols.index('sn_param_reg_bias_L1_loss')+1, 
+                                'sn_param_reg_cat_bias_orthogonality')
+        self.stats['train'] = np.empty((0, len(self._stats_cols)))
 
         self.create_data_loader(include_covariates = True, include_expr = False)
+
 
     def train_model(self, verbose: bool = True):
         """Train the model
@@ -684,10 +710,32 @@ class TrainCat(TrainBase):
                                             cat_bias_lambda_L2=self.hyper_params['cat_bias_lambda_L2'],
                                             output_weights_lambda_L2=self.hyper_params['output_weights_lambda_L2'],
                                             output_bias_lambda_L2=self.hyper_params['output_bias_lambda_L2'])
-                sn_bias_l1_reg = self.mod.signaling_network.L1_reg_bias(cat_bias_lambda_L1 = self.hyper_params['cat_bias_lambda_L1'])
-                sn_param_reg = {**sn_param_reg, **sn_bias_l1_reg}
+                
+                if self.hyper_params['cat_bias_lambda_L1'] == 0:
+                    sn_bias_l1_reg = torch.tensor(0.0, device=self.mod.device, dtype=self.mod.dtype)
+                else:
+                    sn_bias_l1_reg = self.mod.signaling_network.L1_reg_bias(cat_bias_lambda_L1 = self.hyper_params['cat_bias_lambda_L1'])
+
+                if self.hyper_params['cat_bias_orthogonality_scaler'] == 0:
+                    sn_cat_bias_orthogonality_reg = torch.tensor(0.0, device=self.mod.device, dtype=self.mod.dtype)
+                else:
+                    sn_cat_bias_orthogonality_reg = self.mod.signaling_network.cat_orthogonality_regularization(covariates_idx = covariates_idx_, 
+                                                                                                            X_in = X_in_, 
+                                                                                                            regularization_scaler = self.hyper_params['cat_bias_orthogonality_scaler'])
+                sn_param_reg = {**sn_param_reg, **sn_bias_l1_reg, **sn_cat_bias_orthogonality_reg}
                 param_reg = input_param_reg + sum(sn_param_reg.values()) + sum(output_param_reg.values())
-                tot_pred_loss = prediction_loss + sign_reg + param_reg + stability_loss + uniform_reg
+                
+                # NOTE: KL divergence is scaled to match loss magnitudes
+                # can use MMD in the future if KL unstable
+                
+                # for adj matrix 
+                unmasked_weights = self.mod.signaling_network.weights[~self.mod.signaling_network.mask]
+                kl_divergence_adj = self.hyper_params['adj_scaling_KL'] *kl_divergence_normal(empirical_values = unmasked_weights, 
+                                                         mu=self.hyper_params['adj_prior_mu'], 
+                                                         sigma=self.hyper_params['adj_prior_sigma'], 
+                                                         eps=1e-8)
+                
+                tot_pred_loss = prediction_loss + sign_reg + param_reg + stability_loss + uniform_reg + kl_divergence_adj
                 
                 # gradient
                 tot_pred_loss.backward()
@@ -699,7 +747,7 @@ class TrainCat(TrainBase):
                     self.mod.signaling_network.count_sign_mismatch(), 
                     tot_pred_loss.item(), prediction_loss.item(), train_pearson_r, 
                     sign_reg.item(), stability_loss.item(), uniform_reg.item(), 
-                    input_param_reg.item()])
+                    input_param_reg.item(), kl_divergence_adj.items()])
                 sv = np.concatenate([sv, 
                                      np.array([v.item() for v in sn_param_reg.values()]), 
                                      np.array([v.item() for v in output_param_reg.values()])])
@@ -707,7 +755,7 @@ class TrainCat(TrainBase):
 
                 # free up CUDA mem
                 del sign_reg, stability_loss, uniform_reg, param_reg, prediction_loss, train_pearson_r
-                del input_param_reg, sn_param_reg, output_param_reg
+                del input_param_reg, kl_divergence_adj, sn_param_reg, output_param_reg
                 del X_in_, y_out_, covariates_idx_, X_full, Y_full, Y_hat
                 torch.cuda.empty_cache()
 
@@ -864,15 +912,17 @@ class TrainSC(TrainBase):
     def _initialize_tracking(self): 
         self._stats_cols = ['epoch', 'batch_index', 
                             'learning_rate', 'discriminator_learning_rate', 'iter_time', 'spectral_radius', #'eig_sigma', 
-                         'n_moa_violations', 
-                         'train_loss_total', 'train_loss_prediction', 
-                        'sign_reg_loss', 'stability_reg_loss', 'uniform_reg_loss', 
-                         'input_param_reg_loss', 
-                         'sn_param_reg_weights_L2_loss', 'sn_param_reg_global_bias_L2_loss', 'sn_param_reg_cat_bias_L2_loss',
-                         'sn_param_reg_global_bias_L1_loss', 'sn_param_reg_cat_bias_L1_loss',
-                         'output_param_reg_weights_loss', 'output_param_reg_bias_loss',
-                          'vae_param_reg_loss', 'kl_divergence', 'adverserial_loss','discriminator_loss_total', 
-                                'discriminator_loss_prediction', 'discriminator_param_reg_loss' ]        
+                            'n_moa_violations',
+                            'train_loss_total', 'train_loss_prediction',
+                            'sign_reg_loss', 'stability_reg_loss', 'uniform_reg_loss',
+                            'input_param_reg_loss', 
+                            'sn_param_reg_weights_kl_divergence',
+                            'sn_param_reg_weights_L2_loss', 
+                            'sn_param_reg_global_bias_L2_loss', 'sn_param_reg_cat_bias_L2_loss',
+                            'sn_param_reg_global_bias_L1_loss', 'sn_param_reg_cat_bias_L1_loss', 'sn_param_reg_cat_bias_orthogonality',
+                            'output_param_reg_weights_loss', 'output_param_reg_bias_loss',
+                            'vae_param_reg_loss', 'global_bias_kl_divergence', 'adverserial_loss','discriminator_loss_total',
+                            'discriminator_loss_prediction', 'discriminator_param_reg_loss' ]       
 
         self.stats = {}
         self.stats['train'] = np.empty((0, len(self._stats_cols)))
@@ -944,6 +994,9 @@ class TrainSC(TrainBase):
        """
         start_time = time.time()
         self.mod.signaling_network.implement_mask()
+        
+        torch.autograd.set_detect_anomaly(True)
+        
         for e in trange(self.hyper_params['max_epochs']):
             cur_lr = self.prediction_optimizer.param_groups[0]['lr']
             self.discriminator['_cur_lr'] = self.discriminator['optimizer'].param_groups[0]['lr']
@@ -996,8 +1049,7 @@ class TrainSC(TrainBase):
                 discriminator_loss = discriminator_loss_accuracy + discriminator_reg
                 
                 # discriminator optimization
-                # NOTE: discriminator is optimized prior to advererial training (and loss re-calculated)
-                # TODO: need to reset optimizer? or anything
+                # NOTE: discriminator is optimized prior to adverserial training (and loss re-calculated)
                 discriminator_loss.backward(retain_graph = True)
                 self.discriminator['optimizer'].step()
 
@@ -1023,23 +1075,39 @@ class TrainSC(TrainBase):
                 sn_bias_l1_reg = self.mod.signaling_network.L1_reg_bias(bias_global = bias_global, 
                                                                         global_bias_lambda_L1 = self.hyper_params['global_bias_lambda_L1'], 
                                                                         cat_bias_lambda_L1 = self.hyper_params['cat_bias_lambda_L1'])
-                sn_param_reg = {**sn_param_reg, **sn_bias_l1_reg}
+#                 from collections import OrderedDict
+#                 sn_cat_bias_orthogonality_reg = OrderedDict({'cat_bias_orthogonality_loss': 0})
+                sn_cat_bias_orthogonality_reg = self.mod.signaling_network.cat_orthogonality_regularization(covariates_idx = covariates_idx_,
+                                                                                                            X_in = X_in_,
+                                                                                                            regularization_scaler = self.hyper_params['cat_bias_orthogonality_scaler'])
+                sn_param_reg = {**sn_param_reg, **sn_bias_l1_reg, **sn_cat_bias_orthogonality_reg}
                 param_reg = input_param_reg + sum(sn_param_reg.values()) + sum(output_param_reg.values())
                 vae_reg = self.mod.signaling_network.vae.L2_reg(lambda_L2=self.hyper_params['vae_lambda_l2']) # VAE loss
                 param_reg += vae_reg
                    
                 # NOTE: KL divergence is scaled to match loss magnitudes; no bias regularization given KL regularization
                 # can use MMD in the future if KL unstable
-                kl_divergence = self.mod.signaling_network.vae.KL_divergence(z_mu = bias_mu, 
+                
+                # for adj matrix 
+                if self.hyper_params['adj_scaling_KL'] == 0:
+                    kl_divergence_adj = torch.tensor(0.0, device=self.mod.device, dtype=self.mod.dtype)
+                else:
+                    unmasked_weights = self.mod.signaling_network.weights[~self.mod.signaling_network.mask]
+                    kl_divergence_adj = self.hyper_params['adj_scaling_KL'] *kl_divergence_normal(empirical_values = unmasked_weights, 
+                                                             mu=self.hyper_params['adj_prior_mu'], 
+                                                             sigma=self.hyper_params['adj_prior_sigma'], 
+                                                             eps=1e-8)
+                
+                # for global bias
+                kl_divergence_gb = self.mod.signaling_network.vae.KL_divergence(z_mu = bias_mu, 
                                                                              z_log_sigma_squared = bias_log_sigma_squared, 
                                                                              scaling_factor = self.hyper_params['vae_scaling_KL'], 
                                                                              prior_mu = self.hyper_params['vae_prior_mu'], 
                                                                              prior_sigma = self.hyper_params['vae_prior_sigma'])
                 
-                tot_pred_loss = prediction_loss + sign_reg + param_reg + stability_loss + uniform_reg + kl_divergence
+                tot_pred_loss = prediction_loss + sign_reg + param_reg + stability_loss + uniform_reg + kl_divergence_gb + kl_divergence_adj
 
                 # adverserial portion -- same as discriminator, but recalculating on trained model
-                # TODO: does discriminator need to be in .eval/.inference mode?
                 adverserial_loss = torch.tensor(0, device = self.mod.device, dtype = self.mod.dtype)
                 for cat_group_idx, (cat, discriminator) in enumerate(self.discriminator['discriminators'].items()):
                     bias_global_prediction = discriminator(bias_global) # predicted logits
@@ -1049,7 +1117,6 @@ class TrainSC(TrainBase):
                         target = target.to(self.mod.dtype).unsqueeze(1)
 
                     adverserial_loss += discriminator.loss_fn(bias_global_prediction, target)   # if don't use retain_graph = True, then use bias_global_prediction.detach() here
-#                     prediction_loss -= discriminator.loss_fn(bias_global_prediction, target) 
                 tot_pred_loss -= (cur_disc_lambda*adverserial_loss) # adversarial portion
 
                 # gradient
@@ -1065,11 +1132,11 @@ class TrainSC(TrainBase):
                     self.mod.signaling_network.count_sign_mismatch(), 
                     tot_pred_loss.item(), prediction_loss.item(), #train_pearson_r, 
                     sign_reg.item(), stability_loss.item(), uniform_reg.item(), 
-                    input_param_reg.item()])
+                    input_param_reg.item(), kl_divergence_adj.item()])
                 sv = np.concatenate([sv, 
                                      np.array([v.item() for v in sn_param_reg.values()]), 
                                      np.array([v.item() for v in output_param_reg.values()]), 
-                                     np.array([vae_reg.item(), kl_divergence.item(),
+                                     np.array([vae_reg.item(), kl_divergence_gb.item(),
                                                cur_disc_lambda*adverserial_loss.item(), discriminator_loss.item(), 
                                                discriminator_loss_accuracy.item(), discriminator_reg.item()])])
 
@@ -1079,7 +1146,7 @@ class TrainSC(TrainBase):
                 # free up CUDA mem
                 del sign_reg, stability_loss, uniform_reg, param_reg, prediction_loss
                 del input_param_reg, sn_param_reg, output_param_reg
-                del vae_reg, kl_divergence, discriminator_loss, discriminator_loss_accuracy, discriminator_reg
+                del vae_reg, kl_divergence_gb, kl_divergence_adj, discriminator_loss, discriminator_loss_accuracy, discriminator_reg
                 del X_in_, y_out_, covariates_idx_, X_full, Y_full, Y_hat
                 torch.cuda.empty_cache()
 
@@ -1163,7 +1230,7 @@ class TrainSC(TrainBase):
         loss_cols = [
                'train_loss_prediction', 'sign_reg_loss',
                'stability_reg_loss', 'uniform_reg_loss', 'input_param_reg_loss',
-               'sn_param_reg_tot_loss', 'output_param_reg_tot_loss', 'vae_param_reg_loss', 'kl_divergence']
+               'sn_param_reg_tot_loss', 'output_param_reg_tot_loss', 'vae_param_reg_loss', 'global_bias_kl_divergence', 'sn_param_reg_weights_kl_divergence']
 
         reg_tot = self.stats['train'][loss_cols].sum(axis = 1)
         if not np.allclose(reg_tot - self.stats['train']['adverserial_loss'], self.stats['train']['train_loss_total']):

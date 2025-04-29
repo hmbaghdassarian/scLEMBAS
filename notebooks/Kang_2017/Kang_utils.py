@@ -19,19 +19,28 @@ sclembas = '/home/hmbaghda/Projects/scLEMBAS'
 sys.path.insert(1, os.path.join(sclembas))
 from scLEMBAS.preprocess import embed_tf_activity
 
+device = "cuda" if torch.cuda.is_available() else "cpu"
 
 rev_stim = {'STIM': 'CTRL', 'CTRL': 'STIM'}
 
 stim_map = {'STIM': 1, 'CTRL': 0}
 rev_stim_map = {v:k for k,v in stim_map.items()}
 
+def clear_memory():
+    gc.collect()
+    torch.cuda.empty_cache()
+    torch.cuda.ipc_collect()
+    torch.cuda.reset_peak_memory_stats()
+
+
 def get_prediction(mod, tf_adata: List[str], 
                    counterfactual_type: Literal['in_distribution', 'opposite'], cf_map, 
                    train_cells_all, test_conds, 
                    return_bias: bool = False,
                   remove_type: Literal['none', 'global_bias', 'categorical_bias', 'total_bias', 'adj'] = 'none', 
-                  return_loss: bool = True, 
-                  test_cells: Optional[List[str]] = None):
+#                   return_loss: bool = True, 
+                  test_cells: Optional[List[str]] = None, 
+                  train_mode: bool = False):
     """Get prediction from a model given a counterfactual
 
     Parameters
@@ -62,11 +71,10 @@ def get_prediction(mod, tf_adata: List[str],
         - 'total_bias': does not include bias in the prediction (just input and signaling weights)
         - 'adj': includes all bias but sets signaling weights to 0
         the only list of strings are combining either categorical or global bias with adj, since in these cases just removing one of the two bias components still leaves two components in the model, making it hard to decouple effects. 
-        
-    return_loss : bool
-        whether to calculate the prediction loss with actual test data, by default True
     test_cells : 
         the list of test cell barcodes, necessary if return_loss = True
+    train_mode : bool
+        predicts the training conditions, as a negative control to see how model predictions perform on training data
     """
     
     # ----------------CHECKS----------------
@@ -91,38 +99,55 @@ def get_prediction(mod, tf_adata: List[str],
 
     full_expr, full_X, full_covariates = None, None, None
 
+    if not train_mode:
+        for cond in test_conds:
+            stim, ct = cond.split('^')
+            if counterfactual_type == 'opposite':
+                train_cells_cond = tf_adata.obs[(tf_adata.obs['condition'] == rev_stim[stim] + '^' + ct)].index.tolist()
+                if len(set(train_cells_cond).difference(train_cells_all)) != 0:
+                    raise ValueError('Something went wrong in the counterfactual')
+            else:
+                train_cells_cond = cf_map[counterfactual_type]
 
-    for cond in test_conds:
-        stim, ct = cond.split('^')
-        if counterfactual_type == 'opposite':
-            train_cells_cond = tf_adata.obs[(tf_adata.obs['condition'] == rev_stim[stim] + '^' + ct)].index.tolist()
-            if len(set(train_cells_cond).difference(train_cells_all)) != 0:
-                raise ValueError('Something went wrong in the counterfactual')
-        else:
-            train_cells_cond = cf_map[counterfactual_type]
+            expr_test = mod.df_to_tensor(mod.expr.loc[train_cells_cond, :])
 
-        expr_test = mod.df_to_tensor(mod.expr.loc[train_cells_cond, :])
+            X_test_df = pd.DataFrame(data = {'IFNB1': [stim_map[stim]]*len(train_cells_cond)})
+            X_test = mod.df_to_tensor(X_test_df)
 
-        X_test_df = pd.DataFrame(data = {'IFNB1': [stim_map[stim]]*len(train_cells_cond)})
-        X_test = mod.df_to_tensor(X_test_df)
+            covariates_idx_test = torch.tensor([cov_idx_map[ct]]*len(train_cells_cond), 
+                                               device = mod.device, dtype = torch.int64).view(-1,1)
 
-        covariates_idx_test = torch.tensor([cov_idx_map[ct]]*len(train_cells_cond), 
+            if full_expr is None:
+                full_expr = expr_test
+            else: 
+                full_expr = torch.cat((full_expr, expr_test), dim = 0)
+
+            if full_X is None:
+                full_X = X_test
+            else: 
+                full_X = torch.cat((full_X, X_test), dim = 0)
+
+            if full_covariates is None:
+                full_covariates = covariates_idx_test
+            else: 
+                full_covariates = torch.cat((full_covariates, covariates_idx_test), dim = 0)
+    else:
+        train_conds = tf_adata.obs.loc[train_cells_all, 'condition'].unique()
+        for cond in train_conds: # predict the training condition from the training condition
+            stim, ct = cond.split('^')
+            train_cells_cond = tf_adata.obs[tf_adata.obs.condition == cond].index.tolist()
+
+            expr_test = mod.df_to_tensor(mod.expr.loc[train_cells_cond, :])
+
+            X_test_df = pd.DataFrame(data = {'IFNB1': [stim_map[stim]]*len(train_cells_cond)})
+            X_test = mod.df_to_tensor(X_test_df)
+
+            covariates_idx_test = torch.tensor([cov_idx_map[ct]]*len(train_cells_cond), 
                                            device = mod.device, dtype = torch.int64).view(-1,1)
 
-        if full_expr is None:
-            full_expr = expr_test
-        else: 
-            full_expr = torch.cat((full_expr, expr_test), dim = 0)
-
-        if full_X is None:
-            full_X = X_test
-        else: 
-            full_X = torch.cat((full_X, X_test), dim = 0)
-
-        if full_covariates is None:
-            full_covariates = covariates_idx_test
-        else: 
-            full_covariates = torch.cat((full_covariates, covariates_idx_test), dim = 0)
+            full_expr = expr_test if full_expr is None else torch.cat((full_expr, expr_test), dim = 0)
+            full_X = X_test if full_X is None else torch.cat((full_X, X_test), dim = 0)
+            full_covariates = covariates_idx_test if full_covariates is None else torch.cat((full_covariates, covariates_idx_test), dim = 0)
 
 
     # metadata setup
@@ -134,6 +159,9 @@ def get_prediction(mod, tf_adata: List[str],
 
     # ----------------FORWARD PASS----------------
     X_in, covariates_idx, expr = full_X, full_covariates, full_expr
+
+    clear_memory()
+    
     mod.eval()
     with torch.inference_mode():
         X_full = mod.input_layer(X_in) # input ligands to signaling network
@@ -159,6 +187,7 @@ def get_prediction(mod, tf_adata: List[str],
         if return_bias:
             bias_tot = bias_global.T + bias_cats
             bias_sigma = torch.exp(bias_log_sigma_squared/2.) + mod.signaling_network.vae.var_min
+            clear_memory()
             return bias_global, bias_mu, bias_sigma, bias_cats, bias_tot, obs
 
         if remove_type == ['none'] or remove_type == ['adj']:
@@ -207,7 +236,8 @@ def get_prediction(mod, tf_adata: List[str],
         Y_full = X_new.T
 
         y_predicted = mod.output_layer(Y_full)
-
+        
+        clear_memory()
     if remove_type == ['none']:
         consistent_forward = True
         y_predicted_, Y_full_, biases_ = mod(X_in, covariates_idx, expr)
@@ -219,21 +249,36 @@ def get_prediction(mod, tf_adata: List[str],
             raise ValueError('Prediction here does not match forward pass')
         del y_predicted_, Y_full_, biases_
 
-    if return_loss:
-        if test_cells is None:
-            # TODO: do not make test_cells an argument in the function, this line suffices
-            test_cells = tf_adata.obs[tf_adata.obs.condition.isin(test_conds)].index.tolist()
-        tot_loss = 0
-        for cond in test_conds:
-            stim, ct = cond.split('^')
+#     if return_loss:
+#         if not train_mode:
+#             if test_cells is None:
+#                 # TODO: do not make test_cells an argument in the function, this line suffices
+#                 test_cells = tf_adata.obs[tf_adata.obs.condition.isin(test_conds)].index.tolist()
+#             tot_loss = 0
+#             for cond in test_conds:
+#                 stim, ct = cond.split('^')
 
-            test_cells_cond = tf_adata.obs[(tf_adata.obs.index.isin(test_cells)) & (tf_adata.obs['condition'] == cond)].index.tolist()
-            y_test = mod.df_to_tensor(tf_adata.to_df().loc[test_cells_cond, :])  
+#                 test_cells_cond = tf_adata.obs[(tf_adata.obs.index.isin(test_cells)) & (tf_adata.obs['condition'] == cond)].index.tolist()
+#                 # ^ this should work as just one or the other of the two conditions, but keep as is since it works
 
-            loss_fn = SamplesLoss("sinkhorn", p=2, blur=0.05).to(mod.device)
-            tot_loss += loss_fn(y_predicted[obs[obs.condition == cond].index,:], y_test).detach().cpu().item() 
-    else:
-        tot_loss = None
+#                 y_test = mod.df_to_tensor(tf_adata.to_df().loc[test_cells_cond, :])  
+
+#                 loss_fn = SamplesLoss("sinkhorn", p=2, blur=0.05).to(mod.device)
+#                 tot_loss += loss_fn(y_predicted[obs[obs.condition == cond].index,:], y_test).detach().cpu().item() 
+#                 clear_memory()
+#         else:
+#             tot_loss = 0
+#             for cond in train_conds:
+#                 stim, ct = cond.split('^')
+
+#                 train_cells_cond = tf_adata.obs[(tf_adata.obs['condition'] == cond)].index.tolist()
+#                 y_test = mod.df_to_tensor(tf_adata.to_df().loc[train_cells_cond, :])  
+
+#                 loss_fn = SamplesLoss("sinkhorn", p=2, blur=0.05).to(mod.device)
+#                 tot_loss += loss_fn(y_predicted[obs[obs.condition == cond].index,:], y_test).detach().cpu().item() 
+#                 clear_memory()
+#     else:
+#         tot_loss = None
 
     y_predicted = pd.DataFrame(y_predicted.detach().cpu().numpy())
     y_predicted.columns = mod.y_out.columns
@@ -245,11 +290,28 @@ def get_prediction(mod, tf_adata: List[str],
     if 'adj' not in remove_type:
         del X_old
 
-    gc.collect()
-    torch.cuda.empty_cache()  # Clears the cached memory
-    torch.cuda.ipc_collect()
+    clear_memory()
 
-    return tf_adata_predicted, tot_loss
+    return tf_adata_predicted
+
+def get_loss(tf_adata, tf_adata_predicted, device = device):
+    """Calculates the loss between predicted and actual data per condition. 
+    geom_loss by default normalizes to sample size so that doesn't need to be done. 
+    Does take average across conditions for the total loss (rather than simply summing), so that it does not change with 
+    the number of conditions 
+    """
+    loss_fn = SamplesLoss("sinkhorn", p=2, blur=0.05).to(device)
+    loss = {}
+    conds = tf_adata_predicted.obs.condition.unique()
+    for cond in conds:
+        y_predicted = torch.tensor(tf_adata_predicted[tf_adata_predicted.obs.condition == cond, ].to_df().values).to(device)
+        y_actual = torch.tensor(tf_adata[tf_adata.obs.condition == cond, ].to_df().values).to(device)
+        loss[cond] = loss_fn(y_predicted, y_actual)
+        clear_memory()
+    loss['EMD Loss'] = sum(loss.values())/len(loss) # averaged across condition to not scale with n_conditions
+    
+    
+    return {k: float(v.cpu().numpy()) for k,v in loss.items()}
 
 
 
@@ -279,7 +341,8 @@ def adata_dimviz_bias(adata, reduction_type, cat, subset_size = None, seed = 888
     viz_df = pd.DataFrame(adata.obsm['X_' + reduction_type])
     viz_df = pd.concat([viz_df, pd.DataFrame(adata.obs[cat]).reset_index(drop = True)], ignore_index = True, axis = 1)
 
-    viz_df.columns = [reduction_type.upper() + str(i+1) for i in range(viz_df.shape[1])]
+    reduction_type_ = 'pc' if reduction_type == 'pca' else reduction_type
+    viz_df.columns = [reduction_type_.upper() + str(i+1) for i in range(viz_df.shape[1])]
     viz_df.columns = viz_df.columns[:-1].tolist() + [cat]
     
     nmi = normalized_mutual_info_score(adata.obs.leiden, adata.obs[cat])
@@ -294,6 +357,8 @@ def adata_dimviz_bias(adata, reduction_type, cat, subset_size = None, seed = 888
                                               replace = False).tolist()
         viz_df = viz_df.loc[index_to_keep, :]
     
+    # shuffle
+    viz_df = viz_df.sample(frac=1, random_state = seed).reset_index(drop=True)
     return viz_df,nmi
 
 def adata_dimviz_prediction(adata, reduction_type, cats, max_condition_size = None, seed = 888):
@@ -328,7 +393,9 @@ def adata_dimviz_prediction(adata, reduction_type, cats, max_condition_size = No
                             replace = False))
         viz_df.drop(index = drop_idx, inplace = True)
 
+    # shuffle
     
+    viz_df = viz_df.sample(frac=1, random_state = seed).reset_index(drop=True)
     return viz_df
 
 

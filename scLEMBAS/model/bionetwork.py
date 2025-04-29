@@ -556,11 +556,15 @@ class BioNetCat(BioNetBase):
         self.bias_mask[self.input_node_idx] = True
         self.cat_embeddings_mask = {covariate_cat: torch.cat([self.bias_mask.T] * embedding.weight.shape[0], dim=0)
                             for covariate_cat, embedding in self.cat_embeddings.items()}
+        
+        # for use with regularizing bias against containing stimulation information (see `self.cat_orthogonality_regularization`)
+        all_indices = torch.arange(self.n_network_nodes, device = self.device)
+        self.cat_unmasked_indices = all_indices[~torch.isin(all_indices, self.input_node_idx)]
+        
 
         # a boolean adjacency matrix of all nodes in the signaling network, with interactions that do not exist 
         # or have an unknown mechanism of action masked (True)
         self.mask_MOA = self.weights_MOA == 0
-        
         
     def embed_covariates(self):
         """
@@ -683,8 +687,8 @@ class BioNetCat(BioNetBase):
 
         cat_bias_loss = 0
         for cat_embedding in self.cat_embeddings.values():
-            cat_bias_loss += torch.sum(torch.abs(cat_embedding.weight))
-        cat_bias_loss *= cat_bias_lambda_L1
+            cat_bias_loss = cat_bias_loss + torch.sum(torch.abs(cat_embedding.weight.clone()))
+        cat_bias_loss = cat_bias_lambda_L1*cat_bias_loss
         
         return OrderedDict({'cat_bias_L1_loss': cat_bias_loss})
 
@@ -717,11 +721,67 @@ class BioNetCat(BioNetBase):
 
         cat_bias_loss = 0
         for cat_embedding in self.cat_embeddings.values():
-            cat_bias_loss += torch.sum(torch.square(cat_embedding.weight))
-        cat_bias_loss *= cat_bias_lambda_L2
+            cat_bias_loss = cat_bias_loss + torch.sum(torch.square(cat_embedding.weight.clone()))
+        cat_bias_loss = cat_bias_loss*cat_bias_lambda_L2
 
 #         bionet_L2 = weight_loss + cat_bias_loss
         return OrderedDict({'weight_L2_loss': weight_loss, 'cat_bias_L2_loss': cat_bias_loss})
+
+
+    def cat_orthogonality_regularization(self, 
+                                     covariates_idx, 
+                                     X_in,
+                                     regularization_scaler = 1):
+        """
+        Enforces global orthogonality between categorical embedding and stimulation spaces.
+
+        Parameters
+        ----------
+        X_in : torch.Tensor
+            the ligand concentration inputs. Shape is (samples x ligands). Same input as to `ProjectInput.forward`
+        covariates_idx : torch.Tensor
+            rows correspond to samples as in X_full. Each column represents one categorical covariate group. Values
+            in the columns represent the index mapping of the category label. Basically a rowsubset of `self.covariates_idx`.
+            Same input as forward pass
+        regularization_scaler: Union[float, int]
+            scaling value by which to multiply the regularization term
+
+        Returns
+        -------
+         : torch.Tensor
+            Scalar loss (squared Frobenius norm of correlation between spaces)
+        """
+        # cat embedding of dim (batch_size, dim1)
+        # stimulation matrix X_in of dim (batch_size, dim2)
+
+        reg_terms = [] #tot_cos_similarity = 0.0
+        for cat_group_idx in range(covariates_idx.shape[1]): # iterate through covariates
+
+            # get the embedding, excluding masked stimulation values
+            cat_group = self._cat_group_idx[cat_group_idx]
+            cat_embedding = self.cat_embeddings[cat_group](covariates_idx[:,cat_group_idx]).clone()
+            cat_embedding = cat_embedding[:, self.cat_unmasked_indices]
+
+            # column-wise mean centering (rows are batches/samples)
+            cat_center = cat_embedding - cat_embedding.mean(dim=0, keepdim=True)
+            stim_center = X_in - X_in.mean(dim=0, keepdim=True)
+
+            # row-wise normalize to unit length 
+            cat_norm = cat_center.norm(dim=1, keepdim=True) + 1e-8
+            stim_norm = stim_center.norm(dim=1, keepdim=True) + 1e-8
+
+            c = cat_center / cat_norm
+            s = stim_center / stim_norm
+            
+
+            # pairwise cosine similarity between embeddings and stimulations, averaged across batches/samples
+            dot_matrix = c.T @ s / c.shape[0] # (dim1 x dim2)
+
+            # frobenius norm of dot product matrix
+            reg_terms.append(torch.norm(dot_matrix, p='fro') ** 2) #tot_cos_similarity = tot_cos_similarity + torch.norm(dot_matrix, p='fro') ** 2 
+
+        tot_cos_similarity = sum(reg_terms)
+        return OrderedDict({'cat_bias_orthogonality_loss': regularization_scaler*tot_cos_similarity})
     
 class BioNetSC(BioNetCat):
     """Builds the RNN on the signaling network topology, accounting for single-cell inputs."""
@@ -868,10 +928,11 @@ class BioNetSC(BioNetCat):
         # cat embeddings in the cat one are already normalized
         global_bias_loss = L1_reg(global_bias_lambda_L1, bias_global)
 
-        cat_bias_loss = 0
-        for cat_embedding in self.cat_embeddings.values():
-            cat_bias_loss += torch.sum(torch.abs(cat_embedding.weight))
-        cat_bias_loss *= cat_bias_lambda_L1
+        cat_bias_loss = torch.tensor(0.0, device=self.device, dtype=self.dtype)
+        if cat_bias_lambda_L1 != 0:
+            for cat_embedding in self.cat_embeddings.values():
+                cat_bias_loss = cat_bias_loss + torch.sum(torch.abs(cat_embedding.weight.clone()))
+            cat_bias_loss = cat_bias_loss*cat_bias_lambda_L1
         
         return OrderedDict({'global_bias_L1_loss': global_bias_loss, 'cat_bias_L1_loss': cat_bias_loss})
 
@@ -900,9 +961,11 @@ class BioNetSC(BioNetCat):
         global_bias_loss = L2_reg(global_bias_lambda_L2, bias_global)
         weight_loss = L2_reg(weights_lambda_L2, self.weights)
 
-        cat_bias_loss = 0
-        for cat_embedding in self.cat_embeddings.values():
-            cat_bias_loss += torch.sum(torch.square(cat_embedding.weight))
-        cat_bias_loss *= cat_bias_lambda_L2
+        
+        cat_bias_loss = torch.tensor(0.0, device=self.device, dtype=self.dtype)
+        if cat_bias_lambda_L2 != 0:
+            for cat_embedding in self.cat_embeddings.values():
+                cat_bias_loss = cat_bias_loss + torch.sum(torch.square(cat_embedding.weight.clone()))
+            cat_bias_loss = cat_bias_lambda_L2 * cat_bias_loss
         
         return OrderedDict({'weight_L2_loss': weight_loss, 'global_bias_L2_loss': global_bias_loss, 'cat_bias_L2_loss': cat_bias_loss})
