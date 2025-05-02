@@ -9,9 +9,13 @@ import torch
 from torch import nn
 
 
-def freeze_model(model, requires_grad):
+def freeze_model(model):
     for param in model.parameters():
-        param.requires_grad = requires_grad
+        param.requires_grad = False
+        
+def unfreeze_model(model):
+    for param in model.parameters():
+        param.requires_grad = True
 
 def np_to_torch(arr: np.array, dtype: torch.float32, device: str = 'cpu'):
     """Convert a numpy array to a torch.tensor

@@ -16,7 +16,7 @@ from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 
 import scLEMBAS.utilities as utils
-from .model_utilities import update_with_defaults, kl_divergence_normal
+from .model_utilities import update_with_defaults, kl_divergence_normal, freeze_model, unfreeze_model
 from .bionetwork import BioNetSimple, BioNetCat, BioNetSC
 from .model_components import CatDiscriminator
 from .lr_schedulers import WarmupCosineAnnealingWarmRestarts
@@ -1033,14 +1033,14 @@ class TrainSC(TrainBase):
                 # discriminator prediction and loss
                 discriminator_loss_accuracy = torch.tensor(0, device = self.mod.device, dtype = self.mod.dtype)
                 for cat_group_idx, (cat, discriminator) in enumerate(self.discriminator['discriminators'].items()):
-                    bias_global_prediction = discriminator(bias_global) # predicted logits
+                    bias_global_prediction = discriminator(bias_global.detach()) # predicted logits
+                    # if don't use retain_graph = True, then use bias_global.detach() here
 
                     target = covariates_idx_[:, cat_group_idx]
                     if discriminator.n_labels == 2:
                         target = target.to(self.mod.dtype).unsqueeze(1)
 
-                    discriminator_loss_accuracy += discriminator.loss_fn(bias_global_prediction, target)   # if don't use retain_graph = True, then use bias_global_prediction.detach() here
-#                     prediction_loss -= discriminator.loss_fn(bias_global_prediction, target) 
+                    discriminator_loss_accuracy += discriminator.loss_fn(bias_global_prediction, target)   
 
                 # discriminator regularization
                 discriminator_reg = torch.tensor(0, device = self.mod.device, dtype = self.mod.dtype)
@@ -1050,9 +1050,20 @@ class TrainSC(TrainBase):
                 
                 # discriminator optimization
                 # NOTE: discriminator is optimized prior to adverserial training (and loss re-calculated)
-                discriminator_loss.backward(retain_graph = True)
+                discriminator_loss.backward() # if bias global is not detached, need to set retain_graph = True here
                 self.discriminator['optimizer'].step()
-
+                
+                # freeze discriminator (to prevent updating discriminator gradients when calling discriminator while 
+                # training generator adverserially below)
+                for discriminator in self.discriminator['discriminators'].values():
+                    freeze_model(model = discriminator)
+                    
+                # NOTE: 
+                # a good adverserial check here is to see if the vae (and all self.mod) param gradients are still 0, 
+                # as the backward pass for prediction has not yet been called; when using the retain_graph = True
+                # and not calling bias_global.detach() above, the gradients from calculating the discriminator loss
+                # on bias global were leaking into the generator portion
+                
                 ############ LEMBAS and generator ############
                 # reconstruction loss
                 prediction_loss = self.prediction_loss_fn(y_out_, Y_hat)
@@ -1116,14 +1127,25 @@ class TrainSC(TrainBase):
                     if discriminator.n_labels == 2:
                         target = target.to(self.mod.dtype).unsqueeze(1)
 
-                    adverserial_loss += discriminator.loss_fn(bias_global_prediction, target)   # if don't use retain_graph = True, then use bias_global_prediction.detach() here
+                    adverserial_loss += discriminator.loss_fn(bias_global_prediction, target)   
                 tot_pred_loss -= (cur_disc_lambda*adverserial_loss) # adversarial portion
 
-                # gradient
+                # model gradient
                 tot_pred_loss.backward()
                 self.mod.add_gradient_noise(noise_level = self.hyper_params['gradient_noise_scale'])
                 self.prediction_optimizer.step()
                 self.mod.signaling_network.implement_mask() # moved out of forward pass to ensure after last backpass these are 0
+                
+                # unfreeze discriminator for training in next epoch/batch
+                for discriminator in self.discriminator['discriminators'].values():
+                    unfreeze_model(model = discriminator)
+                    
+                # NOTE: 
+                # a good adverserial check here is to see if the discriminator parameter gradients have changed since 
+                # calling discriminator_loss.backward(); they should not have, but i've found calling the discriminator forward pass 
+                # during the adversarial training and the tot_pred_loss.backward() does update them unless I manually freeze them
+
+                
                 # bias global masking can stay in forward pass because it is generated during the forward pass and 
                 # won't be updated in the back pass
 

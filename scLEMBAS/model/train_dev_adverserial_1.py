@@ -16,7 +16,7 @@ from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 
 import scLEMBAS.utilities as utils
-from .model_utilities import update_with_defaults, kl_divergence_normal, freeze_model
+from .model_utilities import update_with_defaults, kl_divergence_normal, freeze_model, unfreeze_model
 from .bionetwork import BioNetSimple, BioNetCat, BioNetSC
 from .model_components import CatDiscriminator
 from .lr_schedulers import WarmupCosineAnnealingWarmRestarts
@@ -1056,7 +1056,7 @@ class TrainSC(TrainBase):
                 # freeze discriminator (to prevent updating discriminator gradients when calling discriminator while 
                 # training generator adverserially below)
                 for discriminator in self.discriminator['discriminators'].values():
-                    freeze_model(model = discriminator, requires_grad = False)
+                    freeze_model(model = discriminator)
                     
                 # NOTE: 
                 # a good adverserial check here is to see if the vae (and all self.mod) param gradients are still 0, 
@@ -1138,7 +1138,7 @@ class TrainSC(TrainBase):
                 
                 # unfreeze discriminator for training in next epoch/batch
                 for discriminator in self.discriminator['discriminators'].values():
-                    freeze_model(model = discriminator, requires_grad = True)
+                    unfreeze_model(model = discriminator)
                     
                 # NOTE: 
                 # a good adverserial check here is to see if the discriminator parameter gradients have changed since 
