@@ -114,9 +114,6 @@ class SignalingModel(torch.nn.Module):
         # creates self.node_idx_map
         edge_list, edge_MOA = self.parse_network(net, ban_list, weight_label, source_label, target_label)
 
-        ## filter for nodes in the network, sorting in alphabetical order (as node_labels and node_idx_map is)
-#         self.X_in = X_in.loc[:, np.intersect1d(X_in.columns.values, node_labels)]
-#         self.y_out = y_out.loc[:, np.intersect1d(y_out.columns.values, node_labels)]
         # filter for nodes in the network, sorting in order of the node_idx_map
         self.X_in = X_in[sorted([col for col in self.node_idx_map if col in X_in.columns], key=self.node_idx_map.get)]
         if not rand_y: 
@@ -124,7 +121,7 @@ class SignalingModel(torch.nn.Module):
         else:
             raise ValueError('make sure this is functioning as expected')
             self.y_out = y_out
-        self.expr = expr
+        self.expr = expr     
 
         # define model layers
         self.input_layer = ProjectInput(node_idx_map = self.node_idx_map, 

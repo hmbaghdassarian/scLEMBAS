@@ -754,33 +754,36 @@ class BioNetCat(BioNetBase):
         # cat embedding of dim (batch_size, dim1)
         # stimulation matrix X_in of dim (batch_size, dim2)
 
-        reg_terms = [] #tot_cos_similarity = 0.0
-        for cat_group_idx in range(covariates_idx.shape[1]): # iterate through covariates
+        if regularization_scaler == 0:
+            tot_cos_similarity = torch.tensor(0.0, device=self.device, dtype=self.dtype)
+        else:
+            reg_terms = [] #tot_cos_similarity = 0.0
+            for cat_group_idx in range(covariates_idx.shape[1]): # iterate through covariates
 
-            # get the embedding, excluding masked stimulation values
-            cat_group = self._cat_group_idx[cat_group_idx]
-            cat_embedding = self.cat_embeddings[cat_group](covariates_idx[:,cat_group_idx]).clone()
-            cat_embedding = cat_embedding[:, self.cat_unmasked_indices]
+                # get the embedding, excluding masked stimulation values
+                cat_group = self._cat_group_idx[cat_group_idx]
+                cat_embedding = self.cat_embeddings[cat_group](covariates_idx[:,cat_group_idx]).clone()
+                cat_embedding = cat_embedding[:, self.cat_unmasked_indices]
 
-            # column-wise mean centering (rows are batches/samples)
-            cat_center = cat_embedding - cat_embedding.mean(dim=0, keepdim=True)
-            stim_center = X_in - X_in.mean(dim=0, keepdim=True)
+                # column-wise mean centering (rows are batches/samples)
+                cat_center = cat_embedding - cat_embedding.mean(dim=0, keepdim=True)
+                stim_center = X_in - X_in.mean(dim=0, keepdim=True)
 
-            # row-wise normalize to unit length 
-            cat_norm = cat_center.norm(dim=1, keepdim=True) + 1e-8
-            stim_norm = stim_center.norm(dim=1, keepdim=True) + 1e-8
+                # row-wise normalize to unit length 
+                cat_norm = cat_center.norm(dim=1, keepdim=True) + 1e-8
+                stim_norm = stim_center.norm(dim=1, keepdim=True) + 1e-8
 
-            c = cat_center / cat_norm
-            s = stim_center / stim_norm
-            
+                c = cat_center / cat_norm
+                s = stim_center / stim_norm
 
-            # pairwise cosine similarity between embeddings and stimulations, averaged across batches/samples
-            dot_matrix = c.T @ s / c.shape[0] # (dim1 x dim2)
 
-            # frobenius norm of dot product matrix
-            reg_terms.append(torch.norm(dot_matrix, p='fro') ** 2) #tot_cos_similarity = tot_cos_similarity + torch.norm(dot_matrix, p='fro') ** 2 
+                # pairwise cosine similarity between embeddings and stimulations, averaged across batches/samples
+                dot_matrix = c.T @ s / c.shape[0] # (dim1 x dim2)
 
-        tot_cos_similarity = sum(reg_terms)
+                # frobenius norm of dot product matrix
+                reg_terms.append(torch.norm(dot_matrix, p='fro') ** 2) #tot_cos_similarity = tot_cos_similarity + torch.norm(dot_matrix, p='fro') ** 2 
+
+            tot_cos_similarity = sum(reg_terms)
         return OrderedDict({'cat_bias_orthogonality_loss': regularization_scaler*tot_cos_similarity})
     
 class BioNetSC(BioNetCat):
@@ -820,6 +823,7 @@ class BioNetSC(BioNetCat):
                                               device = self.device, dtype = self.dtype, 
                                               seed = seed
                                   )
+        self.implement_mask()
 
     def initialize_weight_values(self):
         """Initialize the RNN weight_values for all interactions in the signaling network. 

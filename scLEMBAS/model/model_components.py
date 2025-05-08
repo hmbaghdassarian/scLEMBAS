@@ -466,7 +466,7 @@ class GaussianVariationalEncoder(nn.Module):
     
     
 class CatDiscriminator(nn.Module):
-    """"Discriminator for categorical covariates in adversarial training of TFA.
+    """"Discriminator for categorical covariates in adversarial training of scLEMBAS.
     Adapted from scVI's `Classifier`.
     """
     
@@ -490,7 +490,7 @@ class CatDiscriminator(nn.Module):
         Parameters
         ----------
         n_features_in : int
-            number of inpute features to discriminator (should be number of latent features for TFA)
+            number of inpute features to discriminator (should be number of latent features for scLEMBAS)
         n_labels : int
             number of categories for the given categorical covariate
         n_hidden_nodes : List[int], optional

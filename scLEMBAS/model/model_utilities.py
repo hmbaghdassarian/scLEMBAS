@@ -88,7 +88,57 @@ def kl_divergence_normal(empirical_values, mu=0.0, sigma=1.0, eps=1e-12):
     return kl
 
     
-  
+# class WeightUpdateMonitor:
+#     def __init__(self, model, atol=1e-6):
+#         self.model = model
+#         self.atol = atol
+#         self._saved_weights = {}
+
+#     def save(self):
+#         """Save a snapshot of current weights and gradients (if exist)."""
+#         self._saved_weights = {
+#             name: param.detach().clone()
+#             for name, param in self.model.named_parameters()
+#         }
+#         self._saved_grads = {
+#             name: param.grad.detach().clone() if param.grad is not None else None
+#             for name, param in self.model.named_parameters()
+#         }
+
+#     def check(self, verbose=True):
+#         """Report norm deltas only when weight or gradient has changed."""
+#         changed = False
+#         for name, param in self.model.named_parameters():
+#             old_weight = self._saved_weights[name]
+#             new_weight = param.detach()
+#             delta = new_weight - old_weight
+#             delta_norm = delta.norm().item()
+#             weight_changed = delta_norm > self.atol
+#             changed = changed or weight_changed
+
+#             # Check gradient
+#             grad = param.grad
+#             grad_old = self._saved_grads.get(name, None)
+#             grad_changed = False
+#             grad_norm = None
+
+#             if grad is not None:
+#                 grad_norm = grad.norm().item()
+#                 if grad_old is None:
+#                     grad_changed = True
+#                 else:
+#                     grad_changed = not torch.allclose(grad, grad_old, atol=self.atol)
+
+
+#             if verbose and (weight_changed or grad_changed):
+#                 print(f"{name}:")
+#                 if weight_changed:
+#                     print(f" weight norm change: {delta_norm:.3e}")
+#                 if grad_changed:
+#                     print(f"grad norm:   {grad_norm:.3e}")
+#             if not verbose:
+#                 return changed
+ 
     
 
 # def get_spectral_radius(weights: nn.parameter.Parameter):
