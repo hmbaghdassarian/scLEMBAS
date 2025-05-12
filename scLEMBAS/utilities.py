@@ -4,9 +4,18 @@ Helper functions for running and training the SignalingModel.
 import os
 import time
 from typing import List
+import gc
 
 import torch
 import numpy as np
+
+
+def clear_memory():
+    gc.collect()
+    torch.cuda.empty_cache()
+    torch.cuda.ipc_collect()
+    torch.cuda.reset_peak_memory_stats()
+
 
 def set_seeds(seed: int=888):
     """Sets random seeds for torch operations.

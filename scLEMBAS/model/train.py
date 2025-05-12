@@ -880,7 +880,9 @@ class TrainSC(TrainBase):
                  train_split: Optional[Dict[str, Union[float, List[str]]]] = {'train': 0.8, 'test': 0.2, 'validation': None},
                  train_seed: int = None,
                  track_test: bool = False,
-                 track_validation: bool = False
+                 track_validation: bool = False, 
+                 n_eval_cells: int = 30, 
+                 n_eval_bootstrap: int = 3
                  ):
         """See `TrainBase` for parameters. Additional parameters include:
         
@@ -895,8 +897,13 @@ class TrainSC(TrainBase):
                     scales the dscriminator loss to incorporate into the adverserial training this can either be a float, 
                     or a list of floats, where each element corresponds to the scaling for that epoch
         pert_discriminator_params : Dict
-            same as `stim_discriminator_params 
-            `
+            same as `stim_discriminator_params`
+        n_eval_cells: int
+            downsample train/test/validation batches to this # of cells when evaluating loss
+            which enables direct comparison between train and test/val for EMD loss
+            EMD loss scales with sample size (more samples --> less loss given two IID datasets)
+        n_eval_bootstrap: int
+            run downsampling this many times when downsampling for evaluation
         
         
         """
@@ -911,6 +918,10 @@ class TrainSC(TrainBase):
                            train_seed = train_seed,
                          track_validation = track_validation,
                          track_test = track_test)
+    
+        # for tracking
+        self.n_eval_cells = n_eval_cells
+        self.n_eval_bootstrap = n_eval_bootstrap
         
         self.create_data_loader(include_covariates = True, include_expr = True)
         self.initialize_cat_discriminator(cat_discriminator_params)
@@ -938,11 +949,18 @@ class TrainSC(TrainBase):
 
         self.stats = {}
         self.stats['train'] = np.empty((0, len(self._stats_cols)))
+        
+        # tracking of equal size samples to compare to test/train (and without noise added)
+        if self.track_test or self.track_validation:
+            self._stats_cols_eval = ['epoch', 'batch_index', 'loss_full', 'size_full', 
+                                          'bootstrap_index', 'loss_downsample', 'size_downsample']
+            self.stats['train_eval'] = np.empty((0, 7))
+            self._bootstrap_counter = 0
 
-        if self.track_test: 
-            self.stats['test'] = np.empty((0, 3))
-        if self.track_validation:
-            self.stats['validation'] = np.empty((0, 3))
+            if self.track_test: 
+                self.stats['test'] = np.copy(self.stats['train_eval'])
+            if self.track_validation:
+                self.stats['validation'] = np.copy(self.stats['train_eval'])
 
     def initialize_pert_discriminator(self, pert_discriminator_params):
         
@@ -1088,7 +1106,7 @@ class TrainSC(TrainBase):
                 self.cat_discriminator['optimizer'].zero_grad()
                 self.pert_discriminator['optimizer'].zero_grad()
 
-                X_in_, y_out_, covariates_idx_ = X_in_.to(self.mod.device), y_out_.to(self.mod.device), covariates_idx_.to(self.mod.device)
+                X_in_, y_out_, covariates_idx_, expr_ = X_in_.to(self.mod.device), y_out_.to(self.mod.device), covariates_idx_.to(self.mod.device), expr_.to(self.mod.device)
 
                 ######################## Forward Pass ########################
                 X_full = self.mod.input_layer(X_in_) # transform to full network with ligand input concentrations
@@ -1284,6 +1302,36 @@ class TrainSC(TrainBase):
 
                 self.stats['train'] = np.vstack((self.stats['train'], sv))
                 
+                # comparable tracking of train data with test data
+                if self.track_test or self.track_validation:
+                    self.mod.eval()
+                    with torch.inference_mode(): 
+                        n_cells = X_in_.shape[0]
+
+                        # get the full prediction for comparison with subsetting
+                        # TODO: move this just to the eval section and don't track the full
+                        y_pred_eval, _, _ = self.mod(X_in_, covariates_idx_,  expr_) 
+                        eval_loss_full = self.prediction_loss_fn(y_out_,  y_pred_eval).item()
+
+                        if n_cells > self.n_eval_cells:
+
+                            for eval_bootstrap_i in range(self.n_eval_bootstrap):
+                                utils.set_seeds(self.mod.seed + self._bootstrap_counter)
+                                n_eval_idx = torch.randint(0, n_cells, (self.n_eval_cells, ))
+                                y_pred_eval, _, _ = self.mod(X_in_[n_eval_idx, :], covariates_idx_[n_eval_idx,:],  expr_[n_eval_idx,:])
+                                eval_loss = self.prediction_loss_fn(y_out_[n_eval_idx, :],
+                                                    y_pred_eval).item()
+
+                                eval_sv = np.array([e, batch, eval_loss_full, n_cells, eval_bootstrap_i, eval_loss, self.n_eval_cells])
+                                self.stats['train_eval'] = np.vstack((self.stats['train_eval'], eval_sv))
+                                self._bootstrap_counter += 1
+                        else:
+                            eval_sv = np.array([e, batch, eval_loss_full, n_cells, 0, eval_loss_full, n_cells])
+                            self.stats['train_eval'] = np.vstack((self.stats['train_eval'], eval_sv))
+
+                        del y_pred_eval, _, eval_loss_full
+                        utils.clear_memory()
+                
                 # free up CUDA mem
                 del sign_reg, stability_loss, uniform_reg, param_reg, prediction_loss
                 del input_param_reg, sn_param_reg, output_param_reg
@@ -1291,31 +1339,46 @@ class TrainSC(TrainBase):
                 del cat_discriminator_loss, cat_discriminator_loss_accuracy, cat_discriminator_reg
                 del pert_discriminator_loss, pert_discriminator_loss_accuracy, pert_discriminator_reg
                 del X_in_, y_out_, covariates_idx_, X_full, Y_full, Y_hat
-                torch.cuda.empty_cache()
+                utils.clear_memory()
 
             self.lr_scheduler.step()
             self.cat_discriminator['lr_scheduler'].step()
             self.pert_discriminator['lr_scheduler'].step()
 
             # test/validation
-            if self.track_validation or self.track_test:
+            data_types = []
+            if self.track_test:
+                data_types.append('test')
+            if self.track_validation:
+                data_types.append('validation')
+            for data_type in data_types:
                 self.mod.eval()
                 with torch.inference_mode(): 
-                    if self.track_validation:
-                        for batch, (X_in_val, y_out_val, covariates_idx_val, expr_val) in enumerate(self.validation_dataloader): 
-                            X_in_val, y_out_val, covariates_idx_val = X_in_val.to(self.mod.device), y_out_val.to(self.mod.device), covariates_idx_val.to(self.mod.device)
-                            self.mod.signaling_network.mask = self.mod.signaling_network.mask.to(X_in_val.device)
-                            y_pred_val, _, _ = self.mod(X_in = X_in_val, covariates_idx = covariates_idx_val, expr = expr_val)
-                            loss_val = self.prediction_loss_fn(y_out_val, y_pred_val).detach().item()
-                            self.stats['validation'] = np.vstack((self.stats['validation'], np.array([e+1, batch, loss_val])))
-                            del y_pred_val, _
-                    if self.track_test:
-                        for batch, (X_in_test, y_out_test, covariates_idx_test, expr_test) in enumerate(self.test_dataloader):
-                            X_in_test, y_out_test, covariates_idx_test = X_in_test.to(self.mod.device), y_out_test.to(self.mod.device), covariates_idx_test.to(self.mod.device)
-                            y_pred_test, _, _ = self.mod(X_in = X_in_test, covariates_idx = covariates_idx_test, expr = expr_test)
-                            loss_test = self.prediction_loss_fn(y_out_test, y_pred_test).detach().item()
-                            self.stats['test'] = np.vstack((self.stats['test'], np.array([e +1, batch, loss_test])))
-                            del y_pred_test, _
+                    for batch, (X_in_, y_out_, covariates_idx_, expr_) in enumerate(self.__dict__[data_type + '_dataloader']):
+                        X_in_, y_out_, covariates_idx_, expr_ = X_in_.to(self.mod.device), y_out_.to(self.mod.device), covariates_idx_.to(self.mod.device), expr_.to(self.mod.device)            
+                        n_cells = X_in_.shape[0]
+                        # get the full prediction for comparison with subsetting
+                        # TODO: move this just to the eval section and don't track the full
+                        y_pred_eval, _, _ = self.mod(X_in_, covariates_idx_,  expr_) 
+                        eval_loss_full = self.prediction_loss_fn(y_out_,  y_pred_eval).item()
+
+                        if n_cells > self.n_eval_cells:
+                            for eval_bootstrap_i in range(self.n_eval_bootstrap):
+                                utils.set_seeds(self.mod.seed + self._bootstrap_counter)
+                                n_eval_idx = torch.randint(0, n_cells, (self.n_eval_cells, ))
+                                y_pred_eval, _, _ = self.mod(X_in_[n_eval_idx, :], covariates_idx_[n_eval_idx,:],  expr_[n_eval_idx,:])
+                                eval_loss = self.prediction_loss_fn(y_out_[n_eval_idx, :],
+                                                    y_pred_eval).item()
+
+                                eval_sv = np.array([e, batch, eval_loss_full, n_cells, eval_bootstrap_i, eval_loss, self.n_eval_cells])
+                                self.stats[data_type] = np.vstack((self.stats[data_type], eval_sv))
+                                self._bootstrap_counter += 1
+                        else:
+                            eval_sv = np.array([e, batch, eval_loss_full, n_cells, 0, eval_loss_full, n_cells])
+                            self.stats[data_type] = np.vstack((self.stats[data_type], eval_sv))
+
+                    del y_pred_eval, _, eval_loss_full
+                    utils.clear_memory()
 
             if e % (self.hyper_params['max_epochs']/100) == 0 or e == self.hyper_params['max_epochs']:
                 # vanishing/exploding gradients
@@ -1385,13 +1448,12 @@ class TrainSC(TrainBase):
             raise ValueError('Perturbation discriminator loss tracking is incorrect')
         
         
-        if self.track_test:
-            self.stats['test'] = pd.DataFrame(data = self.stats['test'], 
-                                            columns = ['epoch', 'batch', 'test_loss_prediction'])
-
-        if self.track_validation:
-            self.stats['validation'] = pd.DataFrame(data = self.stats['validation'], 
-                                            columns = ['epoch', 'batch', 'val_loss_prediction'])
+        if self.track_test or self.track_validation:
+            self.stats['train_eval'] = pd.DataFrame(data = self.stats['train_eval'], columns = self._stats_cols_eval)
+            if self.track_test:
+                self.stats['test'] = pd.DataFrame(data = self.stats['test'], columns = self._stats_cols_eval) 
+            if self.track_validation:
+                self.stats['validation'] = pd.DataFrame(data = self.stats['validation'], columns = self._stats_cols_eval) 
         if verbose:
             mins, secs = divmod(time.time() - start_time, 60)
             print("Training ran in: {:.0f} min {:.2f} sec".format(mins, secs))
