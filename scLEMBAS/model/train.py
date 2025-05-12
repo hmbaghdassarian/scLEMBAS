@@ -32,6 +32,21 @@ else:
     logging.getLogger().setLevel(logging.ERROR)
         
     
+def make_weights(counts, mode="sqrt", beta=0.995):
+    """Returns a vector of weights proportional to counts"""
+    if mode == "uniform": # standard average -- rare cells may be overweighted
+        w = torch.ones_like(counts, dtype=torch.float)
+    elif mode == "size": # weight every cell equally -- rare cells may underperofrm
+        w = counts.float()
+    elif mode == "sqrt": # balances rare and abundant cells
+        w = torch.sqrt(counts.float())
+    elif mode == "effnum":  # balances rare and abundant cells -- as beta goes to 1, w goes to uniform                     
+        w = 1.0 / ((1 - beta ** counts) / (1 - beta))
+    else:
+        raise ValueError("unknown mode")
+    return w / w.sum() # normalize to sum to 1
+
+
 class ModelData(Dataset):
     def __init__(self, 
                  X_in: torch.tensor, 
@@ -919,6 +934,9 @@ class TrainSC(TrainBase):
                          track_validation = track_validation,
                          track_test = track_test)
     
+        # per condition EMD loss check
+        if sorted(pd.unique(self.X_train.values.ravel())) != [0,1]:
+            raise ValueError('The current per-condition EMD loss can only handle categorical (e.g. binary) perturbation information encoded as 0 for no perturbation and 1 for perturbation')
         # for tracking
         self.n_eval_cells = n_eval_cells
         self.n_eval_bootstrap = n_eval_bootstrap
@@ -963,9 +981,6 @@ class TrainSC(TrainBase):
                 self.stats['validation'] = np.copy(self.stats['train_eval'])
 
     def initialize_pert_discriminator(self, pert_discriminator_params):
-        
-        # while this code is currently the same as initialize_cat_discriminator, keeping it separate to handle
-        # multiple perturbations + continuous rather than discrete data in the future
         if sorted(pd.unique(self.X_train.values.ravel())) != [0,1]:
             raise ValueError('The current global bias perturbation discriminator can only handle categorical (e.g. binary) perturbation information encoded as 0 for no perturbation and 1 for perturbation')
         if not (self.X_train.sum(axis=1) <= 1).all():
@@ -1317,10 +1332,10 @@ class TrainSC(TrainBase):
 
                             for eval_bootstrap_i in range(self.n_eval_bootstrap):
                                 utils.set_seeds(self.mod.seed + self._bootstrap_counter)
-                                n_eval_idx = torch.randint(0, n_cells, (self.n_eval_cells, ))
-                                y_pred_eval, _, _ = self.mod(X_in_[n_eval_idx, :], covariates_idx_[n_eval_idx,:],  expr_[n_eval_idx,:])
+                                n_eval_idx = torch.randperm(n_cells)[:self.n_eval_cells]#torch.randint(0, n_cells, (self.n_eval_cells, ))
+#                                 y_pred_eval, _, _ = self.mod(X_in_[n_eval_idx, :], covariates_idx_[n_eval_idx,:],  expr_[n_eval_idx,:])
                                 eval_loss = self.prediction_loss_fn(y_out_[n_eval_idx, :],
-                                                    y_pred_eval).item()
+                                                    y_pred_eval[n_eval_idx, :]).item()
 
                                 eval_sv = np.array([e, batch, eval_loss_full, n_cells, eval_bootstrap_i, eval_loss, self.n_eval_cells])
                                 self.stats['train_eval'] = np.vstack((self.stats['train_eval'], eval_sv))
@@ -1365,10 +1380,10 @@ class TrainSC(TrainBase):
                         if n_cells > self.n_eval_cells:
                             for eval_bootstrap_i in range(self.n_eval_bootstrap):
                                 utils.set_seeds(self.mod.seed + self._bootstrap_counter)
-                                n_eval_idx = torch.randint(0, n_cells, (self.n_eval_cells, ))
+                                n_eval_idx = torch.randperm(n_cells)[:self.n_eval_cells]#torch.randint(0, n_cells, (self.n_eval_cells, ))
                                 y_pred_eval, _, _ = self.mod(X_in_[n_eval_idx, :], covariates_idx_[n_eval_idx,:],  expr_[n_eval_idx,:])
                                 eval_loss = self.prediction_loss_fn(y_out_[n_eval_idx, :],
-                                                    y_pred_eval).item()
+                                                    y_pred_eval[n_eval_idx, :]).item()
 
                                 eval_sv = np.array([e, batch, eval_loss_full, n_cells, eval_bootstrap_i, eval_loss, self.n_eval_cells])
                                 self.stats[data_type] = np.vstack((self.stats[data_type], eval_sv))
