@@ -14,8 +14,6 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
-from torch.nn import MSELoss
-from geomloss import SamplesLoss
 
 import scLEMBAS.utilities as utils
 from .model_utilities import update_with_defaults, kl_divergence_normal, freeze_model, unfreeze_model
@@ -33,6 +31,20 @@ else:
     logging.getLogger().addHandler(handler)
     logging.getLogger().setLevel(logging.ERROR)
         
+    
+def make_weights(counts, mode="sqrt", beta=0.995):
+    """Returns a vector of weights proportional to counts"""
+    if mode == "uniform": # standard average -- rare cells may be overweighted
+        w = torch.ones_like(counts, dtype=torch.float)
+    elif mode == "size": # weight every cell equally -- rare cells may underperofrm
+        w = counts.float()
+    elif mode == "sqrt": # balances rare and abundant cells
+        w = torch.sqrt(counts.float())
+    elif mode == "effnum":  # balances rare and abundant cells -- as beta goes to 1, w goes to uniform                     
+        w = 1.0 / ((1 - beta ** counts) / (1 - beta))
+    else:
+        raise ValueError("unknown mode")
+    return w / w.sum() # normalize to sum to 1
 
 
 class ModelData(Dataset):
@@ -346,22 +358,6 @@ class TrainBase:
                 return torch.nanmean(correlations).item()
             else:
                 return correlations
- 
-    @staticmethod
-    def make_weights(counts, mode="sqrt", beta=0.995):
-        """Returns a vector of weights proportional to counts"""
-        if mode == "uniform": # standard average -- rare cells may be overweighted
-            w = torch.ones_like(counts, dtype=torch.float)
-        elif mode == "size": # weight every cell equally -- rare cells may underperofrm
-            w = counts.float()
-        elif mode == "sqrt": # balances rare and abundant cells
-            w = torch.sqrt(counts.float())
-        elif mode == "effnum":  # balances rare and abundant cells -- as beta goes to 1, w goes to uniform                     
-            w = 1.0 / ((1 - beta ** counts) / (1 - beta))
-        else:
-            raise ValueError("unknown mode")
-        return w / w.sum() # normalize to sum to 1
-
     def print_stats(self, e):
         """Prints various stats of the progress of training the model.
 
@@ -886,16 +882,13 @@ class TrainSC(TrainBase):
     HYPER_PARAMS = {**TrainCat.HYPER_PARAMS, 
                     **{'vae_lambda_l2': 1e-5, 'vae_scaling_KL': 1e-2, 
                        'vae_prior_mu': 0, 'vae_prior_sigma': 1},
-                    **{'global_bias_lambda_L2': 0, 'global_bias_lambda_L1': 0}, # KL divergence regularization deals with this
-                     **{'prediction_loss_fn_scaler': 1} # regularizer/multipler for prediction loss output
-
+                    **{'global_bias_lambda_L2': 0, 'global_bias_lambda_L1': 0} # KL divergence regularization deals with this
                    }
     
     def __init__(self,
                  mod, 
                  prediction_optimizer: torch.optim, 
                  prediction_loss_fn: torch.nn.modules.loss,
-                 per_condition_loss: bool = False, 
                  cat_discriminator_params: Dict = None,
                  pert_discriminator_params: Dict = None, 
                  hyper_params: Dict[str, Union[int, float]] = None,
@@ -910,10 +903,6 @@ class TrainSC(TrainBase):
         
         Parameters
         ----------
-        per_condition_loss : bool
-            whether to calculate the loss on all conditions simultaneously, or each condition separately, by default True
-            particularly useful for EMD loss, which may transport conditions across each other
-            can also be useful for MSE, which may way abundant conditions more heavily when all calculated simultaneously
         cat_discriminator_params : Dict
             key word arguments to pass to `CatDiscriminator`. see TrainSC.cat_discriminator_params for defaults
             as well as:
@@ -948,34 +937,7 @@ class TrainSC(TrainBase):
         # per condition EMD loss check
         if sorted(pd.unique(self.X_train.values.ravel())) != [0,1]:
             raise ValueError('The current per-condition EMD loss can only handle categorical (e.g. binary) perturbation information encoded as 0 for no perturbation and 1 for perturbation')
-        
-        
-        self.per_condition_loss = per_condition_loss
-        if type(self.prediction_loss_fn) == SamplesLoss:
-            self._prediction_loss_name = 'EMD'
-            self._bootstrap_counter = 0
-        elif type(self.prediction_loss_fn) == MSELoss:
-            self._prediction_loss_name = 'MSE'
-            self._bootstrap_counter = None
-        else:
-            raise ValueError('Single-cell LEMBAS is only optimized for MSE or EMD currently')
-
-        if not self.per_condition_loss:
-            self.compute_loss = self.compute_loss_all
-            if self._prediction_loss_name == 'EMD':
-                self.evaluate_loss = self.evaluate_emd_loss_all
-        else:
-            self.compute_loss = self.compute_loss_per_condition
-
-        if self._prediction_loss_name == 'EMD':
-            if not self.per_condition_loss:
-                self.evaluate_loss = self.evaluate_emd_loss_all
-            else:
-                self.evaluate_loss = self.evaluate_emd_loss_per_condition
-        else:
-            self.evaluate_loss = self.evaluate_mse_loss
-        
-        # for per-condition EMD tracking
+        # for tracking
         self.n_eval_cells = n_eval_cells
         self.n_eval_bootstrap = n_eval_bootstrap
         
@@ -1006,17 +968,14 @@ class TrainSC(TrainBase):
         self.stats = {}
         self.stats['train'] = np.empty((0, len(self._stats_cols)))
         
+        # tracking of equal size samples to compare to test/train (and without noise added)
         if self.track_test or self.track_validation:
-            if type(self.prediction_loss_fn) == SamplesLoss: #downsampling needed
-                self._stats_cols_eval = ['epoch', 'batch_index', 'loss_full', 'size_full', 
+            self._stats_cols_eval = ['epoch', 'batch_index', 'loss_full', 'size_full', 
                                           'bootstrap_index', 'loss_downsample', 'size_downsample']
-                self._verbose_loss = 'loss_downsample'
-            else:
-                self._stats_cols_eval = ['epoch', 'batch_index', 'loss_full']
-                self._verbose_loss = 'loss_full'
-            
-            self.stats['train_eval'] = np.empty((0, len(self._stats_cols_eval)))
-            if self.track_test:
+            self.stats['train_eval'] = np.empty((0, 7))
+            self._bootstrap_counter = 0
+
+            if self.track_test: 
                 self.stats['test'] = np.copy(self.stats['train_eval'])
             if self.track_validation:
                 self.stats['validation'] = np.copy(self.stats['train_eval'])
@@ -1116,143 +1075,6 @@ class TrainSC(TrainBase):
         else:
             raise ValueError("'discriminator_penalty_weight' must be a float or list")
         return discriminator_penalty_weight
-    
-    def compute_loss_all(self, y_out_, Y_hat, X_in_, covariates_idx_):
-        """Used for training. Calculates the loss on all samples at once.
-        Note, that X_in_ and covariates_idx_ are unused, but simply for consistency with `compute_loss_per_prediction`
-        """
-        return self.hyper_params['prediction_loss_fn_scaler']*self.prediction_loss_fn(y_out_, Y_hat)
-
-    def compute_loss_per_condition(self, y_out_, Y_hat, X_in_, covariates_idx_):
-        """Used for training. Calculates the loss per condition (per unique categorical covariate + perturbation).
-        
-        For EMD, this is useful to prevent inaccurate transport between conditions/ 
-        For MSE and EMD, the weighting allows rarer conditions to have more or less influence. 
-        """
-
-        # reconstruction loss - per-condition EMD
-        batch_conds = torch.cat([covariates_idx_, X_in_], dim = 1)
-        unique_conds, inverse_indices = torch.unique(batch_conds, dim=0, return_inverse=True)
-
-        counts = torch.bincount(inverse_indices) # no. of cells per condition    
-        cond_losses = torch.zeros_like(counts, dtype=self.mod.dtype)
-        for cond_i in range(unique_conds.size(0)):
-            cond_idx = inverse_indices == cond_i
-
-            y_out_cond = y_out_[cond_idx, :]
-            Y_hat_cond = Y_hat[cond_idx, :]
-            cond_losses[cond_i] = self.hyper_params['prediction_loss_fn_scaler']*self.prediction_loss_fn(y_out_cond, Y_hat_cond)
-
-        # for MSE and EMD, allows rarer conditions to have more influence
-        # for EMD, helps account for sample size bias
-        cond_weights = self.make_weights(counts, mode = 'sqrt') 
-
-        return torch.dot(cond_weights, cond_losses) # weighted average 
-    
-    def evaluate_mse_loss(self, y_out_, X_in_, covariates_idx_, expr_, e, batch):
-        """Used for evaluation with MSE loss."""
-        self.mod.eval()
-        with torch.inference_mode(): 
-            y_pred_eval, _, _ = self.mod(X_in_, covariates_idx_,  expr_) 
-            # below makes it condition specific or not
-            eval_loss = self.compute_loss(y_out_, y_pred_eval, X_in_, covariates_idx_).item()
-            
-        return np.array([e, batch, eval_loss])
-
-    def evaluate_emd_loss_all(self, y_out_, X_in_, covariates_idx_, expr_, e, batch):
-        """
-        Used for evaluation with EMD loss. Downsamples to n_eval_cells to ensure sample size bias between 
-        test and train comparisons are not present. 
-        For training, recomputed without addition of noise, etc. 
-        """
-        # comparable tracking of train data with test data
-        self.mod.eval()
-        with torch.inference_mode(): 
-            n_cells = X_in_.shape[0]
-
-            # get the full prediction for comparison with subsetting
-            # TODO: move this just to the eval section and don't track the full
-            y_pred_eval, _, _ = self.mod(X_in_, covariates_idx_,  expr_) 
-            eval_loss_full = self.hyper_params['prediction_loss_fn_scaler']*self.prediction_loss_fn(y_out_,  y_pred_eval).item()
-            print(eval_loss_full)
-
-            if n_cells > self.n_eval_cells:
-            
-                eval_sv = np.empty((0, len(self._stats_cols_eval)))
-                for eval_bootstrap_i in range(self.n_eval_bootstrap):
-                    utils.set_seeds(self.mod.seed + self._bootstrap_counter)
-                    n_eval_idx = torch.randperm(n_cells)[:self.n_eval_cells]#torch.randint(0, n_cells, (self.n_eval_cells, ))
-                    eval_loss = self.hyper_params['prediction_loss_fn_scaler']*self.prediction_loss_fn(y_out_[n_eval_idx, :],
-                                        y_pred_eval[n_eval_idx, :]).item()
-                    eval_sv_ = np.array([e, batch, eval_loss_full, n_cells, eval_bootstrap_i, eval_loss, self.n_eval_cells])
-                    eval_sv = np.vstack((eval_sv, eval_sv_))
-                    self._bootstrap_counter += 1
-            else:
-                eval_sv = np.array([e, batch, eval_loss_full, n_cells, 0, eval_loss_full, n_cells])
-            del y_pred_eval, _, eval_loss_full
-            utils.clear_memory()
-
-        return eval_sv
-    
-    def evaluate_emd_loss_per_condition(self, y_out_, X_in_, covariates_idx_, expr_, e, batch):
-        """
-        Used for evaluation with EMD loss per condition. Downsamples to n_eval_cells in EACH condition to 
-        ensure sample size bias between test and train comparisons are not present. 
-        For training, recomputed without addition of noise, etc. 
-        Tracking of downsamples cells is on all cells in the batch, so it doesn't indicate which conditions
-        were downsampled. 
-        """
-        self.mod.eval()
-        with torch.inference_mode(): 
-            batch_conds = torch.cat([covariates_idx_, X_in_], dim = 1)
-            unique_conds, inverse_indices = torch.unique(batch_conds, dim=0, return_inverse=True)
-
-            counts = torch.bincount(inverse_indices) # no. of cells per condition  
-            cond_losses = torch.empty_like(counts, dtype=self.mod.dtype)
-
-            y_pred_eval, _, _ = self.mod(X_in_, covariates_idx_,  expr_) 
-
-            track_losses = torch.zeros(len(unique_conds), self.n_eval_bootstrap, device = self.mod.device)
-            track_losses_full = torch.zeros(len(unique_conds), device = self.mod.device)
-            for cond_i in range(unique_conds.size(0)):
-                cond_idx = inverse_indices == cond_i
-
-                y_out_cond = y_out_[cond_idx, :]
-                y_pred_eval_cond = y_pred_eval[cond_idx, :]
-                eval_loss_full = self.hyper_params['prediction_loss_fn_scaler']*self.prediction_loss_fn(y_out_cond, y_pred_eval_cond).item()
-
-                n_cells = y_out_cond.shape[0]
-                if n_cells > self.n_eval_cells:
-                    for eval_bootstrap_i in range(self.n_eval_bootstrap):
-                        utils.set_seeds(self.mod.seed + self._bootstrap_counter)
-                        n_eval_idx = torch.randperm(n_cells)[:self.n_eval_cells]
-                        track_losses[cond_i, eval_bootstrap_i] = self.hyper_params['prediction_loss_fn_scaler']*self.prediction_loss_fn(y_out_[n_eval_idx, :], y_pred_eval[n_eval_idx, :]).item()
-                        self._bootstrap_counter += 1
-                else:
-                    track_losses[cond_i, :] = eval_loss_full
-                track_losses_full[cond_i] = eval_loss_full
-
-            cond_weights = self.make_weights(counts, mode = 'sqrt')
-            eval_loss_full = torch.dot(cond_weights, track_losses_full).item()
-            n_cells_full = counts.sum().item()
-
-            counts[counts > self.n_eval_cells] = self.n_eval_cells
-            n_cells_bootstrap = counts.sum().item()
-
-            if n_cells_bootstrap != n_cells_full: # if bootstrapping occured
-                cond_weights = self.make_weights(counts, mode = 'sqrt') # control for EMD loss row-count bias
-                eval_loss = (track_losses * cond_weights.unsqueeze(1)).sum(axis = 0).cpu().numpy()
-
-                eval_sv = np.concatenate(
-                    [np.tile(np.array([e, batch, eval_loss_full, n_cells_full]), (self.n_eval_bootstrap, 1)), 
-                    np.vstack([range(self.n_eval_bootstrap), eval_loss, [n_cells_bootstrap]*self.n_eval_bootstrap]).T], 
-                axis = 1)
-            else:
-                eval_sv = np.array([e, batch, eval_loss_full, n_cells_full, 0, eval_loss_full, n_cells_full])
-
-            del y_pred_eval, _, eval_loss_full
-            utils.clear_memory()
-        return eval_sv
 
     def train_model(self, verbose: bool = True):
         """Train the model
@@ -1376,8 +1198,23 @@ class TrainSC(TrainBase):
                 freeze_model(model = self.pert_discriminator['discriminator'])
                 
                 ######################## LEMBAS and generator ########################
-                # reconstruction loss
-                prediction_loss = self.compute_loss(y_out_, Y_hat, X_in_, covariates_idx_)
+                # reconstruction loss - per-condition EMD
+                # weighted to account for sample size bias of EMD
+                batch_conds = torch.cat([covariates_idx_, X_in_], dim = 1)
+                unique_conds, inverse_indices = torch.unique(batch_conds, dim=0, return_inverse=True)
+
+                counts = torch.bincount(inverse_indices) # no. of cells per condition    
+                cond_losses = torch.zeros_like(counts, dtype=self.mod.dtype)
+                for cond_i in range(unique_conds.size(0)):
+                    cond_idx = inverse_indices == cond_i
+
+                    y_out_cond = y_out_[cond_idx, :]
+                    Y_hat_cond = Y_hat[cond_idx, :]
+                    cond_losses[cond_i] = self.prediction_loss_fn(y_out_cond, Y_hat_cond)
+
+                # weighted average 
+                cond_weights = make_weights(counts, mode = 'sqrt') # control for EMD loss row-count bias
+                prediction_loss = torch.dot(cond_weights, cond_losses)
 
                 # lembas regularization
                 sign_reg = self.mod.signaling_network.sign_regularization(lambda_L1 = self.hyper_params['moa_lambda_L1']) # incorrect MoA
@@ -1495,10 +1332,90 @@ class TrainSC(TrainBase):
 
                 self.stats['train'] = np.vstack((self.stats['train'], sv))
                 
-                # comparable tracking of train data with test data
+                # per-condition comparable tracking of train data with test data 
+                # Note: only the total cells, not per-condition cells are tracked, even though
+                # downsampling is conducted per-condition
+                # if many conditions are small, we will still have some row-size bias, but it should be miniscule
                 if self.track_test or self.track_validation:
-                    eval_sv = self.evaluate_loss(y_out_, X_in_, covariates_idx_, expr_, e, batch)
-                    self.stats['train_eval'] = np.vstack((self.stats['train_eval'], eval_sv))
+                    self.mod.eval()
+                    with torch.inference_mode(): 
+                        batch_conds = torch.cat([covariates_idx_, X_in_], dim = 1)
+                        unique_conds, inverse_indices = torch.unique(batch_conds, dim=0, return_inverse=True)
+
+                        counts = torch.bincount(inverse_indices) # no. of cells per condition  
+                        cond_losses = torch.empty_like(counts, dtype=self.mod.dtype)
+
+                        y_pred_eval, _, _ = self.mod(X_in_, covariates_idx_,  expr_) 
+
+                        track_losses = torch.zeros(len(unique_conds), self.n_eval_bootstrap, device = self.mod.device)
+                        track_losses_full = torch.zeros(len(unique_conds), device = self.mod.device)
+                        for cond_i in range(unique_conds.size(0)):
+                            cond_idx = inverse_indices == cond_i
+
+                            y_out_cond = y_out_[cond_idx, :]
+                            y_pred_eval_cond = y_pred_eval[cond_idx, :]
+                            eval_loss_full = self.prediction_loss_fn(y_out_cond, y_pred_eval_cond).item()
+
+                            n_cells = y_out_cond.shape[0]
+                            if n_cells > self.n_eval_cells:
+                                for eval_bootstrap_i in range(self.n_eval_bootstrap):
+                                    utils.set_seeds(self.mod.seed + self._bootstrap_counter)
+                                    n_eval_idx = torch.randperm(n_cells)[:self.n_eval_cells]
+                                    track_losses[cond_i, eval_bootstrap_i] = self.prediction_loss_fn(y_out_[n_eval_idx, :], y_pred_eval[n_eval_idx, :]).item()
+                            #         eval_sv = np.array([e, batch, cond_i. eval_loss_full, n_cells, eval_bootstrap_i, eval_loss, self.n_eval_cells])
+                            #         self.stats['train_eval'] = np.vstack((self.stats['train_eval'], eval_sv))
+                                    self._bootstrap_counter += 1
+                            else:
+                                track_losses[cond_i, :] = eval_loss_full
+                            track_losses_full[cond_i] = eval_loss_full
+
+                        cond_weights = make_weights(counts, mode = 'sqrt')
+                        eval_loss_full = torch.dot(cond_weights, track_losses_full).item()
+                        n_cells_full = counts.sum().item()
+
+                        counts[counts > self.n_eval_cells] = self.n_eval_cells
+                        n_cells_bootstrap = counts.sum().item()
+
+                        if n_cells_bootstrap != n_cells_full: # if bootstrapping occured
+                            cond_weights = make_weights(counts, mode = 'sqrt') # control for EMD loss row-count bias
+                            eval_loss = (track_losses * cond_weights.unsqueeze(1)).sum(axis = 0).cpu().numpy()
+
+                            eval_sv = np.concatenate(
+                                [np.tile(np.array([e, batch, eval_loss_full, n_cells_full]), (self.n_eval_bootstrap, 1)), 
+                                np.vstack([range(self.n_eval_bootstrap), eval_loss, [n_cells_bootstrap]*self.n_eval_bootstrap]).T], 
+                            axis = 1)
+                        else:
+                            eval_sv = np.array([e, batch, eval_loss_full, n_cells_full, 0, eval_loss_full, n_cells_full])
+
+                        self.stats['train_eval'] = np.vstack((self.stats['train_eval'], eval_sv))
+                        del y_pred_eval, _, eval_loss_full
+                        utils.clear_memory()
+                 
+#                         n_cells = X_in_.shape[0]
+
+#                         # get the full prediction for comparison with subsetting
+#                         # TODO: move this just to the eval section and don't track the full
+#                         y_pred_eval, _, _ = self.mod(X_in_, covariates_idx_,  expr_) 
+#                         eval_loss_full = self.prediction_loss_fn(y_out_,  y_pred_eval).item()
+
+#                         if n_cells > self.n_eval_cells:
+
+#                             for eval_bootstrap_i in range(self.n_eval_bootstrap):
+#                                 utils.set_seeds(self.mod.seed + self._bootstrap_counter)
+#                                 n_eval_idx = torch.randperm(n_cells)[:self.n_eval_cells]#torch.randint(0, n_cells, (self.n_eval_cells, ))
+# #                                 y_pred_eval, _, _ = self.mod(X_in_[n_eval_idx, :], covariates_idx_[n_eval_idx,:],  expr_[n_eval_idx,:])
+#                                 eval_loss = self.prediction_loss_fn(y_out_[n_eval_idx, :],
+#                                                     y_pred_eval[n_eval_idx, :]).item()
+
+#                                 eval_sv = np.array([e, batch, eval_loss_full, n_cells, eval_bootstrap_i, eval_loss, self.n_eval_cells])
+#                                 self.stats['train_eval'] = np.vstack((self.stats['train_eval'], eval_sv))
+#                                 self._bootstrap_counter += 1
+#                         else:
+#                             eval_sv = np.array([e, batch, eval_loss_full, n_cells, 0, eval_loss_full, n_cells])
+#                             self.stats['train_eval'] = np.vstack((self.stats['train_eval'], eval_sv))
+
+#                         del y_pred_eval, _, eval_loss_full
+#                         utils.clear_memory()
                 
                 # free up CUDA mem
                 del sign_reg, stability_loss, uniform_reg, param_reg, prediction_loss
@@ -1520,11 +1437,88 @@ class TrainSC(TrainBase):
             if self.track_validation:
                 data_types.append('validation')
             for data_type in data_types:
-                for batch, (X_in_, y_out_, covariates_idx_, expr_) in enumerate(self.__dict__[data_type + '_dataloader']):
-                    X_in_, y_out_, covariates_idx_, expr_ = X_in_.to(self.mod.device), y_out_.to(self.mod.device), covariates_idx_.to(self.mod.device), expr_.to(self.mod.device)            
-                    eval_sv = self.evaluate_loss(y_out_, X_in_, covariates_idx_, expr_, e, batch)
-                    self.stats[data_type] = np.vstack((self.stats[data_type], eval_sv))
+                self.mod.eval()
+                with torch.inference_mode(): 
+                    for batch, (X_in_, y_out_, covariates_idx_, expr_) in enumerate(self.__dict__[data_type + '_dataloader']):
+                        ## per-condition EMD
+                        X_in_, y_out_, covariates_idx_, expr_ = X_in_.to(self.mod.device), y_out_.to(self.mod.device), covariates_idx_.to(self.mod.device), expr_.to(self.mod.device)  
+                        batch_conds = torch.cat([covariates_idx_, X_in_], dim = 1)
+                        unique_conds, inverse_indices = torch.unique(batch_conds, dim=0, return_inverse=True)
 
+                        counts = torch.bincount(inverse_indices) # no. of cells per condition  
+                        cond_losses = torch.empty_like(counts, dtype=self.mod.dtype)
+
+                        y_pred_eval, _, _ = self.mod(X_in_, covariates_idx_,  expr_) 
+
+                        track_losses = torch.zeros(len(unique_conds), self.n_eval_bootstrap, device = self.mod.device)
+                        track_losses_full = torch.zeros(len(unique_conds), device = self.mod.device)
+                        for cond_i in range(unique_conds.size(0)):
+                            cond_idx = inverse_indices == cond_i
+
+                            y_out_cond = y_out_[cond_idx, :]
+                            y_pred_eval_cond = y_pred_eval[cond_idx, :]
+                            eval_loss_full = self.prediction_loss_fn(y_out_cond, y_pred_eval_cond).item()
+
+                            n_cells = y_out_cond.shape[0]
+                            if n_cells > self.n_eval_cells:
+                                for eval_bootstrap_i in range(self.n_eval_bootstrap):
+                                    utils.set_seeds(self.mod.seed + self._bootstrap_counter)
+                                    n_eval_idx = torch.randperm(n_cells)[:self.n_eval_cells]
+                                    track_losses[cond_i, eval_bootstrap_i] = self.prediction_loss_fn(y_out_[n_eval_idx, :], y_pred_eval[n_eval_idx, :]).item()
+                            #         eval_sv = np.array([e, batch, cond_i. eval_loss_full, n_cells, eval_bootstrap_i, eval_loss, self.n_eval_cells])
+                            #         self.stats['train_eval'] = np.vstack((self.stats['train_eval'], eval_sv))
+                                    self._bootstrap_counter += 1
+                            else:
+                                track_losses[cond_i, :] = eval_loss_full
+                            track_losses_full[cond_i] = eval_loss_full
+
+                        cond_weights = make_weights(counts, mode = 'sqrt')
+                        eval_loss_full = torch.dot(cond_weights, track_losses_full).item()
+                        n_cells_full = counts.sum().item()
+
+                        counts[counts > self.n_eval_cells] = self.n_eval_cells
+                        n_cells_bootstrap = counts.sum().item()
+
+                        if n_cells_bootstrap != n_cells_full: # if bootstrapping occured
+                            cond_weights = make_weights(counts, mode = 'sqrt') # control for EMD loss row-count bias
+                            eval_loss = (track_losses * cond_weights.unsqueeze(1)).sum(axis = 0).cpu().numpy()
+
+                            eval_sv = np.concatenate(
+                                [np.tile(np.array([e, batch, eval_loss_full, n_cells_full]), (self.n_eval_bootstrap, 1)), 
+                                np.vstack([range(self.n_eval_bootstrap), eval_loss, [n_cells_bootstrap]*self.n_eval_bootstrap]).T], 
+                            axis = 1)
+                        else:
+                            eval_sv = np.array([e, batch, eval_loss_full, n_cells_full, 0, eval_loss_full, n_cells_full])
+
+                        self.stats[data_type] = np.vstack((self.stats[data_type], eval_sv))
+                        del y_pred_eval, _, eval_loss_full
+                        utils.clear_memory()
+  
+                        ## test tracking all conditions at once EMD
+#                         X_in_, y_out_, covariates_idx_, expr_ = X_in_.to(self.mod.device), y_out_.to(self.mod.device), covariates_idx_.to(self.mod.device), expr_.to(self.mod.device)            
+#                         n_cells = X_in_.shape[0]
+#                         # get the full prediction for comparison with subsetting
+#                         # TODO: move this just to the eval section and don't track the full
+#                         y_pred_eval, _, _ = self.mod(X_in_, covariates_idx_,  expr_) 
+#                         eval_loss_full = self.prediction_loss_fn(y_out_,  y_pred_eval).item()
+
+#                         if n_cells > self.n_eval_cells:
+#                             for eval_bootstrap_i in range(self.n_eval_bootstrap):
+#                                 utils.set_seeds(self.mod.seed + self._bootstrap_counter)
+#                                 n_eval_idx = torch.randperm(n_cells)[:self.n_eval_cells]#torch.randint(0, n_cells, (self.n_eval_cells, ))
+# #                                 y_pred_eval, _, _ = self.mod(X_in_[n_eval_idx, :], covariates_idx_[n_eval_idx,:],  expr_[n_eval_idx,:])
+#                                 eval_loss = self.prediction_loss_fn(y_out_[n_eval_idx, :],
+#                                                     y_pred_eval[n_eval_idx, :]).item()
+
+#                                 eval_sv = np.array([e, batch, eval_loss_full, n_cells, eval_bootstrap_i, eval_loss, self.n_eval_cells])
+#                                 self.stats[data_type] = np.vstack((self.stats[data_type], eval_sv))
+#                                 self._bootstrap_counter += 1
+#                         else:
+#                             eval_sv = np.array([e, batch, eval_loss_full, n_cells, 0, eval_loss_full, n_cells])
+#                             self.stats[data_type] = np.vstack((self.stats[data_type], eval_sv))
+
+#                     del y_pred_eval, _, eval_loss_full
+#                     utils.clear_memory()
 
             if e % (self.hyper_params['max_epochs']/100) == 0 or e == self.hyper_params['max_epochs']:
                 # vanishing/exploding gradients
@@ -1624,11 +1618,11 @@ class TrainSC(TrainBase):
         if self.track_test:
             test_df = pd.DataFrame(data = self.stats['test'], columns = self._stats_cols_eval) 
             test_df = test_df[test_df.epoch == e + 1].mean()
-            msg += ', l(te)={:.5f}'.format(test_df[self._verbose_loss])
+            msg += ', l(te)={:.5f}'.format(test_df.test_loss_prediction)
         if self.track_validation:
             val_df = pd.DataFrame(data = self.stats['validation'], columns = self._stats_cols_eval) 
             val_df = val_df[val_df.epoch == e + 1].mean()
-            msg += ', l(v)={:.5f}'.format(val_df[self._verbose_loss])
+            msg += ', l(v)={:.5f}'.format(val_df.val_loss_prediction)
         msg += ', s={:.5f}'.format(temp_df.spectral_radius)
         msg += ', r={:.5f}'.format(temp_df.learning_rate)
         msg += ', v={:.5f}'.format(temp_df.n_moa_violations)
