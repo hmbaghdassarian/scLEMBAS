@@ -85,8 +85,10 @@ class TrainBase:
     LR_PARAMS = {'max_epochs': 5000, 'maximum_learning_rate': 2e-3, 'minimum_learning_rate': 2e-4,
                  'lr_restart_epoch': 1000, 'reset_optimizer_epoch': 200, 
                 'lr_decay': 0.9, 'lr_restart_factor': 1, 'warmup_epochs': 500}
-    OTHER_PARAMS = {'train_batch_size': 512, 'test_batch_size': 512, 'validation_batch_size': 512, 
-                    'network_noise_scale': 10, 'gradient_noise_scale': 1e-9}
+    BATCH_PARAMS = {'train_batch_size': 512, 'test_batch_size': 512, 'validation_batch_size': 512}
+    NOISE_PARAMS = {'network_noise_scale': 0.01, # adjust according to projection_amplitude_in, this assumes default projection_amplitude_in = 3
+                   'min_network_noise': 0.0025, # 1/4 of the network noise_scaler (in case LR range is larger than 4x, which by default it is 10x)
+                   'gradient_noise_scale': 1e-9}
     REGULARIZATION_PARAMS = {'input_lambda_L2': 0, # assuming frozen weights
                              'bn_weights_lambda_L2': 1e-6,  
                              'output_weights_lambda_L2': 1e-6,
@@ -96,7 +98,11 @@ class TrainBase:
                             'adj_scaling_KL': 0, 'adj_prior_mu': 0, 'adj_prior_sigma': 0.2
                             }
     SPECTRAL_RADIUS_PARAMS = {'n_probes_spectral': 5, 'power_steps_spectral': 5, 'subset_n_spectral': 5}
-    HYPER_PARAMS = {**LR_PARAMS, **OTHER_PARAMS, **REGULARIZATION_PARAMS, **SPECTRAL_RADIUS_PARAMS}
+    HYPER_PARAMS = {**LR_PARAMS, 
+                    **BATCH_PARAMS, 
+                    **NOISE_PARAMS, 
+                    **REGULARIZATION_PARAMS, 
+                    **SPECTRAL_RADIUS_PARAMS}
 
     def __init__(self, 
                  mod, 
@@ -133,7 +139,8 @@ class TrainBase:
                 - 'train_batch_size' : number of samples/cells per batch for training data, by default 512
                 - 'test_batch_size' : number of samples/cells per batch for test data, by default 512
                 - 'validation_batch_size' : number of samples/cells per batch for test data, by default 512
-                - 'network_noise_scale' : noise added to signaling network input, by default 10. Set to 0 for no noise. Makes model more robust. 
+                - 'network_noise_scale' : noise added to signaling network input, by default 0.01. Value should change in accordance to `projections_amplitude_in` argument used for the `SignalingModel`. Noise scale is network_noise_scale * cur_lr Set to 0 for no noise. Makes model more robust. 
+                - 'min_network_noise' : minimum noise to add per epoch (since a function of LR), by default 0.0025
                 - 'gradient_noise_scale' : noise added to gradient after backward pass. Makes model more robust. 
                 - 'reset_epoch' : number of epochs upon which to reset the optimizer state, by default 200
                 - '<param>_lambda_L2' : L2 regularization penalty term for most of the model weights and biases. Note, recommend setting bn_bias_lambda_l2 to 0 when using TrainSC/BioNetSC singce the bias term is regularized by the KL divergence instead. 
@@ -462,10 +469,14 @@ class TrainSimple(TrainBase):
         
                 # forward pass
                 X_full = self.mod.input_layer(X_in_) # transform to full network with ligand input concentrations
+                
+                # randomly add noise to signaling network input, makes model more robust
                 utils.set_seeds(self.mod.seed + self.mod._gradient_seed_counter)
                 network_noise = torch.randn(X_full.shape, device = X_full.device)
-                X_full = X_full + (self.hyper_params['network_noise_scale'] * cur_lr * network_noise) # randomly add noise to signaling network input, makes model more robust
-                Y_full, _ = self.mod.signaling_network(X_full) # train signaling network weights
+                noise_scale_factor = self.hyper_params['network_noise_scale'] * (cur_lr/self.lr_scheduler.max_lr)
+                noise_scale_factor = max(noise_scale_factor, self.hyper_params['min_network_noise'])
+                X_full = X_full + (noise_scale_factor * network_noise) 
+                
                 Y_hat = self.mod.output_layer(Y_full)
                 
                 # get prediction loss
@@ -705,8 +716,9 @@ class TrainCat(TrainBase):
                 X_full = self.mod.input_layer(X_in_) # transform to full network with ligand input concentrations
                 utils.set_seeds(self.mod.seed + self.mod._gradient_seed_counter)
                 network_noise = torch.randn(X_full.shape, device = X_full.device)
-                X_full = X_full + (self.hyper_params['network_noise_scale'] * cur_lr * network_noise) # randomly add noise to signaling network input, makes model more robust
-                Y_full, _ = self.mod.signaling_network(X_full, covariates_idx_) # train signaling network weights
+                noise_scale_factor = self.hyper_params['network_noise_scale'] * (cur_lr/self.lr_scheduler.max_lr)
+                noise_scale_factor = max(noise_scale_factor, self.hyper_params['min_network_noise'])
+                X_full = X_full + (noise_scale_factor * network_noise) # randomly add noise to signaling network input, makes model more robust                Y_full, _ = self.mod.signaling_network(X_full, covariates_idx_) # train signaling network weights
                 Y_hat = self.mod.output_layer(Y_full)
 
                 # get prediction loss
@@ -887,8 +899,10 @@ class TrainSC(TrainBase):
                     **{'vae_lambda_l2': 1e-5, 'vae_scaling_KL': 1e-2, 
                        'vae_prior_mu': 0, 'vae_prior_sigma': 1},
                     **{'global_bias_lambda_L2': 0, 'global_bias_lambda_L1': 0}, # KL divergence regularization deals with this
-                     **{'prediction_loss_fn_scaler': 1} # regularizer/multipler for prediction loss output
-
+                     **{'prediction_loss_fn_scaler': 1}, # regularizer/multipler for prediction loss output
+                    **{'include_gradient_noise_vae': True, #add noise to vae params
+                       'include_gradient_noise_embedding': True, # add noise to embedding params
+                      'constant_gradient_noise': True}
                    }
     
     def __init__(self,
@@ -983,6 +997,11 @@ class TrainSC(TrainBase):
         self.initialize_cat_discriminator(cat_discriminator_params)
         self.initialize_pert_discriminator(pert_discriminator_params) 
         
+        if self.hyper_params['constant_gradient_noise']:
+            self.hyper_params['gradient_noise_scale'] = torch.tensor([self.hyper_params['gradient_noise_scale']], 
+                                                                     device = self.mod.device, 
+                                                                     dtype = self.mod.dtype)
+        
     def _initialize_tracking(self): 
         self._stats_cols = ['epoch', 'batch_index', 
                             'learning_rate', 'cat_discriminator_learning_rate', 'pert_discriminator_learning_rate',
@@ -1006,6 +1025,21 @@ class TrainSC(TrainBase):
         self.stats = {}
         self.stats['train'] = np.empty((0, len(self._stats_cols)))
         
+        self._noise_cols = ['epoch', 'batch_index'] 
+        self._noise_cols += [param_name + suffix for param_name, param in self.mod.named_parameters() 
+         if param.requires_grad for suffix in ('_norm', '_noise_scale')]
+
+        if not self.hyper_params['include_gradient_noise_vae']:
+            self._noise_cols = [col for col in self._noise_cols if 'vae' not in col]
+        if not self.hyper_params['include_gradient_noise_embedding']:
+            self._noise_cols = [col for col in self._noise_cols if 'cat_embeddings' not in col]    
+
+        self._noise_cols = [col.replace('.', '_') for col in self._noise_cols]  
+
+
+
+        self.stats['gradient_noise'] = np.empty((0, len(self._noise_cols)))
+
         if self.track_test or self.track_validation:
             if type(self.prediction_loss_fn) == SamplesLoss: #downsampling needed
                 self._stats_cols_eval = ['epoch', 'batch_index', 'loss_full', 'size_full', 
@@ -1021,6 +1055,36 @@ class TrainSC(TrainBase):
             if self.track_validation:
                 self.stats['validation'] = np.copy(self.stats['train_eval'])
 
+    def add_gradient_noise(self, cur_lr, e, batch):
+        """Adds noise to gradients as a function of the LR and parameter gradient norm."""
+        noise_tracker = [e, batch]
+        if self.mod.seed:
+            utils.set_seeds(self.mod.seed + self.mod._gradient_seed_counter)
+        for param_name, param in self.mod.named_parameters():
+            if not self.hyper_params['include_gradient_noise_vae'] and 'vae' in param_name:
+                continue
+            if not self.hyper_params['include_gradient_noise_embedding'] and 'cat_embeddings' in param_name:
+                continue
+            if param.requires_grad:
+                # TODO: technically this should use the associated param mask
+                # but this should be VERY similar if not idetical
+                grad_norm = param.grad[param!=0].norm()
+                # tot_noise scale is a function of the grad norm and the cur_lr
+                # tot_noise = noise_scale # default behavior
+                if self.hyper_params['constant_gradient_noise']:
+                    tot_noise = self.hyper_params['gradient_noise_scale']
+                else:            
+                    tot_noise = self.hyper_params['gradient_noise_scale'] * grad_norm * ((cur_lr/self.lr_scheduler.max_lr) ** 0.5)
+#                     tot_noise = torch.min(tot_noise, grad_norm*self.hyper_params['max_gradient_noise_fraction'])
+
+                param.grad += torch.randn_like(param.grad) * tot_noise
+                noise_tracker.extend([grad_norm.item(), tot_noise.item()])
+
+        self.mod._gradient_seed_counter += 1
+        
+        self.stats['gradient_noise'] = np.vstack((self.stats['gradient_noise'], 
+                                                  np.array(noise_tracker)))        
+        
     def initialize_pert_discriminator(self, pert_discriminator_params):
         if sorted(pd.unique(self.X_train.values.ravel())) != [0,1]:
             raise ValueError('The current global bias perturbation discriminator can only handle categorical (e.g. binary) perturbation information encoded as 0 for no perturbation and 1 for perturbation')
@@ -1303,9 +1367,14 @@ class TrainSC(TrainBase):
 
                 ######################## Forward Pass ########################
                 X_full = self.mod.input_layer(X_in_) # transform to full network with ligand input concentrations
+                
+                # add noise to ninput
                 utils.set_seeds(self.mod.seed + self.mod._gradient_seed_counter)
                 network_noise = torch.randn(X_full.shape, device = X_full.device)
-                X_full = X_full + (self.hyper_params['network_noise_scale'] * cur_lr * network_noise) # randomly add noise to signaling network input, makes model more robust
+                noise_scale_factor = self.hyper_params['network_noise_scale'] * (cur_lr/self.lr_scheduler.max_lr)
+                noise_scale_factor = max(noise_scale_factor, self.hyper_params['min_network_noise'])
+                X_full = X_full + (noise_scale_factor * network_noise) # randomly add noise to signaling network input, makes model more robust                Y_full, bias_terms = self.mod.signaling_network(X_full = X_full, 
+                
                 Y_full, bias_terms = self.mod.signaling_network(X_full = X_full, 
                                                                  covariates_idx = covariates_idx_, 
                                                                  expr = expr_) # train signaling network weights
@@ -1458,10 +1527,11 @@ class TrainSC(TrainBase):
 
                 # model gradient
                 tot_pred_loss.backward()
-                self.mod.add_gradient_noise(noise_level = self.hyper_params['gradient_noise_scale'])
+                self.add_gradient_noise(cur_lr, e, batch)
+#                 self.mod.add_gradient_noise(noise_level = self.hyper_params['gradient_noise_scale'])
                 self.prediction_optimizer.step()
                 self.mod.signaling_network.implement_mask() # moved out of forward pass to ensure after last backpass these are 0
-                
+
                 # unfreeze discriminator for training in next epoch/batch
                 for discriminator in self.cat_discriminator['discriminators'].values():
                     unfreeze_model(model = discriminator)
@@ -1600,6 +1670,11 @@ class TrainSC(TrainBase):
                 self.stats['test'] = pd.DataFrame(data = self.stats['test'], columns = self._stats_cols_eval) 
             if self.track_validation:
                 self.stats['validation'] = pd.DataFrame(data = self.stats['validation'], columns = self._stats_cols_eval) 
+        
+        self.stats['gradient_noise'] = pd.DataFrame(data = self.stats['gradient_noise'], 
+                                                    columns = self._noise_cols)
+
+        
         if verbose:
             mins, secs = divmod(time.time() - start_time, 60)
             print("Training ran in: {:.0f} min {:.2f} sec".format(mins, secs))
