@@ -1,7 +1,0 @@
-Index	Run type	Network Noise Scale	Network Noise Min	Grad Noise	Constant Grad Noise	cat_max	cat_b	pert_max	pert_b	reset state
-1	E	0.01	0.0025	1.00E-09	TRUE	7	3	20	6	TRUE
-2	E	0.01	0.0025	1.00E-04	FALSE	8	1.5	20	2	TRUE
-3	E	0.01	0.0025	1.00E-09	TRUE	6	2	15	6	TRUE
-4	E	0.01	0.0025	1.00E-09	TRUE	8	1.5	20	2	FALSE
-5	E	1	0.25	1.00E-09	TRUE	8	1.5	20	2	TRUE
-6	E	0.01	0.0025	1.00E-09	TRUE	10	6	20	6	TRUE

@@ -606,6 +606,32 @@ class BioNetCat(BioNetBase):
                                                        device = self.device) 
                             for covariate_cat, covariate_cat_map in self.cat_mapper.items()}
                     )
+        
+#         # orthogonal intialization
+#         self.cat_embeddings = nn.ModuleDict()
+#         for covariate_cat, covariate_cat_map in self.cat_mapper.items():
+#             embedding = nn.Embedding(num_embeddings = len(covariate_cat_map), 
+#                                                         embedding_dim = self.n_network_nodes_in,
+#                                                         max_norm = self.bionet_params['cat_max_norm'], norm_type = 2, 
+#                                                        device = self.device)
+
+
+#             with torch.no_grad():
+
+#                 # maintain data distribution of default embedding initialization upont orhtogonal_ init
+#                 default_norms = embedding.weight.norm(p=2, dim=1, keepdim=True)
+
+#                 # above line keeps default norms to the init, and max_normw takes care of clipping upon first forward call
+#                 # below will clip upon initialization, may want to consider clipping upon initialization for 
+#                 # consistent behavior immediate
+#                 #default_norms = embedding.weight.norm(p=2, dim=1, keepdim=True).clamp(max=max_norm)
+
+#                 # orthogonality constraint with max_norm (no longer orthonormal, but rows are orthogonal)
+#                 torch.nn.init.orthogonal_(embedding.weight)
+#                 embedding.weight.mul_(default_norms / embedding.weight.norm(p=2, dim=1, keepdim=True))
+
+#                 self.cat_embeddings[covariate_cat] = embedding    
+    
     
     def covariates_to_tensor(self, sample_ids):
         """Returns the covariates by index in torch.Tensor format for a specified list of samples.""" 

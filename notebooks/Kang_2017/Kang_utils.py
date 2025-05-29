@@ -32,51 +32,71 @@ def clear_memory():
     torch.cuda.ipc_collect()
     torch.cuda.reset_peak_memory_stats()
 
+def setup_prediction(mod, 
+                     train_cells,
+                     tf_adata, 
+                     train_mode, 
+                     counterfactual,
+                     ):
 
-def get_prediction(mod, tf_adata: List[str], 
-                   counterfactual_type: Literal['in_distribution', 'opposite'], cf_map, 
-                   train_cells_all, test_conds, 
-                   return_bias: bool = False,
-                  remove_type: Literal['none', 'global_bias', 'categorical_bias', 'total_bias', 'adj'] = 'none', 
-#                   return_loss: bool = True, 
-                  test_cells: Optional[List[str]] = None, 
-                  train_mode: bool = False):
-    """Get prediction from a model given a counterfactual
+    cov_idx_map = dict(zip(mod.signaling_network.covariates['seurat_annotations'], 
+                        mod.signaling_network.covariates_idx['seurat_annotations']))
+    cov_rev_map = {v:k for k,v in cov_idx_map.items()}
+    full_expr, full_X, full_covariates = None, None, None
 
-    Parameters
-    ----------
-    mod : _type_
-        _description_
-    tf_adata : _type_
-        all the actual data
-    counterfactual_type : Literal['in_distribution', 'opposite']
-        in distribution will be all train cells to each test cond
-        opposite will be within the same cell type, predicting the test cond from the opposit stimulation condition
-    cf_map : _type_
-        keys are the label for the counterfactual, values are the list of cells in that counterfactual that aren't 'opposite' ('opposite' calculated internally)
-    train_cells_all : List[str]
-        all cells the model was trained on 
-    test_conds : List[str]
-        cell type^stimulation to predict
-    return_bias : bool, optional
-        whether to return bias terms (True) or prediction (False), by default False
-    remove_type : Literal['none', 'global_bias', 'categorical_bias', 'total_bias', 'adj'], optional
-        can be a string or a list of strings
-        which components of bias/adj matrix to include in the prediction, by default 'all_bias'; 
-        only incorporated if return_bias = False
-        any bias component includes the full adjacency matrix
-        - 'none': includes all components in the prediction
-        - 'categorical_bias': includes global but excludes categorical bias in the prediction
-        - 'global_bias': includes categorical but excludes global bias in the prediction
-        - 'total_bias': does not include bias in the prediction (just input and signaling weights)
-        - 'adj': includes all bias but sets signaling weights to 0
-        the only list of strings are combining either categorical or global bias with adj, since in these cases just removing one of the two bias components still leaves two components in the model, making it hard to decouple effects. 
-    test_cells : 
-        the list of test cell barcodes, necessary if return_loss = True
-    train_mode : bool
-        predicts the training conditions, as a negative control to see how model predictions perform on training data
-    """
+    train_conds = tf_adata.obs.loc[train_cells, 'condition'].unique()
+    test_conds = tf_adata[~tf_adata.obs.condition.isin(train_conds), ].obs.condition.unique()
+
+    if not counterfactual and not train_mode:
+        raise ValueError('Trying to predict test cells without a counterfactual')
+
+    iterable_conds = train_conds if train_mode else test_conds
+    for cond in sorted(iterable_conds): 
+        stim, ct = cond.split('^') # stim and ct of the prediction
+        
+        if counterfactual: 
+            predict_cells_from = tf_adata.obs[(tf_adata.obs['condition'] == rev_stim[stim] + '^' + ct)].index.tolist()
+        else:
+            predict_cells_from = tf_adata.obs[tf_adata.obs.condition == cond].index.tolist()
+        n_predictions = len(predict_cells_from)
+            
+        # generate model inputs
+        # input gene expression: counterfactual or not
+        expr_in = mod.df_to_tensor(mod.expr.loc[predict_cells_from, :])
+        
+        # input stimulation
+        X_in = pd.DataFrame(data = {'IFNB1': [stim_map[stim]]*n_predictions})
+        X_in = mod.df_to_tensor(X_in)
+        
+        # input ct
+        covariates_in = torch.tensor([cov_idx_map[ct]]*n_predictions,
+                                        device = mod.device, dtype = torch.int64).view(-1,1)
+        
+        full_expr = expr_in if full_expr is None else torch.cat((full_expr, expr_in), dim = 0)
+        full_X = X_in if full_X is None else torch.cat((full_X, X_in), dim = 0)
+        full_covariates = covariates_in if full_covariates is None else torch.cat((full_covariates, covariates_in), dim = 0)
+        
+        clear_memory()
     
+    # metadata setup
+    obs = pd.DataFrame(full_covariates.detach().cpu().numpy())
+    obs.columns = ['seurat_annotations']
+    obs.seurat_annotations = obs.seurat_annotations.map(cov_rev_map)
+    obs['stim'] = pd.Series(full_X.detach().cpu().numpy().reshape(-1)).map(rev_stim_map)
+    obs['condition'] = obs['stim'].astype(str) + '^' + obs['seurat_annotations'].astype(str)
+
+    return full_expr, full_X, full_covariates, obs
+
+
+def run_prediction(mod, 
+                   remove_type, 
+                   return_bias, 
+                   X_in, 
+                   covariates_idx, 
+                   expr, 
+                  obs, 
+                  return_full):
+
     # ----------------CHECKS----------------
     if type(remove_type) != list:
         remove_type = [remove_type]
@@ -89,79 +109,8 @@ def get_prediction(mod, tf_adata: List[str],
             raise ValueError('Can only specify multiple remove types when ')
     if remove_type != ['none'] and return_bias:
         raise ValueError('Have not considered looking at the bias components without the full forward pass')
-
     
-    # ----------------SETUP----------------
-    cov_idx_map = dict(zip(mod.signaling_network.covariates['seurat_annotations'], 
-                           mod.signaling_network.covariates_idx['seurat_annotations']))
-    cov_rev_map = {v:k for k,v in cov_idx_map.items()}
-
-
-    full_expr, full_X, full_covariates = None, None, None
-
-    if not train_mode:
-        for cond in test_conds:
-            stim, ct = cond.split('^')
-            if counterfactual_type == 'opposite':
-                train_cells_cond = tf_adata.obs[(tf_adata.obs['condition'] == rev_stim[stim] + '^' + ct)].index.tolist()
-                if len(set(train_cells_cond).difference(train_cells_all)) != 0:
-                    raise ValueError('Something went wrong in the counterfactual')
-            else:
-                train_cells_cond = cf_map[counterfactual_type]
-
-            expr_test = mod.df_to_tensor(mod.expr.loc[train_cells_cond, :])
-
-            X_test_df = pd.DataFrame(data = {'IFNB1': [stim_map[stim]]*len(train_cells_cond)})
-            X_test = mod.df_to_tensor(X_test_df)
-
-            covariates_idx_test = torch.tensor([cov_idx_map[ct]]*len(train_cells_cond), 
-                                               device = mod.device, dtype = torch.int64).view(-1,1)
-
-            if full_expr is None:
-                full_expr = expr_test
-            else: 
-                full_expr = torch.cat((full_expr, expr_test), dim = 0)
-
-            if full_X is None:
-                full_X = X_test
-            else: 
-                full_X = torch.cat((full_X, X_test), dim = 0)
-
-            if full_covariates is None:
-                full_covariates = covariates_idx_test
-            else: 
-                full_covariates = torch.cat((full_covariates, covariates_idx_test), dim = 0)
-    else:
-        train_conds = tf_adata.obs.loc[train_cells_all, 'condition'].unique()
-        for cond in train_conds: # predict the training condition from the training condition
-            stim, ct = cond.split('^')
-            train_cells_cond = tf_adata.obs[tf_adata.obs.condition == cond].index.tolist()
-
-            expr_test = mod.df_to_tensor(mod.expr.loc[train_cells_cond, :])
-
-            X_test_df = pd.DataFrame(data = {'IFNB1': [stim_map[stim]]*len(train_cells_cond)})
-            X_test = mod.df_to_tensor(X_test_df)
-
-            covariates_idx_test = torch.tensor([cov_idx_map[ct]]*len(train_cells_cond), 
-                                           device = mod.device, dtype = torch.int64).view(-1,1)
-
-            full_expr = expr_test if full_expr is None else torch.cat((full_expr, expr_test), dim = 0)
-            full_X = X_test if full_X is None else torch.cat((full_X, X_test), dim = 0)
-            full_covariates = covariates_idx_test if full_covariates is None else torch.cat((full_covariates, covariates_idx_test), dim = 0)
-
-
-    # metadata setup
-    obs = pd.DataFrame(full_covariates.detach().cpu().numpy())
-    obs.columns = ['seurat_annotations']
-    obs.seurat_annotations = obs.seurat_annotations.map(cov_rev_map)
-    obs['stim'] = pd.Series(full_X.detach().cpu().numpy().reshape(-1)).map(rev_stim_map)
-    obs['condition'] = obs['stim'].astype(str) + '^' + obs['seurat_annotations'].astype(str)
-
     # ----------------FORWARD PASS----------------
-    X_in, covariates_idx, expr = full_X, full_covariates, full_expr
-
-    clear_memory()
-    
     mod.eval()
     with torch.inference_mode():
         X_full = mod.input_layer(X_in) # input ligands to signaling network
@@ -175,14 +124,14 @@ def get_prediction(mod, tf_adata: List[str],
         bias_mu, bias_log_sigma_squared, bias_global = mod.signaling_network.vae(expr)
         bias_global.data.masked_fill_(mask = mod.signaling_network.bias_mask.T.expand(bias_global.shape[0], -1), value = 0.0) # apply bias mask
 
-        if 'bias_global_scaler' in mod.signaling_network.bionet_params:
-            bias_global /= mod.signaling_network.bionet_params['bias_global_scaler']
+#         if 'bias_global_scaler' in mod.signaling_network.bionet_params:
+#             bias_global /= mod.signaling_network.bionet_params['bias_global_scaler']
 
-        # this is equivalent to dividing bias_tot by the scalers, but since we get out individual components 
-        # we should scale each individual component
-        elif 'bias_tot_scaler' in mod.signaling_network.bionet_params:
-            bias_global /= mod.signaling_network.bionet_params['bias_tot_scaler']
-            bias_cats /= mod.signaling_network.bionet_params['bias_tot_scaler']
+#         # this is equivalent to dividing bias_tot by the scalers, but since we get out individual components 
+#         # we should scale each individual component
+#         elif 'bias_tot_scaler' in mod.signaling_network.bionet_params:
+#             bias_global /= mod.signaling_network.bionet_params['bias_tot_scaler']
+#             bias_cats /= mod.signaling_network.bionet_params['bias_tot_scaler']
 
         if return_bias:
             bias_tot = bias_global.T + bias_cats
@@ -232,8 +181,11 @@ def get_prediction(mod, tf_adata: List[str],
                     diff = torch.max(torch.abs(X_new - X_old))    
                     if diff.lt(mod.signaling_network.bionet_params['tolerance']):
                         break
-
+        
         Y_full = X_new.T
+        
+        if return_full:
+            return sc.AnnData(X = Y_full.detach().cpu().numpy(), obs = obs)
 
         y_predicted = mod.output_layer(Y_full)
         
@@ -249,42 +201,11 @@ def get_prediction(mod, tf_adata: List[str],
             raise ValueError('Prediction here does not match forward pass')
         del y_predicted_, Y_full_, biases_
 
-#     if return_loss:
-#         if not train_mode:
-#             if test_cells is None:
-#                 # TODO: do not make test_cells an argument in the function, this line suffices
-#                 test_cells = tf_adata.obs[tf_adata.obs.condition.isin(test_conds)].index.tolist()
-#             tot_loss = 0
-#             for cond in test_conds:
-#                 stim, ct = cond.split('^')
-
-#                 test_cells_cond = tf_adata.obs[(tf_adata.obs.index.isin(test_cells)) & (tf_adata.obs['condition'] == cond)].index.tolist()
-#                 # ^ this should work as just one or the other of the two conditions, but keep as is since it works
-
-#                 y_test = mod.df_to_tensor(tf_adata.to_df().loc[test_cells_cond, :])  
-
-#                 loss_fn = SamplesLoss("sinkhorn", p=2, blur=0.05).to(mod.device)
-#                 tot_loss += loss_fn(y_predicted[obs[obs.condition == cond].index,:], y_test).detach().cpu().item() 
-#                 clear_memory()
-#         else:
-#             tot_loss = 0
-#             for cond in train_conds:
-#                 stim, ct = cond.split('^')
-
-#                 train_cells_cond = tf_adata.obs[(tf_adata.obs['condition'] == cond)].index.tolist()
-#                 y_test = mod.df_to_tensor(tf_adata.to_df().loc[train_cells_cond, :])  
-
-#                 loss_fn = SamplesLoss("sinkhorn", p=2, blur=0.05).to(mod.device)
-#                 tot_loss += loss_fn(y_predicted[obs[obs.condition == cond].index,:], y_test).detach().cpu().item() 
-#                 clear_memory()
-#     else:
-#         tot_loss = None
-
     y_predicted = pd.DataFrame(y_predicted.detach().cpu().numpy())
     y_predicted.columns = mod.y_out.columns
     tf_adata_predicted = sc.AnnData(X = y_predicted, obs = obs)
 
-    del X_full, full_expr, full_X, full_covariates
+    del X_full, X_in, covariates_idx, expr
     del bias_mu, bias_log_sigma_squared, bias_global
     del X_bias, X_new, Y_full
     if 'adj' not in remove_type:
@@ -293,6 +214,110 @@ def get_prediction(mod, tf_adata: List[str],
     clear_memory()
 
     return tf_adata_predicted
+
+def get_prediction(mod,
+                   train_cells,
+                   tf_adata,
+                   train_mode: bool = False,
+                   counterfactual: bool = True,
+                   remove_type: Literal['none', 'global_bias', 'categorical_bias', 'total_bias', 'adj'] = 'none',
+                   return_bias: bool = False, 
+                  max_cells = None, 
+                  return_full: bool = False):
+    """Get prediction from a model given a counterfactual
+
+    Parameters
+    ----------
+    mod : _type_
+        _description_
+    tf_adata : _type_
+        all the actual data
+    train_cells : List[str]
+        all cells the model was trained on 
+    train_mode : bool
+        predicts the training conditions, as a negative control to see how model predictions perform on training data
+    return_bias : bool, optional
+        whether to return bias terms (True) or prediction (False), by default False
+    counterfactual : bool, optional
+        whether to calculate from opposite stimulation condition (True) or same one (False)
+    remove_type : Literal['none', 'global_bias', 'categorical_bias', 'total_bias', 'adj'], optional
+        can be a string or a list of strings
+        which components of bias/adj matrix to include in the prediction, by default 'all_bias'; 
+        only incorporated if return_bias = False
+        any bias component includes the full adjacency matrix
+        - 'none': includes all components in the prediction
+        - 'categorical_bias': includes global but excludes categorical bias in the prediction
+        - 'global_bias': includes categorical but excludes global bias in the prediction
+        - 'total_bias': does not include bias in the prediction (just input and signaling weights)
+        - 'adj': includes all bias but sets signaling weights to 0
+        the only list of strings are combining either categorical or global bias with adj, since in these cases just removing one of the two bias components still leaves two components in the model, making it hard to decouple effects. 
+    test_cells : 
+        the list of test cell barcodes, necessary if return_loss = True
+    max_cells : int
+        the max cells in a forward pass; for cuda memory, will break up into chunks
+    return_full : bool, optional
+        whether to return model output prior to ProjectOutput transformation (True) or after (False), by default False
+    """
+    
+    max_cells = np.inf if max_cells is None else max_cells
+    
+    expr, X_in, covariates_idx, obs = setup_prediction(mod, 
+                                                       train_cells,
+                                                       tf_adata, 
+                                                       train_mode, 
+                                                       counterfactual
+                                                              )
+
+    if expr.shape[0] < max_cells:
+        res = run_prediction(mod, 
+                             remove_type, 
+                             return_bias, 
+                             X_in, 
+                             covariates_idx, 
+                             expr, 
+                            obs, 
+                            return_full)
+
+    else:
+        res = []
+
+        # split into chunks for cuda memory
+        expr_chunks = torch.split(expr, max_cells)
+        X_in_chunks = torch.split(X_in, max_cells)
+        covariates_idx_chunks = torch.split(covariates_idx, max_cells)
+        obs = obs.copy()
+        obs.index = obs.index.astype(str)
+        obs_index = obs.index
+        obs_chunks = [obs_index[i:i+max_cells] for i in range(0, len(obs_index), max_cells)]
+
+        for chunk_idx in range(len(expr_chunks)):
+            res_ = run_prediction(mod, 
+                                 remove_type, 
+                                 return_bias, 
+                                 X_in_chunks[chunk_idx], 
+                                 covariates_idx_chunks[chunk_idx], 
+                                 expr_chunks[chunk_idx], 
+                                obs.loc[obs_chunks[chunk_idx], :], 
+                                 return_full)
+            res.append(res_)
+
+        if not return_bias:
+            res = sc.concat(res)
+            res.obs_names_make_unique()
+        else:
+            bias_global_chunks, bias_mu_chunks, bias_sigma_chunks, bias_cats_chunks, bias_tot_chunks, obs_chunks = zip(*res)
+
+            obs = pd.concat(obs_chunks, axis=0)
+            bias_global = torch.cat(bias_global_chunks, dim=0)
+            bias_mu = torch.cat(bias_mu_chunks, dim=0)
+            bias_sigma = torch.cat(bias_sigma_chunks, dim=0)
+            bias_cats = torch.cat(bias_cats_chunks, dim=1)
+            bias_tot = torch.cat(bias_tot_chunks, dim=1)
+
+            res = (bias_global, bias_mu, bias_sigma, bias_cats, bias_tot, obs)
+    return res
+
+
 
 def get_loss(tf_adata, tf_adata_predicted, device = device):
     """Calculates the loss between predicted and actual data per condition. 
