@@ -368,6 +368,15 @@ class TrainBase:
         else:
             raise ValueError("unknown mode")
         return w / w.sum() # normalize to sum to 1
+    
+    @staticmethod
+    def get_global_l2_norm(mod: torch.nn.Module) -> float:
+        """Returns the global L2 norm of gradients for all parameters in a model."""
+        grad_norm_sq = 0.0
+        for param in mod.parameters():
+            if param.grad is not None:
+                grad_norm_sq += param.grad.detach().norm(2).item() ** 2
+        return grad_norm_sq ** 0.5
 
     def print_stats(self, e):
         """Prints various stats of the progress of training the model.
@@ -1015,12 +1024,14 @@ class TrainSC(TrainBase):
                             'sn_param_reg_global_bias_L2_loss', 'sn_param_reg_cat_bias_L2_loss',
                             'sn_param_reg_global_bias_L1_loss', 'sn_param_reg_cat_bias_L1_loss', 'sn_param_reg_cat_bias_orthogonality',
                             'output_param_reg_weights_loss', 'output_param_reg_bias_loss',
-                            'vae_param_reg_loss', 'global_bias_kl_divergence', 
+                            'vae_param_reg_loss', 'global_bias_kl_divergence',
                             'cat_adverserial_loss','cat_discriminator_loss_total',
-                            'cat_discriminator_loss_prediction', 'cat_discriminator_param_reg_loss', 
-                            'pert_adverserial_loss','pert_discriminator_loss_total',
-                            'pert_discriminator_loss_prediction', 'pert_discriminator_param_reg_loss' 
-                            ]      
+                            'cat_discriminator_loss_prediction', 'cat_discriminator_param_reg_loss']
+        self._stats_cols.extend(['cat_' + cat_type + '_discriminator_grad_l2_norm' for cat_type in list(self.mod.signaling_network.cat_embeddings.keys())])
+        self._stats_cols.extend(['pert_adverserial_loss','pert_discriminator_loss_total',
+                            'pert_discriminator_loss_prediction', 'pert_discriminator_param_reg_loss' ,
+                            'pert_discriminator_grad_l2_norm'
+                            ])      
 
         self.stats = {}
         self.stats['train'] = np.empty((0, len(self._stats_cols)))
@@ -1404,6 +1415,7 @@ class TrainSC(TrainBase):
                 # discriminator optimization
                 # NOTE: discriminator is optimized prior to adverserial training (and loss re-calculated)
                 cat_discriminator_loss.backward() # if bias global is not detached, need to set retain_graph = True here
+                cat_l2s = np.array([self.get_global_l2_norm(mod_discriminator) for mod_discriminator in self.cat_discriminator['discriminators'].values()])
                 self.cat_discriminator['optimizer'].step()
                 
                 # freeze discriminator (to prevent updating discriminator gradients when calling discriminator while 
@@ -1439,6 +1451,7 @@ class TrainSC(TrainBase):
 
                 # discriminator optimization
                 pert_discriminator_loss.backward() # if bias global is not detached, need to set retain_graph = True here
+                pert_l2 = self.get_global_l2_norm(self.pert_discriminator['discriminator']) # tracking
                 self.pert_discriminator['optimizer'].step()
 
                 # freeze discriminator
@@ -1547,20 +1560,22 @@ class TrainSC(TrainBase):
                 # won't be updated in the back pass
 
                 sv = np.array([e + 1, batch, cur_lr, self.cat_discriminator['_cur_lr'], self.pert_discriminator['_cur_lr'],
-                               time.time() - start_time, spectral_radius, 
+                            time.time() - start_time, spectral_radius, 
                     self.mod.signaling_network.count_sign_mismatch(), 
                     tot_pred_loss.detach().item(), prediction_loss.detach().item(), #train_pearson_r, 
                     sign_reg.detach().item(), stability_loss.detach().item(), uniform_reg.detach().item(), 
                     input_param_reg.detach().item(), kl_divergence_adj.detach().item()])
-                sv = np.concatenate([sv, 
-                                        np.array([v.detach().item() for v in sn_param_reg.values()]), 
-                                        np.array([v.detach().item() for v in output_param_reg.values()]), 
-                                        np.array([vae_reg.detach().item(), kl_divergence_gb.detach().item(),
-                                                  cur_catdisc_lambda*cat_adverserial_loss.detach().item(), cat_discriminator_loss.detach().item(), 
-                                                  cat_discriminator_loss_accuracy.detach().item(), cat_discriminator_reg.detach().item(),
-                                                  cur_pertdisc_lambda*pert_adverserial_loss.detach().item(), pert_discriminator_loss.detach().item(), 
-                                                  pert_discriminator_loss_accuracy.detach().item(), pert_discriminator_reg.detach().item()
-                                                  ])])
+                sv = np.concatenate([sv,
+                                    np.array([v.detach().item() for v in sn_param_reg.values()]),
+                                    np.array([v.detach().item() for v in output_param_reg.values()]),
+                                    np.array([vae_reg.detach().item(), kl_divergence_gb.detach().item(),
+                                            cur_catdisc_lambda*cat_adverserial_loss.detach().item(), cat_discriminator_loss.detach().item(), 
+                                            cat_discriminator_loss_accuracy.detach().item(), cat_discriminator_reg.detach().item()]),
+                                    cat_l2s,
+                                    np.array([cur_pertdisc_lambda*pert_adverserial_loss.detach().item(), pert_discriminator_loss.detach().item(), 
+                                            pert_discriminator_loss_accuracy.detach().item(), pert_discriminator_reg.detach().item(), pert_l2
+                                            ])
+                                    ])
 
 
                 self.stats['train'] = np.vstack((self.stats['train'], sv))
