@@ -176,12 +176,14 @@ class FCLayers(nn.Module):
     Generates standard, fully-connected neural-network.
     Adapted from scVI's `FCLayers`.
     """
-    DEFAULT_HYPER_PARAMS = {'batch_momentum': 0.01, 'layer_norm': False, 'dropout_rate': 0.1,
+    DEFAULT_HYPER_PARAMS = {'batch_momentum': 0.01, 'layer_norm': False, 'spectral_norm': False,
+                            'dropout_rate': 0.1,
                         'activation_fn': nn.ReLU, # can make as None to have purely linear
                         }
     def __init__(self, layers: List[int],
                  batch_momentum: float = 0.01,
                  layer_norm: bool = False,
+                 spectral_norm: bool = False,
                  dropout_rate: int | float = 0.1,
                  activation_fn: nn.Module | None = nn.ReLU,
                  dtype: torch.dtype=torch.float32,
@@ -199,6 +201,8 @@ class FCLayers(nn.Module):
             If None, a `BatchNorm` is not added
         layer_norm : bool, optional
             whether to have `LayerNorm` layers or not, by default False
+        spectral_norm : bool, optional
+            whether to apply spectral normalization (`torch.nn.utils.spectral_norm`) to the linear layers of the model
         dropout_rate : int | float, optional
             dropout rate to apply to each of the hidden layers, by default 0.1
             If None, dropout is not added
@@ -216,13 +220,21 @@ class FCLayers(nn.Module):
         # set up params
         self.batch_momentum = batch_momentum
         self.layer_norm = layer_norm
+        self.spectral_norm = spectral_norm
         self.dropout_rate = dropout_rate
         self.activation_fn = activation_fn
         self.dtype = dtype
         self.device = device
 
-        if self.batch_momentum and self.layer_norm:
-            warnings.warn('You have applied both a batch- and layer-normalization. Recommended to choose one of the two.')
+        # check only one type of normalization is being applied
+        norm_flags = [
+            self.batch_momentum is not None,
+            self.layer_norm,
+            self.spectral_norm
+        ]
+
+        if sum(norm_flags) > 1:
+            raise ValueError('You have applied a combination of batch-, layer-, and spectral normalization. Choose only one.')
 
         fc_layers = OrderedDict()
         for i, (n_in, n_out) in enumerate(zip(layers[:-1], layers[1:])):
@@ -234,7 +246,9 @@ class FCLayers(nn.Module):
 
         linear_layer = nn.Linear(in_features = n_in, out_features = n_out, bias = True, 
                                                        device = self.device, dtype = self.dtype)
-#         self._initialize_weights(linear_layer)
+        self._initialize_weights(linear_layer)
+        if self.spectral_norm:
+            linear_layer = nn.utils.spectral_norm(linear_layer)
         
         all_layers = OrderedDict([('linear', linear_layer),
                                   ('batch normalization', nn.BatchNorm1d(n_out, momentum=self.batch_momentum, 
@@ -348,6 +362,7 @@ class GaussianVariationalEncoder(nn.Module):
         self.hidden_layers = FCLayers(layers = layers_dim,
                                       batch_momentum = batch_momentum,
                                       layer_norm = layer_norm,
+                                      spectral_norm = False,
                                       dropout_rate = dropout_rate,
                                       activation_fn = activation_fn,
                                       dtype = self.dtype, device = self.device)
@@ -484,6 +499,7 @@ class CatDiscriminator(nn.Module):
         n_hidden_nodes: List[int] = [16, 16, 16],
         batch_momentum: float = 0.01,
         layer_norm: bool = False,
+        spectral_norm: bool = False,
         dropout_rate: int | float = 0.1,
         activation_fn: nn.Module | None = nn.LeakyReLU,
         dtype: torch.dtype=torch.float32,
@@ -505,6 +521,8 @@ class CatDiscriminator(nn.Module):
             If None, a `BatchNorm` is not added
         layer_norm : bool, optional
             whether to have `LayerNorm` layers or not, by default False
+        spectral_norm : bool, optional
+            whether to apply spectral normalization (`torch.nn.utils.spectral_norm`) to the linear layers of the model
         dropout_rate : int | float, optional
             dropout rate to apply to each of the hidden layers, by default 0.1
             If None, dropout is not added
@@ -533,12 +551,14 @@ class CatDiscriminator(nn.Module):
         cat_layers.append(FCLayers(layers = [n_features_in] + n_hidden_nodes, 
                                    batch_momentum = batch_momentum, # since bias is just a vector 
                                    layer_norm = layer_norm, 
+                                   spectral_norm = spectral_norm,
                                    dropout_rate = dropout_rate, 
                                    activation_fn = activation_fn, 
                                    dtype = self.dtype, device = self.device))
         cat_layers.append(FCLayers(layers = [n_hidden_nodes[-1], out_features], 
                                    dtype = self.dtype, device = self.device,
-                                   batch_momentum = None, layer_norm = False, dropout_rate = None, activation_fn = None))
+                                   batch_momentum = None, layer_norm = False, 
+                                   spectral_norm = spectral_norm, dropout_rate = None, activation_fn = None))
 
         self.classifier = nn.Sequential(*cat_layers)
 
@@ -566,7 +586,7 @@ class CatDiscriminator(nn.Module):
         regularization_loss : torch.Tensor
             the regularization term
         """
-        regularization_loss = 0
+        regularization_loss = torch.tensor(0.0, device=self.device, dtype=self.dtype)
         if lambda_L2 != 0:
             for layer in self.classifier.modules():
                 if isinstance(layer, nn.Linear):

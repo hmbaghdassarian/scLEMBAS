@@ -1118,7 +1118,8 @@ class TrainSC(TrainBase):
         self.pert_discriminator = {}
         self.pert_discriminator['params'] = update_with_defaults(self.PERT_DISCRIMINATOR_PARAMS, pert_discriminator_params)
         self.pert_discriminator['params']['discriminator_penalty_weight'] = self._check_discriminator_pw(self.pert_discriminator['params']['discriminator_penalty_weight'])
-        
+        if self.pert_discriminator['params']['discriminator_lambda_L2'] != 0 and self.pert_discriminator['params']['spectral_norm']:
+            raise ValueError('Do not apply L2 regularization if using spectral norm.')        
         
         self.pert_discriminator['discriminator'] = CatDiscriminator(n_features_in = self.mod.signaling_network.n_network_nodes_in,
                           n_labels = self.mod.X_in.shape[1] + 1, # + 1 for the no perturbation label 
@@ -1126,6 +1127,7 @@ class TrainSC(TrainBase):
                           device = self.mod.device,
                          batch_momentum = self.pert_discriminator['params']['batch_momentum'], 
                          layer_norm = self.pert_discriminator['params']['layer_norm'], 
+                                                                    spectral_norm = self.pert_discriminator['params']['spectral_norm'],
                          dropout_rate = self.pert_discriminator['params']['dropout_rate'], 
                          activation_fn = self.pert_discriminator['params']['activation_fn'], 
                          n_hidden_nodes = self.pert_discriminator['params']['n_hidden_nodes'])
@@ -1149,6 +1151,8 @@ class TrainSC(TrainBase):
         self.cat_discriminator = {}
         self.cat_discriminator['params'] = update_with_defaults(self.CAT_DISCRIMINATOR_PARAMS, cat_discriminator_params)
         self.cat_discriminator['params']['discriminator_penalty_weight'] = self._check_discriminator_pw(self.cat_discriminator['params']['discriminator_penalty_weight'])
+        if self.cat_discriminator['params']['discriminator_lambda_L2'] != 0 and self.cat_discriminator['params']['spectral_norm']:
+            raise ValueError('Do not apply L2 regularization if using spectral norm.')
 
         self.cat_discriminator['discriminators'] = nn.ModuleDict(
                             {
@@ -1157,7 +1161,8 @@ class TrainSC(TrainBase):
                                                   dtype = self.mod.dtype, 
                                                   device = self.mod.device,
                                                                 batch_momentum = self.cat_discriminator['params']['batch_momentum'], 
-                                                                layer_norm = self.cat_discriminator['params']['layer_norm'], 
+                                                                layer_norm = self.cat_discriminator['params']['layer_norm'],
+                                                                spectral_norm = self.cat_discriminator['params']['spectral_norm'],
                                                                dropout_rate = self.cat_discriminator['params']['dropout_rate'], 
                                                                activation_fn = self.cat_discriminator['params']['activation_fn'], 
                                                                n_hidden_nodes = self.cat_discriminator['params']['n_hidden_nodes'])
