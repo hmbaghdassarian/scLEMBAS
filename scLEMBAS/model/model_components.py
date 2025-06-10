@@ -232,14 +232,18 @@ class FCLayers(nn.Module):
     def _single_layer(self, n_in: int, n_out: int):#, drop_keys: Optional[List[str]] = None):
         """Creates a single [set of] layer[s] in the encoder."""
 
-        all_layers = OrderedDict([('linear', nn.Linear(in_features = n_in, out_features = n_out, bias = True, 
-                                                       device = self.device, dtype = self.dtype)),
+        linear_layer = nn.Linear(in_features = n_in, out_features = n_out, bias = True, 
+                                                       device = self.device, dtype = self.dtype)
+#         self._initialize_weights(linear_layer)
+        
+        all_layers = OrderedDict([('linear', linear_layer),
                                   ('batch normalization', nn.BatchNorm1d(n_out, momentum=self.batch_momentum, 
                                                                          device = self.device, dtype = self.dtype) if self.batch_momentum else None),
                                   ('layer normalization', nn.LayerNorm(n_out, elementwise_affine=False, 
                                                                        device = self.device, dtype = self.dtype) if self.layer_norm else None),
                                   ('activation', self.activation_fn() if self.activation_fn else None),
                                   ('dropout', nn.Dropout(p=self.dropout_rate) if (self.dropout_rate and self.dropout_rate > 0) else None)])
+
 #         self._initialize_weights(all_layers['linear'])  # Initialize weights based on activation function
         return nn.Sequential(OrderedDict((k, v) for k, v in all_layers.items() if v is not None))
     
