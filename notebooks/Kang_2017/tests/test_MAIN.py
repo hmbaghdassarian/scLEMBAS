@@ -66,6 +66,7 @@ parser.add_argument("--lr_period", type=float, default=4, help="cat disc penalty
 
 parser.add_argument("--reset_state", type=str_to_bool, default='true', help="cat disc penalty weight b param")
 
+parser.add_argument("--train_batch", type=int, default=500, help="cat disc penalty weight b param")
 
 ########################################################################
 args = parser.parse_args()
@@ -106,9 +107,10 @@ gradient_noise_scale = args.gradient_noise_scale
 lr_period = args.lr_period
 
 reset_state = args.reset_state
+train_batch = args.train_batch
 
 
-#python test_MAIN.py --index dev --run_type E --bn_weights_lambda_L2 1e-7 --uniform_lambda_L2 1e-7 --cat_max_norm 100 --global_bias_lambda_L2 0 --cat_bias_lambda_L2 0 --vae_scaling_KL 1e-2 --global_bias_lambda_L1 0 --cat_bias_lambda_L1 0 --vae_prior_mu 0 --vae_prior_sigma 1 --adj_scaling_KL 0 --adj_prior_mu 0 --adj_prior_sigma 0.2 --loss_type MSE --per_condition_loss true --cat_bias_orthogonality_scaler 0 --cat_max_penalty_weight 8 --cat_b_adv 1.5 --pert_max_penalty_weight 20 --pert_b_adv 2 --network_noise_scale 0.01 --min_network_noise 0.0025 --include_gradient_noise_vae true --include_gradient_noise_embedding true --constant_gradient_noise true --gradient_noise_scale 1e-9 --lr_period 4 --reset_state true
+#python test_MAIN.py --index dev --run_type E --bn_weights_lambda_L2 1e-7 --uniform_lambda_L2 1e-7 --cat_max_norm 100 --global_bias_lambda_L2 0 --cat_bias_lambda_L2 0 --vae_scaling_KL 1e-2 --global_bias_lambda_L1 0 --cat_bias_lambda_L1 0 --vae_prior_mu 0 --vae_prior_sigma 1 --adj_scaling_KL 0 --adj_prior_mu 0 --adj_prior_sigma 0.2 --loss_type MSE --per_condition_loss true --cat_bias_orthogonality_scaler 0 --cat_max_penalty_weight 8 --cat_b_adv 1.5 --pert_max_penalty_weight 20 --pert_b_adv 2 --network_noise_scale 0.01 --min_network_noise 0.0025 --include_gradient_noise_vae true --include_gradient_noise_embedding true --constant_gradient_noise true --gradient_noise_scale 1e-9 --lr_period 4 --reset_state true --train_batch 500
 
 
 # 
@@ -267,7 +269,7 @@ with warnings.catch_warnings():
 
 
 import sys
-sclembas = '/home/hmbaghda/Projects/scLEMBAS'
+sclembas = '/home/hmbaghda/scLEMBAS_June5'
 sys.path.insert(1, os.path.join(sclembas))
 from scLEMBAS import io
 
@@ -301,7 +303,7 @@ TR = {'default': TrainSC}#,
 #       'standardized_weights': TrainSCDevWstandard 
 #      }
 
-sys.path.insert(1, '/home/hmbaghda/Projects/scLEMBAS/notebooks/Kang_2017/')
+sys.path.insert(1, '/home/hmbaghda/scLEMBAS_June5/notebooks/Kang_2017/')
 from Kang_utils import (rev_stim, stim_map, rev_stim_map, adata_dimviz_bias, clear_memory,
                         get_prediction, adata_dimviz_prediction, prepare_for_metrics, get_loss)
 
@@ -714,13 +716,13 @@ else:
     max_epochs = 250 
     
     
-if subset:
-#     batch_factor = 1 if n_fraction <= 0.2 else 3
+# if subset:
+# #     batch_factor = 1 if n_fraction <= 0.2 else 3
+# #     train_batch = int(np.round(n_train/batch_factor))
+#     batch_factor = 2 if n_fraction <= 0.1 else 3
 #     train_batch = int(np.round(n_train/batch_factor))
-    batch_factor = 2 if n_fraction <= 0.1 else 3
-    train_batch = int(np.round(n_train/batch_factor))
-else:
-    train_batch = 1024
+# else:
+#     train_batch = 1024
 
 # max_epochs = 10
 max_lr = 0.001
@@ -752,7 +754,7 @@ pert_discriminator_params['discriminator_penalty_weight'] = pert_discriminator_p
 
 regularization_params = regularization_params_default.copy()
 batch_params = {**batch_params_default,
-                **{'train_batch_size': 500,
+                **{'train_batch_size': train_batch,
                    'validation_batch_size': np.nan}}
 training_params = {**lr_params, **batch_params, **regularization_params, **spectral_radius_params}
 training_params['prediction_loss_fn_scaler'] = loss_scaler
@@ -835,41 +837,41 @@ trainer = TR[mod_type](mod = mod,
 # In[ ]:
 
 
-import cProfile
-import pstats
-from io import StringIO
-profiler = cProfile.Profile()
-profiler.enable()
+# import cProfile
+# import pstats
+# from io import StringIO
+# profiler = cProfile.Profile()
+# profiler.enable()
 
-mod = trainer.train_model(verbose = False)
+# mod = trainer.train_model(verbose = False)
 
-profiler.disable()
+# profiler.disable()
 
-s = StringIO()
-ps = pstats.Stats(profiler, stream=s).sort_stats('cumulative')
-ps.print_stats()
+# s = StringIO()
+# ps = pstats.Stats(profiler, stream=s).sort_stats('cumulative')
+# ps.print_stats()
 
-lines = s.getvalue().split('\n')
+# lines = s.getvalue().split('\n')
 
-# Convert to DataFrame
-parsed = []
-for line in lines[5:]:  
-    parts = line.split(None, 5)  
-    if len(parts) == 6:
-        ncalls, tottime, percall1, cumtime, percall2, func = parts
-        parsed.append({
-            'ncalls': ncalls,
-            'tottime': float(tottime),
-            'percall_tottime': float(percall1),
-            'cumtime': float(cumtime),
-            'percall_cumtime': float(percall2),
-            'func': func
-        })
+# # Convert to DataFrame
+# parsed = []
+# for line in lines[5:]:  
+#     parts = line.split(None, 5)  
+#     if len(parts) == 6:
+#         ncalls, tottime, percall1, cumtime, percall2, func = parts
+#         parsed.append({
+#             'ncalls': ncalls,
+#             'tottime': float(tottime),
+#             'percall_tottime': float(percall1),
+#             'cumtime': float(cumtime),
+#             'percall_cumtime': float(percall2),
+#             'func': func
+#         })
 
-timer_df = pd.DataFrame(parsed)
-timer_df.to_csv(os.path.join(data_path, 'trash', fn + '_timing.csv'))
+# timer_df = pd.DataFrame(parsed)
+# timer_df.to_csv(os.path.join(data_path, 'trash', fn + '_timing.csv'))
 
-io.write_pickled_object(trainer,  os.path.join(data_path, 'trash', fn + '_feb_trainer.pickle'))
+# io.write_pickled_object(trainer,  os.path.join(data_path, 'trash', fn + '_feb_trainer.pickle'))
 
 
 # In[ ]:
@@ -3257,19 +3259,7 @@ if train_pred and visualize:
 # In[ ]:
 
 
-from sklearn.model_selection import StratifiedKFold
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score
-
-# set up the outputs to classify
-pred_types = {}
-# global bias output from train data only (no counterfactual)
-global_bias = io.read_pickled_object(os.path.join(data_path, 'trash', fn + '_feb_clustered_biases_train.pickle'))
-global_bias = global_bias['opposite'][0]
-pred_types['train_generator'] = global_bias
-
-# forward pass with no ProjectOutput
-# global bias Y_full
+# get the forward pass prior ProjectOutput and with only the global bias on the train data 
 global_bias = get_prediction(mod = mod,
                               train_cells = train_cells,
                               tf_adata = tf_adata,
@@ -3279,18 +3269,63 @@ global_bias = get_prediction(mod = mod,
                               return_bias = False,
                                     max_cells = 2000, 
                      return_full = True)
-pred_types['train_bionet'] = global_bias
+embed_tf_activity(global_bias, 
+                  scanpy_pca = False, 
+                  cluster_col_name = 'leiden', 
+                  resolution = 1,
+                  n_components = 10 if global_bias.shape[0] < 50 else 10)
+io.write_pickled_object(global_bias, 
+                       os.path.join(data_path, 'trash', fn + 'Yfull_gb.pickle'))
+
+
 
 # full forward pass on train data only (no counterfactual) using only the global bias
 tf_res_train = io.read_pickled_object(os.path.join(data_path, 'trash', fn + '_predictions_train.pickle'))
 global_bias = tf_res_train['adj_categorical_bias']
 global_bias = global_bias[global_bias.obs.batch == 'predicted',:].copy()
-pred_types['train_fullforward'] = global_bias
+# re-run embedding -- was projected during prediction
+embed_tf_activity(global_bias, 
+                  scanpy_pca = False, 
+                  cluster_col_name = 'leiden', 
+                  resolution = 1,
+                  n_components = 10 if global_bias.shape[0] < 50 else 10)
+io.write_pickled_object(global_bias, 
+                       os.path.join(data_path, 'trash', fn + 'yhat_gb.pickle'))
 
-# global bias output from test  (counterfactuals, meaning input gene expression is still in train)
-global_bias = io.read_pickled_object(os.path.join(data_path, 'trash', fn + '_feb_clustered_biases.pickle'))
-global_bias = global_bias['opposite'][0]
-pred_types['test'] = global_bias
+
+def setup_predtypes():
+    """Various stages of model output using only the global bias"""
+    
+    pred_types = {}
+    # global bias output from train data only (no counterfactual)
+    global_bias = io.read_pickled_object(os.path.join(data_path, 'trash', fn + '_feb_clustered_biases_train.pickle'))
+    global_bias = global_bias['opposite'][0]
+    pred_types['train_generator'] = global_bias
+
+    # forward pass with no ProjectOutput
+    pred_types['train_bionet'] = io.read_pickled_object(os.path.join(data_path, 'trash', fn + 'Yfull_gb.pickle'))
+
+    # full forward pass on train data only (no counterfactual) using only the global bias
+    pred_types['train_fullforward'] = io.read_pickled_object(os.path.join(data_path, 'trash', fn + 'yhat_gb.pickle'))
+
+    if run_type == 'E':
+        # global bias output from test  (counterfactuals, meaning input gene expression is still in train)
+        global_bias = io.read_pickled_object(os.path.join(data_path, 'trash', fn + '_feb_clustered_biases.pickle'))
+        global_bias = global_bias['opposite'][0]
+        pred_types['test'] = global_bias
+    
+    return pred_types
+
+
+# In[ ]:
+
+
+from sklearn.model_selection import StratifiedKFold
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score
+
+# set up the outputs to classify
+pred_types = setup_predtypes()
 
 
 probe_res = pd.DataFrame(columns=['category_name', 'accuracy', 'prediction_type'])
@@ -3352,7 +3387,23 @@ if visualize:
     probe_res.prediction_type = pd.Categorical(probe_res.prediction_type, 
                                               categories = train_types +  ['test'], 
                                               ordered = True)
+    probe_res.prediction_type = probe_res.prediction_type.cat.remove_unused_categories().copy()
+    
+    
+    # random chance given class imbalances and that StratifiedKfold gives same split as real
+    pert_rand_train = np.square(tf_adata[train_cells, :].obs.stim.value_counts(normalize = True)).sum()
+    ct_rand_train = np.square(tf_adata[train_cells, :].obs.seurat_annotations.value_counts(normalize = True)).sum()
+    
+    pert_rand_test = np.square(tf_adata[test_cells, :].obs.stim.value_counts(normalize = True)).sum()
+    ct_rand_test = np.square(tf_adata[test_cells, :].obs.seurat_annotations.value_counts(normalize = True)).sum()    
 
+    random_chance_ = {'cell_type': {'train': ct_rand_train, 
+                                  'test': ct_rand_test},
+                     'perturbation': {'train': pert_rand_train, 
+                                  'test': pert_rand_test}
+                    }
+    
+    
     fig, ax = plt.subplots(figsize = (7,3), ncols = 2)
 
     for (i, c) in enumerate(['cell_type', 'perturbation']):
@@ -3364,12 +3415,14 @@ if visualize:
         else:
             random_chance = {'train': 0.5, 'test': 0.5}
             
-        
+        random_chance = {'test': random_chance_[c]['test']}
         for key in train_types:
-            random_chance[key] = random_chance['train']
-        del random_chance['train']
+            random_chance[key] = random_chance_[c]['train']
+        
+#         del random_chance['train']
 
-        for xtick, label in enumerate(train_types + ['test']):
+        iter_ticks = train_types + ['test'] if run_type == 'E' else train_types
+        for xtick, label in enumerate(iter_ticks):
             ax[i].hlines(
                 y=random_chance[label], xmin=xtick - 0.3, xmax=xtick + 0.3, 
                 colors='gray', linestyles='dashed', linewidth=1
@@ -3388,6 +3441,99 @@ if visualize:
 
 probe_stats = pd.melt(probe_res, id_vars = ['prediction_type'], var_name='category', value_name='accuracy')
 probe_stats.groupby(['category', 'prediction_type']).mean()
+
+
+# In[ ]:
+
+
+if visualize: 
+    pred_types = setup_predtypes()
+    ncols = len(pred_types)
+    nrows = 3
+
+    fig, ax = plt.subplots(ncols = ncols, nrows = nrows, figsize = (5.1*ncols, 5.1*nrows))
+
+    cat_map = {'seurat_annotations': 'Cell Type', 
+              'stim': 'Stimulation'}
+    reduction_map = {'umap': 'UMAP', 
+                    'pca': 'PC'}
+
+    cat = 'stim'
+    for j, (pred_type, global_bias) in enumerate(pred_types.items()):
+        for i, reduction_type in enumerate(['umap', 'pca']): 
+            viz_df, nmi = adata_dimviz_bias(adata = global_bias, 
+                                    reduction_type = reduction_type, 
+                                    cat = cat,
+                                    subset_size = 5000 if global_bias.shape[0] > 5000 else None)
+            sns.scatterplot(data = viz_df, 
+                            x = reduction_map[reduction_type] + '1', 
+                            y = reduction_map[reduction_type] + '2', 
+                            hue = cat, s=10, ax = ax[i,j])
+            ax[i,j].annotate('NMI (Leiden Clusters, ' + cat_map[cat] + '): {:.3f}'.format(nmi),
+                    xy = (0.25, 0.95), xycoords='axes fraction', fontsize = 9)
+            ax[i,j].set_title(pred_type)
+            ax[i,j].legend().set_visible(False)
+
+            if reduction_type == 'pca':
+                sns.scatterplot(data = viz_df, 
+                            x = reduction_map[reduction_type] + '3', 
+                            y = reduction_map[reduction_type] + '4', 
+                            hue = cat, s=10, ax = ax[i+1,j])
+                ax[i+1,j].set_title('')
+                ax[i+1,j].legend().set_visible(False)
+
+
+
+
+    fig.suptitle('Stimulation Embeddings - Global Bias Outputs Only')
+    fig.tight_layout()
+    ("")
+
+
+# In[ ]:
+
+
+pred_types = setup_predtypes()
+ncols = len(pred_types)
+nrows = 3
+
+fig, ax = plt.subplots(ncols = ncols, nrows = nrows, figsize = (5.1*ncols, 5.1*nrows))
+
+cat_map = {'seurat_annotations': 'Cell Type', 
+          'stim': 'Stimulation'}
+reduction_map = {'umap': 'UMAP', 
+                'pca': 'PC'}
+
+cat = 'seurat_annotations'
+for j, (pred_type, global_bias) in enumerate(pred_types.items()):
+    for i, reduction_type in enumerate(['umap', 'pca']): 
+        viz_df, nmi = adata_dimviz_bias(adata = global_bias, 
+                                reduction_type = reduction_type, 
+                                cat = cat,
+                                subset_size = 5000 if global_bias.shape[0] > 5000 else None)
+        sns.scatterplot(data = viz_df, 
+                        x = reduction_map[reduction_type] + '1', 
+                        y = reduction_map[reduction_type] + '2', 
+                        hue = cat, s=10, ax = ax[i,j])
+        ax[i,j].annotate('NMI (Leiden Clusters, ' + cat_map[cat] + '): {:.3f}'.format(nmi),
+                xy = (0.25, 0.95), xycoords='axes fraction', fontsize = 9)
+        ax[i,j].set_title(pred_type)
+        ax[i,j].legend().set_visible(False)
+        
+        if reduction_type == 'pca':
+            sns.scatterplot(data = viz_df, 
+                        x = reduction_map[reduction_type] + '3', 
+                        y = reduction_map[reduction_type] + '4', 
+                        hue = cat, s=10, ax = ax[i+1,j])
+            ax[i+1,j].set_title('')
+            ax[i+1,j].legend().set_visible(False)
+            
+        
+        
+        
+fig.suptitle('Cell Type Embeddings - Global Bias Outputs Only')
+fig.tight_layout()
+("")
 
 
 # ### Train (with Counterfactual) + Test 
@@ -3695,6 +3841,274 @@ if visualize:
     #          ha='center', va='center', fontsize=18, fontweight='bold')
 
     fig.tight_layout(rect=[0,0,1,0.9])
+
+
+# # 8. CPA-like metrics
+# 
+# ## 8.1 Feature Correlations
+# 
+# Gene-wise mean/variance and compared to a random subset of the training data
+
+# In[ ]:
+
+
+if visualize:
+    tf_res = io.read_pickled_object(os.path.join(data_path, 'trash', fn + '_predictions.pickle'))
+    tf_adata_predicted = tf_res['none']
+
+    res_all = list()
+    for cond in tqdm(test_conds):
+        res = pd.DataFrame(index = tf_adata.var_names, columns = ['actual_mean', 'predicted_mean', 'rand_mean',  
+                                                           'actual_var', 'predicted_var', 'rand_var'])
+
+
+        stim, ct = cond.split('^')
+        tf_adata_ = tf_adata_predicted[(tf_adata_predicted.obs.condition == cond)].copy()
+
+        # random baselin as in CPA 
+        # random train subset is equal to maximum of the actual and predicted test condition
+        tf_adata_rand = tf_adata_predicted[tf_adata_predicted.obs.condition.isin(train_conds) &
+                          (tf_adata_predicted.obs.batch == 'actual')].copy()
+        np.random.seed(seed_split)
+        rand_obs = list(np.random.choice(tf_adata_rand.obs_names, size = max(tf_adata_.obs.batch.value_counts())))
+        tf_adata_rand = tf_adata_rand[rand_obs, :].to_df()
+
+
+        for batch_type in ['actual', 'predicted', 'rand']:
+            if batch_type != 'rand':
+                df = tf_adata_[tf_adata_.obs.batch == batch_type].to_df()
+                res[batch_type + '_mean'] = df.mean().tolist()
+                res[batch_type + '_var'] = df.var().tolist()
+            else:
+                res[batch_type + '_mean'] = tf_adata_rand.mean().tolist()
+                res[batch_type + '_var'] = tf_adata_rand.var().tolist()
+        res['test_condition'] = cond
+        res.reset_index(names=['feature'], inplace = True)
+        res_all.append(res)   
+    res_all = pd.concat(res_all, axis=0, ignore_index=True)
+
+
+    stats_df = pd.DataFrame(index = test_conds, columns = ['pearson_mean_actual', 'pearson_mean_rand', 
+                                                          'pearson_var_actual', 'pearson_var_rand'])
+
+    for cond in test_conds:
+        cond_df = res_all[res_all.test_condition == cond]
+        for metric_type in ['mean', 'var']:
+            real_pearson = stats.pearsonr(cond_df['actual_' + metric_type],
+                                          cond_df['predicted_' + metric_type]
+                                         ).statistic
+            rand_pearson = stats.pearsonr(cond_df['rand_' + metric_type],
+                                          cond_df['predicted_' + metric_type]
+                                         ).statistic
+
+            stats_df.loc[cond, 'pearson_' + metric_type + '_actual'] = real_pearson
+            stats_df.loc[cond, 'pearson_' + metric_type + '_rand'] = rand_pearson
+    stats_df.reset_index(names = ['condition'], inplace = True)
+
+
+# In[ ]:
+
+
+if visualize:
+    fig, ax = plt.subplots(ncols = 2, figsize = (7, 3))
+    for i, metric_type in enumerate(['mean', 'var']):
+        viz_df = stats_df[[col for col in stats_df.columns if metric_type in col]]
+        viz_df = pd.melt(viz_df, var_name = 'comparison', value_name='pearson')
+        viz_df.comparison = pd.Categorical(viz_df.comparison.apply(lambda x: x.split('_')[-1]), 
+                                           ordered = True, 
+                                           categories = ['actual', 'rand'])
+
+        sns.boxplot(data = viz_df, x = 'comparison', y = 'pearson', ax = ax[i])
+        ax[i].set_title(metric_type)
+
+    fig.suptitle('Gene-Wise Comparison across OODs')
+    fig.tight_layout()
+    ("")
+
+
+# In[ ]:
+
+
+if visualize:
+    n_total = len(test_conds)
+    ncols = min(3, n_total)
+    nrows = math.ceil(n_total / ncols)
+
+    fig, ax = plt.subplots(ncols=ncols, nrows=nrows, figsize=(5.1*ncols, 5.1*nrows))
+    ax = np.array(ax).reshape(-1)
+
+    for i, cond in enumerate(test_conds):
+        viz_df = res_all[res_all.test_condition == cond]    
+        sns.regplot(data=viz_df, x='predicted_mean', y='actual_mean', ax=ax[i])
+        ax[i].set_title(cond)
+
+        pearson_val = stats_df[stats_df.condition == cond]['pearson_mean_actual'].tolist()[0]
+        ax[i].annotate('Pearson: {:.2f}'.format(pearson_val),
+                       xy=(0.95, 0.05), xycoords='axes fraction',
+                       ha='right', va='bottom', fontsize=10)
+
+    fig.tight_layout()
+
+
+# ## 8.2 Top Markers
+# 
+# CPA Fig. 3B and S3
+
+# In[ ]:
+
+
+from cliffs_delta import cliffs_delta
+from statsmodels.stats.multitest import multipletests
+
+from typing import Literal
+def TF_de(df_A, 
+          df_B, 
+          fdr_thresh = 0.1, 
+          effect_size_thresh: Literal['negligible', 'small', 'medium', 'large'] = 'small', 
+         rank_by: Literal['fdr', 'effect_size'] = 'effect_size'):
+    """Conduct the DE between two DFs. 
+
+    Parameters
+    ----------
+    df_A : _type_
+        _description_
+    df_B : _type_
+        _description_
+    fdr_thresh : float, optional
+        only retain DE TFs with FDRs less than or equal to this threshold, by default 0.1
+        if None, will not threshold on FDR
+    effect_size_thresh : Literal['negligible', 'small', 'medium', 'large'], optional
+        only retain effect sizes greater than or equal to this category, by default 'small'
+        effect size is measured with Cliff's Delta, which heuristically categorizes values in one of these four categories
+    rank_by :  Literal['fdr', 'effect_size'], optional
+        rank order TFs by false discovery rate (fdr) or effect size (effect_size), by default 'effect_size'
+    """
+    if fdr_thresh is None:
+        fdr_thresh = 1
+    pvals = stats.mannwhitneyu(df_A, df_B, alternative = 'two-sided', axis = 0).pvalue
+#     _, pvals = stats.ttest_ind(df_A, df_B, alternative = 'two-sided', equal_var=False, axis = 0)
+    _, fdrs, _, _ = multipletests(pvals, method='fdr_bh')
+
+    cd = pd.DataFrame(columns = ['effect_size', 'effect'])
+    for feature in df_A.columns:
+        cd_val = cliffs_delta(df_A[feature], df_B[feature])
+        cd.loc[feature, :] = cd_val
+    cd['effect'] = pd.Categorical(cd.effect, ordered = True, 
+                                        categories = ['negligible', 'small', 'medium', 'large'])
+    cd['fdr'] = fdrs
+    de = cd[cd['fdr'] <= fdr_thresh] 
+    if effect_size_thresh is not None:
+        de = de[de['effect'] >= effect_size_thresh]
+    
+    if rank_by == 'effect_size':
+        de = de.sort_values(by='effect_size', key=abs, ascending = False)
+    elif rank_by == 'fdr':
+        de = de.sort_values(by = 'fdr', ascending = True)
+    else:
+        raise ValueError('Incorrect rank_by parameter specified')
+
+    de_pos = de[de.effect_size >= 0]
+    de_neg = de[de.effect_size < 0]
+    
+    return de_pos, de_neg, de
+
+
+# Get the top 5 markers for each OOD:
+
+# In[ ]:
+
+
+if visualize: 
+    tf_res = io.read_pickled_object(os.path.join(data_path, 'trash', fn + '_predictions.pickle'))
+    tf_adata_predicted = tf_res['none']
+
+    n_markers = 3
+    de_res_pos = pd.DataFrame(columns = test_cell_types, index = range(n_markers))
+    de_res_neg = de_res_pos.copy()
+    for cond in test_conds:
+        stim, ct = cond.split('^')
+
+        # this is the same as using the actual tf_adata
+        tf_adata_ = tf_adata_predicted[(tf_adata_predicted.obs.batch == 'actual') & 
+                                      (tf_adata_predicted.obs.seurat_annotations == ct)].copy()
+        stim_df = tf_adata_[tf_adata_.obs.stim == stim].to_df()
+        ctrl_df = tf_adata_[tf_adata_.obs.stim == rev_stim[stim]].to_df()
+        de_pos, de_neg, _ = TF_de(stim_df, ctrl_df, 
+                             fdr_thresh = 0.1,
+                             effect_size_thresh = 'small')
+
+        de_res_pos[ct] = de_pos.index.tolist()[:n_markers]
+        de_res_neg[ct] = de_neg.index.tolist()[:n_markers]
+
+
+# In[ ]:
+
+
+if visualize:
+    ncols = n_markers
+    nrows = len(test_conds)
+
+    fig, ax = plt.subplots(ncols = ncols, nrows = nrows, figsize = (5.1*ncols, 5.1*nrows))
+    if nrows == 1:
+        ax = np.expand_dims(ax, axis=0)
+
+    de_res = de_res_pos.copy()
+    for i, cond in enumerate(test_conds):
+        stim, ct = cond.split('^')
+        tf_adata_ = tf_adata_predicted[(tf_adata_predicted.obs.seurat_annotations == ct)].copy()
+
+        top_markers = de_res[ct].tolist()
+
+        tf_adata_ = tf_adata_[:, top_markers].copy()
+
+        viz_df = tf_adata_.to_df()
+        viz_df['condition'] = pd.Categorical(tf_adata_.obs.batch.astype(str) + '^' + tf_adata_.obs.stim.astype(str).tolist(), 
+                                    ordered = True,
+                                    categories = ['actual^' + rev_stim[stim], 
+                                                  'actual^' + stim, 
+                                                  'predicted^' + stim]
+                                   )
+        for j, marker in enumerate(top_markers):
+            sns.violinplot(data = viz_df, y = marker, x = 'condition', ax = ax[i,j])
+            ax[i,j].set_title(ct)
+
+    fig.suptitle('Up-regulated TFs in OOD')
+    fig.tight_layout()
+    ("")
+
+
+# In[ ]:
+
+
+if visualize:
+    ncols = n_markers
+    nrows = len(test_conds)
+
+    fig, ax = plt.subplots(ncols = ncols, nrows = nrows, figsize = (5.1*ncols, 5.1*nrows))
+
+    de_res = de_res_neg.copy()
+    for i, cond in enumerate(test_conds):
+        stim, ct = cond.split('^')
+        tf_adata_ = tf_adata_predicted[(tf_adata_predicted.obs.seurat_annotations == ct)].copy()
+
+        top_markers = de_res[ct].tolist()
+
+        tf_adata_ = tf_adata_[:, top_markers].copy()
+
+        viz_df = tf_adata_.to_df()
+        viz_df['condition'] = pd.Categorical(tf_adata_.obs.batch.astype(str) + '^' + tf_adata_.obs.stim.astype(str).tolist(), 
+                                    ordered = True,
+                                    categories = ['actual^' + rev_stim[stim], 
+                                                  'actual^' + stim, 
+                                                  'predicted^' + stim]
+                                   )
+        for j, marker in enumerate(top_markers):
+            sns.violinplot(data = viz_df, y = marker, x = 'condition', ax = ax[i,j])
+            ax[i,j].set_title(ct)
+
+    fig.suptitle('Down-regulated TFs in OOD')
+    fig.tight_layout()
+    ("")
 
 
 # In[ ]:
