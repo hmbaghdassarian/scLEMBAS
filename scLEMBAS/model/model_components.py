@@ -503,7 +503,8 @@ class CatDiscriminator(nn.Module):
         dropout_rate: int | float = 0.1,
         activation_fn: nn.Module | None = nn.LeakyReLU,
         dtype: torch.dtype=torch.float32,
-        device: str = 'cpu'
+        device: str = 'cpu', 
+        seed: int = 888, 
     ):
         """Initialize discriminator
 
@@ -532,6 +533,8 @@ class CatDiscriminator(nn.Module):
             datatype to store values in torch, by default torch.float32
         device : str
             whether to use gpu ("cuda") or cpu ("cpu"), by default "cpu"
+        seed : int
+            random seed for torch and numpy operations, by default 888
         """
         super().__init__()
         self.n_labels = n_labels
@@ -546,8 +549,11 @@ class CatDiscriminator(nn.Module):
 
         self.device = device
         self.dtype = dtype
+        self.seed = seed
         
         cat_layers = []
+        if self.seed:
+            set_seeds(self.seed)
         cat_layers.append(FCLayers(layers = [n_features_in] + n_hidden_nodes, 
                                    batch_momentum = batch_momentum, # since bias is just a vector 
                                    layer_norm = layer_norm, 
