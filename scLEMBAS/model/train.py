@@ -1130,6 +1130,7 @@ class TrainSC(TrainBase):
                                                                     spectral_norm = self.pert_discriminator['params']['spectral_norm'],
                          dropout_rate = self.pert_discriminator['params']['dropout_rate'], 
                          activation_fn = self.pert_discriminator['params']['activation_fn'], 
+                         initialize = self.pert_discriminator['params']['initialize'],
                          n_hidden_nodes = self.pert_discriminator['params']['n_hidden_nodes'], 
                          seed = self.train_seed)
     
@@ -1167,6 +1168,7 @@ class TrainSC(TrainBase):
                                                                dropout_rate = self.cat_discriminator['params']['dropout_rate'], 
                                                                activation_fn = self.cat_discriminator['params']['activation_fn'], 
                                                                n_hidden_nodes = self.cat_discriminator['params']['n_hidden_nodes'], 
+                                                               initialize = self.cat_discriminator['params']['initialize'],
                                                                seed = self.train_seed)
                                 for covariate_cat, cat_embedding in self.mod.signaling_network.cat_embeddings.items()}
                         )

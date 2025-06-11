@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[2]:
+# In[1]:
 
 
 import argparse
@@ -67,6 +67,10 @@ parser.add_argument("--lr_period", type=float, default=4, help="cat disc penalty
 parser.add_argument("--reset_state", type=str_to_bool, default='true', help="cat disc penalty weight b param")
 
 parser.add_argument("--train_batch", type=int, default=500, help="cat disc penalty weight b param")
+parser.add_argument("--initialize_fc", type=str_to_bool, default='false', help="cat disc penalty weight b param")
+parser.add_argument("--discriminator_batch_momentum", type=float, default=0.01, help="cat disc penalty weight b param")
+parser.add_argument("--spectral_norm", type=str_to_bool, default='false', help="cat disc penalty weight b param")
+parser.add_argument("--discriminator_lambda_L2", type=float, default=1e-3, help="cat disc penalty weight b param")
 
 ########################################################################
 args = parser.parse_args()
@@ -107,18 +111,23 @@ gradient_noise_scale = args.gradient_noise_scale
 lr_period = args.lr_period
 
 reset_state = args.reset_state
+
 train_batch = args.train_batch
+initialize_fc = args.initialize_fc
+discriminator_batch_momentum = None if args.discriminator_batch_momentum == 0 else args.discriminator_batch_momentum
+spectral_norm = args.spectral_norm
+discriminator_lambda_L2 = 0 if spectral_norm else args.discriminator_lambda_L2
 
 
-#python test_MAIN.py --index dev --run_type E --bn_weights_lambda_L2 1e-7 --uniform_lambda_L2 1e-7 --cat_max_norm 100 --global_bias_lambda_L2 0 --cat_bias_lambda_L2 0 --vae_scaling_KL 1e-2 --global_bias_lambda_L1 0 --cat_bias_lambda_L1 0 --vae_prior_mu 0 --vae_prior_sigma 1 --adj_scaling_KL 0 --adj_prior_mu 0 --adj_prior_sigma 0.2 --loss_type MSE --per_condition_loss true --cat_bias_orthogonality_scaler 0 --cat_max_penalty_weight 8 --cat_b_adv 1.5 --pert_max_penalty_weight 20 --pert_b_adv 2 --network_noise_scale 0.01 --min_network_noise 0.0025 --include_gradient_noise_vae true --include_gradient_noise_embedding true --constant_gradient_noise true --gradient_noise_scale 1e-9 --lr_period 4 --reset_state true --train_batch 500
+#python test_MAIN.py --index dev --run_type E --bn_weights_lambda_L2 1e-7 --uniform_lambda_L2 1e-7 --cat_max_norm 100 --global_bias_lambda_L2 0 --cat_bias_lambda_L2 0 --vae_scaling_KL 1e-2 --global_bias_lambda_L1 0 --cat_bias_lambda_L1 0 --vae_prior_mu 0 --vae_prior_sigma 1 --adj_scaling_KL 0 --adj_prior_mu 0 --adj_prior_sigma 0.2 --loss_type MSE --per_condition_loss true --cat_bias_orthogonality_scaler 0 --cat_max_penalty_weight 8 --cat_b_adv 1.5 --pert_max_penalty_weight 20 --pert_b_adv 2 --network_noise_scale 0.01 --min_network_noise 0.0025 --include_gradient_noise_vae true --include_gradient_noise_embedding true --constant_gradient_noise true --gradient_noise_scale 1e-9 --lr_period 4 --reset_state true --train_batch 500 --initialize_fc false --discriminator_batch_momentum 0.01 --spectral_norm false --discriminator_lambda_L2 1e-3
 
 
 # 
 
-# In[2]:
+# In[35]:
 
 
-# fn = '1'
+# fn = 'mini4_fc'#'trash'
 # run_type = 'E'
 # fn += run_type
 # # seed = 3
@@ -159,8 +168,18 @@ train_batch = args.train_batch
 
 # reset_state = True
 
+# train_batch = 500
+# intitialize_fc = False
+# spectral_norm = False
+# discriminator_batch_momentum = None if spectral_norm else 0.01
+# discriminator_lambda_L2 = 0 if spectral_norm else 1e-3
 
-# In[3]:
+# # discriminator_batch_momentum = None
+# # spectral_norm = True
+# # discriminator_lambda_L2 = 0 
+
+
+# In[36]:
 
 
 run_types = {'A': (1, True),
@@ -172,7 +191,7 @@ run_types = {'A': (1, True),
 seed, loo = run_types[run_type]
 
 
-# In[4]:
+# In[37]:
 
 
 visualize = False
@@ -195,7 +214,7 @@ else:
     prediction_loss_fn = SamplesLoss("sinkhorn", p=2, blur=0.05).to(device)
 
 
-# In[5]:
+# In[38]:
 
 
 n_fraction = 0.2
@@ -227,7 +246,7 @@ b_scale = 2
 #     fn += '_loo'
 
 
-# In[6]:
+# In[39]:
 
 
 import os
@@ -265,12 +284,12 @@ with warnings.catch_warnings():
     warnings.simplefilter("ignore", SparseEfficiencyWarning)
 
 
-# In[7]:
+# In[40]:
 
 
 import sys
-sclembas = '/home/hmbaghda/scLEMBAS_June5'
-sys.path.insert(1, os.path.join(sclembas))
+sclembas_path = '/home/hmbaghda/Projects/scLEMBAS'
+sys.path.insert(1, os.path.join(sclembas_path))
 from scLEMBAS import io
 
 # from scLEMBAS.model.train_dev_mu_regularizer import TrainSC as TrainSCDevMu
@@ -303,12 +322,12 @@ TR = {'default': TrainSC}#,
 #       'standardized_weights': TrainSCDevWstandard 
 #      }
 
-sys.path.insert(1, '/home/hmbaghda/scLEMBAS_June5/notebooks/Kang_2017/')
+sys.path.insert(1, os.path.join(sclembas_path, 'notebooks/Kang_2017/'))
 from Kang_utils import (rev_stim, stim_map, rev_stim_map, adata_dimviz_bias, clear_memory,
                         get_prediction, adata_dimviz_prediction, prepare_for_metrics, get_loss)
 
 
-# In[8]:
+# In[41]:
 
 
 n_cores = 12
@@ -322,7 +341,7 @@ data_path = '/nobackup/users/hmbaghda/scLEMBAS/analysis'
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 
-# In[9]:
+# In[42]:
 
 
 adata = sc.read_h5ad(os.path.join(data_path, 'processed', 'kang_expr_scored.h5ad'))
@@ -344,7 +363,7 @@ inhibition_label = 'consensus_inhibition'
 
 # # 1. Create a novel train-test split:
 
-# In[26]:
+# In[43]:
 
 
 def ood_split(tf_adata, 
@@ -462,7 +481,7 @@ def ood_split(tf_adata,
         return None, None, None, None
 
 
-# In[27]:
+# In[44]:
 
 
 contingency_table = pd.crosstab(tf_adata.obs['stim'], tf_adata.obs['seurat_annotations'], 
@@ -471,7 +490,7 @@ contingency_table = contingency_table.T.sort_values(by = 'Total').T
 bins = pd.qcut(contingency_table.T.Total, q = 4, labels = False)
 
 
-# In[28]:
+# In[45]:
 
 
 if not loo:
@@ -509,14 +528,14 @@ else:
     train_cells = tf_adata.obs[tf_adata.obs.condition.isin(train_cond)].index.tolist()
 
 
-# In[29]:
+# In[46]:
 
 
 condition_proportions = tf_adata.obs['condition'].value_counts()
 condition_proportions.loc[train_cond].sort_values(ascending = True)
 
 
-# In[30]:
+# In[47]:
 
 
 condition_proportions.loc[test_cond].sort_values(ascending = True)
@@ -524,7 +543,7 @@ condition_proportions.loc[test_cond].sort_values(ascending = True)
 
 # # 2. Subset data
 
-# In[31]:
+# In[48]:
 
 
 if subset:
@@ -560,20 +579,20 @@ if subset:
     
 
 
-# In[32]:
+# In[49]:
 
 
 tf_adata
 
 
-# In[33]:
+# In[50]:
 
 
 condition_proportions = tf_adata.obs['condition'].value_counts()
 condition_proportions.loc[train_cond].sort_values(ascending = True)
 
 
-# In[34]:
+# In[51]:
 
 
 condition_proportions.loc[test_cond].sort_values(ascending = True)
@@ -581,7 +600,7 @@ condition_proportions.loc[test_cond].sort_values(ascending = True)
 
 # # 3. Run training
 
-# In[35]:
+# In[52]:
 
 
 def generate_lr_params(n_epochs, max_lr, lr_scaling_factor = 10, lr_decay = 0.9):
@@ -603,22 +622,24 @@ def generate_discriminator_params(n_epochs, max_lr, discriminator_penalty_weight
     
     keys_to_keep = ['maximum_learning_rate', 'minimum_learning_rate', 'lr_restart_epoch', 
                    'warmup_epochs', 'lr_decay', 'reset_optimizer_epoch']
-    discriminator_params = {'batch_momentum': 0.01,
+    discriminator_params = {'batch_momentum': discriminator_batch_momentum,
                             'layer_norm': False,
+                            'spectral_norm': spectral_norm,
                             'dropout_rate': 0.1,
                             'activation_fn': nn.LeakyReLU,
                             'n_hidden_nodes': [768, 512, 256],
                             'lr_restart_factor': 1,
                             'optimizer': torch.optim.Adam,
-                            'discriminator_lambda_L2': 1e-3,
-                            'discriminator_penalty_weight': discriminator_penalty_weight}
+                            'discriminator_lambda_L2': discriminator_lambda_L2,
+                            'discriminator_penalty_weight': discriminator_penalty_weight, 
+                           'initialize': initialize_fc}
     discriminator_params = {**discriminator_params, 
                            **{k:v for k,v in general_params.items() if k in keys_to_keep}}
     
     return discriminator_params
 
 
-# In[36]:
+# In[53]:
 
 
 # hyperparameters
@@ -636,10 +657,12 @@ bionet_params = {'target_steps': 100,
                  'exp_factor':50, 
                  'tolerance': 1e-5, 
                  'leak':1e-2}
+
 vae_params = {'vae_batch_momentum': 0.01, 'vae_layer_norm': False, 'vae_dropout_rate': 0.1,
               'vae_activation_fn': nn.LeakyReLU,
               'vae_n_hidden_nodes': vae_n_hidden_nodes, 
-              'vae_var_min': 1e-4}
+              'vae_var_min': 1e-4, 
+             'vae_initialize': initialize_fc}
 bionet_params = {**bionet_params, **vae_params}
 
 
@@ -658,9 +681,10 @@ if mod_type in ['tot_bias_scaler', 'global_bias_scaler', 'mu_bias_scaler']:
         bionet_params['bias_global_scaler'] = b_scale
     elif mod_type == 'mu_bias_scaler':
         bionet_params['bias_mu_scaler'] = b_scale
+        
 
 
-# In[37]:
+# In[54]:
 
 
 # training parameters
@@ -703,7 +727,7 @@ regularization_params_default = {'input_lambda_L2': 0, # doesn't matter if setti
 #     regularization_params_default['global_bias_lambda_L2'] = 1e-5 # increase global bias regularization
 
 
-# In[38]:
+# In[55]:
 
 
 if not short_run:
@@ -715,7 +739,8 @@ else:
 #     cat_b_adv = 1.5
     max_epochs = 250 
     
-    
+# max_epochs = 10   
+
 # if subset:
 # #     batch_factor = 1 if n_fraction <= 0.2 else 3
 # #     train_batch = int(np.round(n_train/batch_factor))
@@ -724,7 +749,6 @@ else:
 # else:
 #     train_batch = 1024
 
-# max_epochs = 10
 max_lr = 0.001
 
 
@@ -780,7 +804,7 @@ training_params['gradient_noise_scale'] = gradient_noise_scale
 # training_params['gradient_noise_scale'] = 1e-9 # original default 
 
 
-# In[47]:
+# In[56]:
 
 
 fig, ax = plt.subplots(ncols = 2, figsize = (13,5))
@@ -797,7 +821,7 @@ for i in range(2):
 fig.tight_layout();
 
 
-# In[20]:
+# In[57]:
 
 
 mod = SM[mod_type](net = sn_ppis,
@@ -816,7 +840,39 @@ mod.input_layer.weights.requires_grad = False # don't learn scaling factors for 
 mod.signaling_network.prescale_weights(target_radius = target_spectral_radius) # spectral radius
 
 
-# In[1]:
+# # Start
+
+# In[26]:
+
+
+# io.write_pickled_object(mod, fn + '_initialized.pickle')
+
+
+# In[58]:
+
+
+# modA = io.read_pickled_object('mini4_fcE_initialized.pickle')
+
+
+# In[65]:
+
+
+# import torch
+
+# def models_allclose(model1, model2, rtol=1e-5, atol=1e-8):
+#     for p1, p2 in zip(model1.parameters(), model2.parameters()):
+#         if not torch.allclose(p1, p2, rtol=rtol, atol=atol):
+#             return False
+#     return True
+
+
+# are_equal = models_allclose(mod, modA)
+# print("Models are equal:", are_equal)
+
+
+# # End
+
+# In[60]:
 
 
 trainer = TR[mod_type](mod = mod,
@@ -834,47 +890,47 @@ trainer = TR[mod_type](mod = mod,
                       n_eval_bootstrap = 3)
 
 
-# In[ ]:
+# In[61]:
 
 
-# import cProfile
-# import pstats
-# from io import StringIO
-# profiler = cProfile.Profile()
-# profiler.enable()
+import cProfile
+import pstats
+from io import StringIO
+profiler = cProfile.Profile()
+profiler.enable()
 
-# mod = trainer.train_model(verbose = False)
+mod = trainer.train_model(verbose = False)
 
-# profiler.disable()
+profiler.disable()
 
-# s = StringIO()
-# ps = pstats.Stats(profiler, stream=s).sort_stats('cumulative')
-# ps.print_stats()
+s = StringIO()
+ps = pstats.Stats(profiler, stream=s).sort_stats('cumulative')
+ps.print_stats()
 
-# lines = s.getvalue().split('\n')
+lines = s.getvalue().split('\n')
 
-# # Convert to DataFrame
-# parsed = []
-# for line in lines[5:]:  
-#     parts = line.split(None, 5)  
-#     if len(parts) == 6:
-#         ncalls, tottime, percall1, cumtime, percall2, func = parts
-#         parsed.append({
-#             'ncalls': ncalls,
-#             'tottime': float(tottime),
-#             'percall_tottime': float(percall1),
-#             'cumtime': float(cumtime),
-#             'percall_cumtime': float(percall2),
-#             'func': func
-#         })
+# Convert to DataFrame
+parsed = []
+for line in lines[5:]:  
+    parts = line.split(None, 5)  
+    if len(parts) == 6:
+        ncalls, tottime, percall1, cumtime, percall2, func = parts
+        parsed.append({
+            'ncalls': ncalls,
+            'tottime': float(tottime),
+            'percall_tottime': float(percall1),
+            'cumtime': float(cumtime),
+            'percall_cumtime': float(percall2),
+            'func': func
+        })
 
-# timer_df = pd.DataFrame(parsed)
-# timer_df.to_csv(os.path.join(data_path, 'trash', fn + '_timing.csv'))
+timer_df = pd.DataFrame(parsed)
+timer_df.to_csv(os.path.join(data_path, 'trash', fn + '_timing.csv'))
 
-# io.write_pickled_object(trainer,  os.path.join(data_path, 'trash', fn + '_feb_trainer.pickle'))
+io.write_pickled_object(trainer,  os.path.join(data_path, 'trash', fn + '_feb_trainer.pickle'))
 
 
-# In[ ]:
+# In[30]:
 
 
 gc.collect()
@@ -882,9 +938,36 @@ torch.cuda.empty_cache()  # Clears the cached memory
 torch.cuda.ipc_collect()  # Collects unused memory blocks
 
 
+# # Start
+
+# In[62]:
+
+
+# trainerA = io.read_pickled_object(os.path.join(data_path, 'trash', 'mini4_fcE' + '_feb_trainer.pickle'))
+# modA = trainerA.mod
+
+
+# In[66]:
+
+
+# import torch
+
+# def models_allclose(model1, model2, rtol=1e-5, atol=1e-8):
+#     for p1, p2 in zip(model1.parameters(), model2.parameters()):
+#         if not torch.allclose(p1, p2, rtol=rtol, atol=atol):
+#             return False
+#     return True
+
+
+# are_equal = models_allclose(mod, modA)
+# print("Models are equal:", are_equal)
+
+
+# # End
+
 # # Checkpoint: load the object
 
-# In[10]:
+# In[29]:
 
 
 trainer = io.read_pickled_object(os.path.join(data_path, 'trash', fn + '_feb_trainer.pickle'))
@@ -904,14 +987,14 @@ train_cell_types = pd.Series([ct.split('^')[1] for ct in train_conds]).drop_dupl
 train_cell_types = sorted(set(train_cell_types).difference(test_cell_types))
 
 
-# In[11]:
+# In[30]:
 
 
 if torch.isinf(mod.signaling_network.weights).any():
     raise ValueError('Exploding gradients')
 
 
-# In[12]:
+# In[31]:
 
 
 print('Index: {}'.format(fn))
@@ -1009,6 +1092,24 @@ print('Gradient Noise: vae included: {} | cat_embedding_included: {}'.format(*_n
 print('Gradient Noise: scaler included: {:.3e} | constant: {}'.format(*_noise_params[4:][::-1]))
 
 print()
+print('-----Adversarial Tuning-----------')
+print('Train batch size: {}'.format(trainer.hyper_params['train_batch_size']))
+print()
+print('Min/max Discriminator LR: ({:.2E}, {:.2E})'.format(trainer.pert_discriminator['params']['minimum_learning_rate'],
+                                                        trainer.pert_discriminator['params']['maximum_learning_rate']))
+print('Discriminator dropout rate: {}'.format(trainer.pert_discriminator['params']['dropout_rate']))
+bm = False if trainer.pert_discriminator['params']['batch_momentum'] is None else True
+print('Discriminator batch normalization: {}'.format(bm))
+sn = False
+if 'spectral_norm' in trainer.pert_discriminator['params']:
+    sn = trainer.pert_discriminator['params']['spectral_norm']
+print('Discriminator spectral normalization: {}'.format(sn))
+print('Discriminator L2 regularization: {:.2E}'.format(trainer.pert_discriminator['params']['discriminator_lambda_L2']))
+print()
+print('Generator dropout rate: {}'.format(trainer.mod.signaling_network.bionet_params['vae_dropout_rate']))
+
+
+print()
 print('-----OTHER-----------')
 print('epochs: {}'.format(trainer.hyper_params['max_epochs']))
 print('seed: {}'.format(mod.seed))
@@ -1016,7 +1117,7 @@ print('test cells: {}'.format(trainer.X_test.shape))
 print('Reset optimizer epoch: {}'.format(trainer.hyper_params['reset_optimizer_epoch']))
 
 
-# In[ ]:
+# In[32]:
 
 
 if 'cat_discriminator' not in trainer.__dict__.keys():
@@ -1037,7 +1138,7 @@ for i in range(2):
 fig.tight_layout();
 
 
-# In[ ]:
+# In[33]:
 
 
 train_stats_df = trainer.stats['train'].copy()
@@ -1078,10 +1179,12 @@ for col in ['discriminator_learning_rate', 'discriminator_loss_total',
                   inplace = True)
         
 for col in ['pert_discriminator_learning_rate', 'pert_discriminator_loss_total',
-           'pert_discriminator_loss_prediction', 'pert_discriminator_param_reg_loss']:
+           'pert_discriminator_loss_prediction', 'pert_discriminator_param_reg_loss', 
+           'cat_seurat_annotations_discriminator_grad_l2_norm', 
+           'pert_discriminator_grad_l2_norm']:
     if col not in train_stats_df.columns:
         train_stats_df[col] = 0
-        
+
 # if 'test' in trainer.stats:
 #     test_stats_df = trainer.stats['test'].copy()
 #     test_stats_df = test_stats_df.groupby('epoch').mean().reset_index() # DELETE THIS
@@ -1089,7 +1192,7 @@ for col in ['pert_discriminator_learning_rate', 'pert_discriminator_loss_total',
 
 # # 4. Look at the loss curves:
 
-# In[24]:
+# In[36]:
 
 
 if visualize:
@@ -1109,6 +1212,27 @@ if visualize:
 
     fig.tight_layout()
     # plt.savefig(os.path.join(data_path, 'trash', fn + '_loss_epochs' + '.png'), dpi=300, bbox_inches='tight')
+
+
+# ## Discriminator Gradient
+# 
+# Bad if L2 norm is > 100 (see number [10](https://github.com/soumith/ganhacks))
+
+# In[37]:
+
+
+if visualize:
+    fig, ax = plt.subplots(ncols = 2, figsize = (8, 4))
+
+    sns.lineplot(data = train_stats_df, x = 'epoch', 
+                 y = 'cat_seurat_annotations_discriminator_grad_l2_norm', ax = ax[0])
+    ax[0].set_ylabel('Cat Discriminator Gradient L2 Norm')
+
+    sns.lineplot(data = train_stats_df, x = 'epoch', 
+                 y = 'pert_discriminator_grad_l2_norm', ax = ax[1])
+    ax[1].set_ylabel('Pert Discriminator Gradient L2 Norm')
+
+    fig.tight_layout()
 
 
 # ## Input network noise:
@@ -3322,13 +3446,15 @@ def setup_predtypes():
 
 from sklearn.model_selection import StratifiedKFold
 from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score
 
 # set up the outputs to classify
 pred_types = setup_predtypes()
 
 
-probe_res = pd.DataFrame(columns=['category_name', 'accuracy', 'prediction_type'])
+probe_res = pd.DataFrame(columns=['category_name', 'linear_accuracy', 'nonlinear_accuracy', 
+                                  'prediction_type'])
 n_folds = 5
 counter = 0
 
@@ -3350,28 +3476,64 @@ for pred_type, global_bias in pred_types.items():
             X_train, X_test = X[train_idx], X[test_idx]
             y_train, y_test = y[train_idx], y[test_idx]
 
-            probe = LogisticRegression(max_iter=2000, solver='lbfgs', multi_class='auto', random_state=seed_split)
-            probe.fit(X_train, y_train)
+            
+            # linear probe
+            probe_linear = LogisticRegression(max_iter=2000, solver='lbfgs', multi_class='auto', 
+                                              random_state=seed_split)
+            probe_linear.fit(X_train, y_train)
 
-            y_pred = probe.predict(X_test)
-            accuracy = accuracy_score(y_test, y_pred)
+            y_pred = probe_linear.predict(X_test)
+            linear_accuracy = accuracy_score(y_test, y_pred)
+            
+            # nonlinear probe
+            probe_nonlinear = RandomForestClassifier(
+                n_estimators=100,          
+                max_depth=None,            
+                random_state=seed_split,
+                n_jobs=20,                 
+                verbose=False                  
+            )
+
+            probe_nonlinear.fit(X_train, y_train)
+            y_pred = probe_nonlinear.predict(X_test)
+            nonlinear_accuracy = accuracy_score(y_test, y_pred)
+            
+        
+#             mlp_probe = MLPClassifier(hidden_layer_sizes=(100,),
+#                                       activation='relu', 
+#                                       solver = 'adam', 
+#                                       max_iter=500, 
+#                                      shuffle = True, 
+#                                      random_state = seed_split)
+#             mlp_probe.fit(X_train, y_train)
+#             y_pred = mlp_probe.predict(X_test)
+#             nonlinear_accuracy = accuracy_score(y_test, y_pred)
+            
 
             probe_res.loc[counter, 'category_name'] = category_name
-            probe_res.loc[counter, 'accuracy'] = accuracy
+            probe_res.loc[counter, 'linear_accuracy'] = linear_accuracy
+            probe_res.loc[counter, 'nonlinear_accuracy'] = nonlinear_accuracy
             probe_res.loc[counter, 'prediction_type'] = pred_type
+            
+            
             counter += 1
 
-probe_res = probe_res.pivot_table(
-    index='prediction_type',
-    columns='category_name',
-    values='accuracy',
-    aggfunc=list  # or use list/np.array if you want to keep all fold values
-).reset_index().explode(['cell_type', 'perturbation']).reset_index(drop=True)
-probe_res.columns.name = None
+probe_res = probe_res.melt(
+    id_vars=['prediction_type', 'category_name'], 
+    value_vars=['linear_accuracy', 'nonlinear_accuracy'],
+    var_name='probe_type', 
+    value_name='accuracy'
+)
+
+# Clean up probe_type values
+probe_res['probe_type'] = probe_res['probe_type'].str.replace('_accuracy', '')
+
+# Explode if accuracies are stored as lists (e.g., one per fold)
+probe_res = probe_res.explode('accuracy').reset_index(drop=True)
 probe_res.to_csv(os.path.join(data_path, 'trash', fn + '_probe.csv'))
 
 
-# The following plot visualizes accuracy of a Logistic Regression model trained on the global bias output of the fully trained scLEMBAS model. 
+# The following plot visualizes accuracy of a Logistic Regression (linear)  and RandomForest (nonlinear) classifier trained on the global bias output of the fully trained scLEMBAS model. 
 # - "train": direct global bias output on the train conditions (no counterfactuals)
 # - "train_fullforward": full forward pass using just the global bias output (run through the ProjectOutput layer) (no counterfactuals)
 # - "test": direct global bias output on the test conditions (with counterfactual, so input g has been seen during training -- this is then just a subset of train)
@@ -3388,6 +3550,9 @@ if visualize:
                                               categories = train_types +  ['test'], 
                                               ordered = True)
     probe_res.prediction_type = probe_res.prediction_type.cat.remove_unused_categories().copy()
+    probe_res.probe_type = pd.Categorical(probe_res.probe_type, 
+                                         categories = ['linear', 'nonlinear'], 
+                                         ordered = True)
     
     
     # random chance given class imbalances and that StratifiedKfold gives same split as real
@@ -3407,7 +3572,8 @@ if visualize:
     fig, ax = plt.subplots(figsize = (7,3), ncols = 2)
 
     for (i, c) in enumerate(['cell_type', 'perturbation']):
-        sns.boxplot(data = probe_res, x = 'prediction_type', y = c, ax = ax[i])
+        viz_df = probe_res[probe_res.category_name == c]
+        sns.boxplot(data = viz_df, x = 'prediction_type', y = 'accuracy', hue = 'probe_type', ax = ax[i])
 
         if c == 'cell_type':
             random_chance = {'train': 1/len(set([cond.split('^')[1] for cond in train_conds])), 
@@ -3427,10 +3593,21 @@ if visualize:
                 y=random_chance[label], xmin=xtick - 0.3, xmax=xtick + 0.3, 
                 colors='gray', linestyles='dashed', linewidth=1
             )
+            
         ax[i].set_xticklabels(ax[i].get_xticklabels(), rotation=45)
         ax[i].set_title(c)
         ax[i].set_ylabel('Accuracy')
+        ax[i].legend_.remove()
 
+        
+    handles, labels = ax[0].get_legend_handles_labels()
+    fig.legend(
+        handles, labels,
+        title='Probe Type',
+        loc='upper left',
+        bbox_to_anchor=(-0.2, 0.9),
+    )
+        
     fig.suptitle('Probe Classifier: 5-fold CV')
     fig.tight_layout()
     ("")
@@ -3439,8 +3616,8 @@ if visualize:
 # In[2]:
 
 
-probe_stats = pd.melt(probe_res, id_vars = ['prediction_type'], var_name='category', value_name='accuracy')
-probe_stats.groupby(['category', 'prediction_type']).mean()
+probe_stats = probe_res.groupby(['category_name', 'prediction_type', 'probe_type'], observed=True).mean()
+print(probe_stats)
 
 
 # In[ ]:

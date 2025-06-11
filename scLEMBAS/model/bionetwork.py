@@ -845,7 +845,8 @@ class BioNetSC(BioNetCat):
                                    batch_momentum = self.bionet_params['vae_batch_momentum'],
                                    layer_norm = self.bionet_params['vae_layer_norm'], 
                                    dropout_rate = self.bionet_params['vae_dropout_rate'], 
-                                   activation_fn = self.bionet_params['vae_activation_fn'], 
+                                   activation_fn = self.bionet_params['vae_activation_fn'],
+                                   initialize =  self.bionet_params['vae_initialize'],
                                               device = self.device, dtype = self.dtype, 
                                               seed = seed
                                   )
