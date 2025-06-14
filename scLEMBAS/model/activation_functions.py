@@ -4,6 +4,7 @@ Defines various activations functions to be used in neural net.
 
 import numpy as np
 import torch
+import torch.nn as nn
 
 from typing import Union
 
@@ -30,6 +31,16 @@ def MML_activation(x: torch.Tensor, leak: Union[float, int]):
     right_values = 0.5 + torch.div(shifted_x, gated_x)
     fx = mask * (fx - right_values) + right_values #-fx trick from relu
     return fx
+
+
+class MMLActivation(nn.Module):
+    """Same as function above, for use with CatDiscriminator and other torch functionalities"""
+    def __init__(self, leak: float = 0.01):
+        super().__init__()
+        self.leak = leak
+
+    def forward(self, x):
+        return MML_activation(x, self.leak)
 
 def MML_delta_activation(x: torch.Tensor, leak: Union[float, int]):
     """Returns the derivative of the Michaelis-Menten function
@@ -199,3 +210,8 @@ activation_function_map = {'MML': {'activation': MML_activation, 'delta': MML_de
                           'leaky_relu': {'activation': leakyReLU_activation, 'delta': leakyReLU_delta_activation, 'onestepdelta': leakyReLU_onestepdelta_activation_factor},
                            'sigmoid': {'activation': sigmoid_activation, 'delta': sigmoid_delta_activation, 'onestepdelta': sigmoid_onestepdelta_activation_factor}
                           }
+
+
+activation_function_torch_map = {'MML': MMLActivation, 
+                                 'leaky_relu': nn.ReLU, 
+                                 'sigmoid': torch.sigmoid}

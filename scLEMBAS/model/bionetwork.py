@@ -59,7 +59,7 @@ class BioNetBase(nn.Module):
             see `SignalingModel.set_training_parameters`
         activation_function : str, optional
             RNN activation function, by default 'MML'
-            options include:
+            options include (currently only MML works):
                 - 'MML': Michaelis-Menten-like
                 - 'leaky_relu': Leaky ReLU
                 - 'sigmoid': sigmoid 
@@ -82,6 +82,9 @@ class BioNetBase(nn.Module):
         self._ss_seed_counter = 0
         self._prescaled_weights = False
         self.input_node_idx = input_node_idx
+        if activation_function != 'MML':
+            raise ValueError('Need to update sigmoid and leaky_relu options')
+        self.activation_function = activation_function
 
         self.n_network_nodes = n_network_nodes
         # TODO: delete these _in _out?
@@ -96,9 +99,9 @@ class BioNetBase(nn.Module):
         self.initialize_weights()
         
         # activation function
-        self.activation = activation_function_map[activation_function]['activation']
-        self.delta = activation_function_map[activation_function]['delta']
-        self.onestepdelta_activation_factor = activation_function_map[activation_function]['onestepdelta']
+        self.activation = activation_function_map[self.activation_function]['activation']
+        self.delta = activation_function_map[self.activation_function]['delta']
+        self.onestepdelta_activation_factor = activation_function_map[self.activation_function]['onestepdelta']
         
 #     def get_device(self):
 #         if self.device == 'cuda':

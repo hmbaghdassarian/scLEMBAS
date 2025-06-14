@@ -13,8 +13,8 @@ import torch
 import torch.nn as nn
 
 from ..utilities import set_seeds
-
 from .model_utilities import L2_reg
+from .activation_functions import activation_function_torch_map
 
 class ProjectInput(nn.Module):
     """Generate all nodes for the signaling network and linearly scale input ligand values by NN parameters."""
@@ -179,7 +179,7 @@ class FCLayers(nn.Module):
     DEFAULT_HYPER_PARAMS = {'batch_momentum': 0.01, 'layer_norm': False, 'spectral_norm': False,
                             'dropout_rate': 0.1,
                         'activation_fn': nn.ReLU, # can make as None to have purely linear
-                            'initialize': False
+                            'initialize': True
                         }
     def __init__(self, layers: List[int],
                  batch_momentum: float = 0.01,
@@ -187,7 +187,7 @@ class FCLayers(nn.Module):
                  spectral_norm: bool = False,
                  dropout_rate: int | float = 0.1,
                  activation_fn: nn.Module | None = nn.ReLU,
-                 initialize: bool = False,
+                 initialize: bool = True,
                  dtype: torch.dtype=torch.float32,
                  device: str = 'cpu', 
                 ):
@@ -501,7 +501,8 @@ class CatDiscriminator(nn.Module):
     """
     
     DEFAULT_HYPER_PARAMS = {**FCLayers.DEFAULT_HYPER_PARAMS, 
-                            **{'n_hidden_nodes': [16, 16, 16]}}
+                            **{'n_hidden_nodes': [16, 16, 16]}, 
+                           'bionet_activation': False}
     
     def __init__(
         self,
@@ -513,7 +514,9 @@ class CatDiscriminator(nn.Module):
         spectral_norm: bool = False,
         dropout_rate: int | float = 0.1,
         activation_fn: nn.Module | None = nn.LeakyReLU,
-        initialize: bool = False,
+        bionet_activation: bool = False, 
+        rnn_params: dict = {'activation_function': 'MML', 'leak': 0.01}, 
+        initialize: bool = True,
         dtype: torch.dtype=torch.float32,
         device: str = 'cpu', 
         seed: int = 888, 
@@ -541,6 +544,15 @@ class CatDiscriminator(nn.Module):
             If None, dropout is not added
         activation_fn : nn.Module | None, optional
             non-linear Pytorch activation function, by default nn.ReLU. No activation if set to None
+        bionet_activation: bool, optional
+            whether to classify the direct generator output (False) or 
+            the output once it's been run through the RNN (True) (i.e., run through the bionet activation function).
+            The motivation here is from obervations that any lingering information (particularly non-linear) in the global bias 
+            will be amplified by the non-linear function of the RNN
+        rnn_params: dict, optional
+          bionetwork 'activation_function' and 'leak'; see `model.bionetwork.forward` for details; necessary to know the exact
+          bionet activation function being used
+          only required if bionet_activation is True
         initialize: bool, optional
             whether to initialize the linear layer weights using `torch.nn.init`, by default False
         dtype : torch.dtype, optional
@@ -564,8 +576,11 @@ class CatDiscriminator(nn.Module):
         self.device = device
         self.dtype = dtype
         self.seed = seed
+        self.bionet_activation = bionet_activation
         
         cat_layers = []
+        if self.bionet_activation: 
+            cat_layers.append(activation_function_torch_map[rnn_params['activation_function']](leak = rnn_params['leak']))
         if self.seed:
             set_seeds(self.seed)
         cat_layers.append(FCLayers(layers = [n_features_in] + n_hidden_nodes, 

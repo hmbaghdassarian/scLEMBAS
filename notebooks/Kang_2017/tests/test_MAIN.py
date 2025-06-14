@@ -66,11 +66,14 @@ parser.add_argument("--lr_period", type=float, default=4, help="cat disc penalty
 
 parser.add_argument("--reset_state", type=str_to_bool, default='true', help="cat disc penalty weight b param")
 
-parser.add_argument("--train_batch", type=int, default=500, help="cat disc penalty weight b param")
-parser.add_argument("--initialize_fc", type=str_to_bool, default='false', help="cat disc penalty weight b param")
-parser.add_argument("--discriminator_batch_momentum", type=float, default=0.01, help="cat disc penalty weight b param")
-parser.add_argument("--spectral_norm", type=str_to_bool, default='false', help="cat disc penalty weight b param")
-parser.add_argument("--discriminator_lambda_L2", type=float, default=1e-3, help="cat disc penalty weight b param")
+parser.add_argument("--train_batch", type=int)
+parser.add_argument("--initialize_fc", type=str_to_bool)
+parser.add_argument("--discriminator_batch_momentum", type=float)
+parser.add_argument("--spectral_norm", type=str_to_bool)
+parser.add_argument("--discriminator_lambda_L2", type=float)
+parser.add_argument("--discriminator_bionet_activation", type=str_to_bool)
+
+
 
 ########################################################################
 args = parser.parse_args()
@@ -117,9 +120,9 @@ initialize_fc = args.initialize_fc
 discriminator_batch_momentum = None if args.discriminator_batch_momentum == 0 else args.discriminator_batch_momentum
 spectral_norm = args.spectral_norm
 discriminator_lambda_L2 = 0 if spectral_norm else args.discriminator_lambda_L2
+discriminator_bionet_activation = args.discriminator_bionet_activation
 
-
-#python test_MAIN.py --index dev --run_type E --bn_weights_lambda_L2 1e-7 --uniform_lambda_L2 1e-7 --cat_max_norm 100 --global_bias_lambda_L2 0 --cat_bias_lambda_L2 0 --vae_scaling_KL 1e-2 --global_bias_lambda_L1 0 --cat_bias_lambda_L1 0 --vae_prior_mu 0 --vae_prior_sigma 1 --adj_scaling_KL 0 --adj_prior_mu 0 --adj_prior_sigma 0.2 --loss_type MSE --per_condition_loss true --cat_bias_orthogonality_scaler 0 --cat_max_penalty_weight 8 --cat_b_adv 1.5 --pert_max_penalty_weight 20 --pert_b_adv 2 --network_noise_scale 0.01 --min_network_noise 0.0025 --include_gradient_noise_vae true --include_gradient_noise_embedding true --constant_gradient_noise true --gradient_noise_scale 1e-9 --lr_period 4 --reset_state true --train_batch 500 --initialize_fc false --discriminator_batch_momentum 0.01 --spectral_norm false --discriminator_lambda_L2 1e-3
+#python test_MAIN.py --index dev --run_type E --bn_weights_lambda_L2 1e-7 --uniform_lambda_L2 1e-7 --cat_max_norm 100 --global_bias_lambda_L2 0 --cat_bias_lambda_L2 0 --vae_scaling_KL 1e-2 --global_bias_lambda_L1 0 --cat_bias_lambda_L1 0 --vae_prior_mu 0 --vae_prior_sigma 1 --adj_scaling_KL 0 --adj_prior_mu 0 --adj_prior_sigma 0.2 --loss_type MSE --per_condition_loss true --cat_bias_orthogonality_scaler 0 --cat_max_penalty_weight 8 --cat_b_adv 1.5 --pert_max_penalty_weight 20 --pert_b_adv 2 --network_noise_scale 0.01 --min_network_noise 0.0025 --include_gradient_noise_vae true --include_gradient_noise_embedding true --constant_gradient_noise true --gradient_noise_scale 1e-9 --lr_period 4 --reset_state true --train_batch 500 --initialize_fc true --discriminator_batch_momentum 0.01 --spectral_norm false --discriminator_lambda_L2 1e-3 --discriminator_bionet_activation false
 
 
 # 
@@ -169,14 +172,11 @@ discriminator_lambda_L2 = 0 if spectral_norm else args.discriminator_lambda_L2
 # reset_state = True
 
 # train_batch = 500
-# intitialize_fc = False
+# initialize_fc = True
 # spectral_norm = False
 # discriminator_batch_momentum = None if spectral_norm else 0.01
 # discriminator_lambda_L2 = 0 if spectral_norm else 1e-3
-
-# # discriminator_batch_momentum = None
-# # spectral_norm = True
-# # discriminator_lambda_L2 = 0 
+# discriminator_bionet_activation = False
 
 
 # In[36]:
@@ -632,6 +632,7 @@ def generate_discriminator_params(n_epochs, max_lr, discriminator_penalty_weight
                             'optimizer': torch.optim.Adam,
                             'discriminator_lambda_L2': discriminator_lambda_L2,
                             'discriminator_penalty_weight': discriminator_penalty_weight, 
+                            'bionet_activation': discriminator_bionet_activation,
                            'initialize': initialize_fc}
     discriminator_params = {**discriminator_params, 
                            **{k:v for k,v in general_params.items() if k in keys_to_keep}}
@@ -1527,7 +1528,7 @@ if visualize and 'test' in trainer.stats:
 # In[26]:
 
 
-if visualize: 
+if visualize:
     fig, ax = plt.subplots(ncols = 3, figsize = (16.5,5))
     ax = ax.flatten()
 
@@ -1558,7 +1559,7 @@ if visualize:
 
     viz_df = train_stats_df[['epoch'] + loss_cols].copy()
     viz_df['total_train_loss_no_adverserial'] = viz_df[loss_cols_main + ['train_loss_prediction']].sum(axis = 1)
-    
+
     viz_df.drop(columns = loss_cols_main, inplace = True)
     viz_df['train_loss: total - cat_adverserial'] = viz_df.total_train_loss_no_adverserial - viz_df.cat_adverserial_loss
     viz_df['train_loss: total - pert_adverserial'] = viz_df.total_train_loss_no_adverserial - viz_df.pert_adverserial_loss
@@ -1591,10 +1592,14 @@ if visualize:
     n_cat = trainer.cat_discriminator['discriminators']['seurat_annotations'].n_labels
     ax[1].axhline(y=np.log(n_cat), color='gray', linestyle='--')
 
+    p_i = tf_adata[train_cells,:].obs.seurat_annotations.value_counts(normalize = True).values
+    entropy = -np.sum(p_i * np.log(p_i))
+    ax[1].axhline(y=entropy, color='dimgray', linestyle='--')
+
     ax[1].legend(loc='best')
     ax[1].set_ylabel('Categorical Discriminator Loss')
     ax[1].set_title('Full Model')
-    
+
     # Plot 3: full model, perturbation discriminator loss
     loss_cols_disc = ['pert_discriminator_loss_total',
            'pert_discriminator_loss_prediction', 'pert_discriminator_param_reg_loss']
@@ -1607,6 +1612,11 @@ if visualize:
                  palette = [palette[0], palette[2], palette[-2]], ax = ax[2])
     n_cat = trainer.pert_discriminator['discriminator'].n_labels
     ax[2].axhline(y=np.log(n_cat), color='gray', linestyle='--')
+
+
+    p_i = tf_adata[train_cells,:].obs.stim.value_counts(normalize = True).values
+    entropy = -np.sum(p_i * np.log(p_i))
+    ax[2].axhline(y=entropy, color='dimgray', linestyle='--')
 
     ax[2].legend(loc='best')
     ax[2].set_ylabel('Perturbation Discriminator Loss')
