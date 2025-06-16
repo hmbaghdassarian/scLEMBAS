@@ -72,7 +72,7 @@ parser.add_argument("--discriminator_batch_momentum", type=float)
 parser.add_argument("--spectral_norm", type=str_to_bool)
 parser.add_argument("--discriminator_lambda_L2", type=float)
 parser.add_argument("--discriminator_bionet_activation", type=str_to_bool)
-
+parser.add_argument("--smooth_labels", type = str_to_bool)
 
 
 ########################################################################
@@ -121,8 +121,9 @@ discriminator_batch_momentum = None if args.discriminator_batch_momentum == 0 el
 spectral_norm = args.spectral_norm
 discriminator_lambda_L2 = 0 if spectral_norm else args.discriminator_lambda_L2
 discriminator_bionet_activation = args.discriminator_bionet_activation
+smooth_labels = args.smooth_labels
 
-#python test_MAIN.py --index dev --run_type E --bn_weights_lambda_L2 1e-7 --uniform_lambda_L2 1e-7 --cat_max_norm 100 --global_bias_lambda_L2 0 --cat_bias_lambda_L2 0 --vae_scaling_KL 1e-2 --global_bias_lambda_L1 0 --cat_bias_lambda_L1 0 --vae_prior_mu 0 --vae_prior_sigma 1 --adj_scaling_KL 0 --adj_prior_mu 0 --adj_prior_sigma 0.2 --loss_type MSE --per_condition_loss true --cat_bias_orthogonality_scaler 0 --cat_max_penalty_weight 8 --cat_b_adv 1.5 --pert_max_penalty_weight 20 --pert_b_adv 2 --network_noise_scale 0.01 --min_network_noise 0.0025 --include_gradient_noise_vae true --include_gradient_noise_embedding true --constant_gradient_noise true --gradient_noise_scale 1e-9 --lr_period 4 --reset_state true --train_batch 500 --initialize_fc true --discriminator_batch_momentum 0.01 --spectral_norm false --discriminator_lambda_L2 1e-3 --discriminator_bionet_activation false
+#python test_MAIN.py --index dev --run_type E --bn_weights_lambda_L2 1e-7 --uniform_lambda_L2 1e-7 --cat_max_norm 100 --global_bias_lambda_L2 0 --cat_bias_lambda_L2 0 --vae_scaling_KL 1e-2 --global_bias_lambda_L1 0 --cat_bias_lambda_L1 0 --vae_prior_mu 0 --vae_prior_sigma 1 --adj_scaling_KL 0 --adj_prior_mu 0 --adj_prior_sigma 0.2 --loss_type MSE --per_condition_loss true --cat_bias_orthogonality_scaler 0 --cat_max_penalty_weight 8 --cat_b_adv 1.5 --pert_max_penalty_weight 20 --pert_b_adv 2 --network_noise_scale 0.01 --min_network_noise 0.0025 --include_gradient_noise_vae true --include_gradient_noise_embedding true --constant_gradient_noise true --gradient_noise_scale 1e-9 --lr_period 4 --reset_state true --train_batch 500 --initialize_fc true --discriminator_batch_momentum 0 --spectral_norm false --discriminator_lambda_L2 1e-3 --discriminator_bionet_activation false --smooth_labels = false
 
 
 # 
@@ -174,9 +175,10 @@ discriminator_bionet_activation = args.discriminator_bionet_activation
 # train_batch = 500
 # initialize_fc = True
 # spectral_norm = False
-# discriminator_batch_momentum = None if spectral_norm else 0.01
+# discriminator_batch_momentum = None #if spectral_norm else 0.01
 # discriminator_lambda_L2 = 0 if spectral_norm else 1e-3
 # discriminator_bionet_activation = False
+# smooth_labels = False
 
 
 # In[36]:
@@ -633,7 +635,9 @@ def generate_discriminator_params(n_epochs, max_lr, discriminator_penalty_weight
                             'discriminator_lambda_L2': discriminator_lambda_L2,
                             'discriminator_penalty_weight': discriminator_penalty_weight, 
                             'bionet_activation': discriminator_bionet_activation,
-                           'initialize': initialize_fc}
+                           'initialize': initialize_fc, 
+                           'smooth_labels': smooth_labels, 
+                           'epsilon_smoothing': 0.1}
     discriminator_params = {**discriminator_params, 
                            **{k:v for k,v in general_params.items() if k in keys_to_keep}}
     
@@ -1096,6 +1100,10 @@ print()
 print('-----Adversarial Tuning-----------')
 print('Train batch size: {}'.format(trainer.hyper_params['train_batch_size']))
 print()
+sl = False
+if 'smooth_labels' in trainer.pert_discriminator['discriminator'].__dict__:
+    sl = trainer.pert_discriminator['discriminator'].smooth_labels
+print('Label smoothing: {}'.format(sl))
 print('Min/max Discriminator LR: ({:.2E}, {:.2E})'.format(trainer.pert_discriminator['params']['minimum_learning_rate'],
                                                         trainer.pert_discriminator['params']['maximum_learning_rate']))
 print('Discriminator dropout rate: {}'.format(trainer.pert_discriminator['params']['dropout_rate']))
@@ -1179,7 +1187,7 @@ for col in ['discriminator_learning_rate', 'discriminator_loss_total',
         train_stats_df.rename(columns = {col: 'cat_'+ col}, 
                   inplace = True)
         
-for col in ['pert_discriminator_learning_rate', 'pert_discriminator_loss_total',
+for col in ['vae_grad_l2_norm', 'pert_discriminator_learning_rate', 'pert_discriminator_loss_total',
            'pert_discriminator_loss_prediction', 'pert_discriminator_param_reg_loss', 
            'cat_seurat_annotations_discriminator_grad_l2_norm', 
            'pert_discriminator_grad_l2_norm']:
@@ -1215,15 +1223,16 @@ if visualize:
     # plt.savefig(os.path.join(data_path, 'trash', fn + '_loss_epochs' + '.png'), dpi=300, bbox_inches='tight')
 
 
-# ## Discriminator Gradient
+# ## Discriminator and Generator Gradient
 # 
-# Bad if L2 norm is > 100 (see number [10](https://github.com/soumith/ganhacks))
+# - Discriminator: Bad if L2 norm is > 100 (see number [10](https://github.com/soumith/ganhacks))
+# - Generator: if gradient disappears quick (standard GANs), not able to learn anything
 
 # In[37]:
 
 
 if visualize:
-    fig, ax = plt.subplots(ncols = 2, figsize = (8, 4))
+    fig, ax = plt.subplots(ncols = 3, figsize = (12, 4))
 
     sns.lineplot(data = train_stats_df, x = 'epoch', 
                  y = 'cat_seurat_annotations_discriminator_grad_l2_norm', ax = ax[0])
@@ -1232,6 +1241,10 @@ if visualize:
     sns.lineplot(data = train_stats_df, x = 'epoch', 
                  y = 'pert_discriminator_grad_l2_norm', ax = ax[1])
     ax[1].set_ylabel('Pert Discriminator Gradient L2 Norm')
+    
+    sns.lineplot(data = train_stats_df, x = 'epoch', 
+                 y = 'vae_grad_l2_norm', ax = ax[2])
+    ax[2].set_ylabel('Generator Gradient L2 Norm')
 
     fig.tight_layout()
 

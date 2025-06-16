@@ -371,7 +371,7 @@ class TrainBase:
     
     @staticmethod
     def get_global_l2_norm(mod: torch.nn.Module) -> float:
-        """Returns the global L2 norm of gradients for all parameters in a model."""
+        """Returns the global L2 norm of gradients for all parameters in a model. For tracking purposes only."""
         grad_norm_sq = 0.0
         for param in mod.parameters():
             if param.grad is not None:
@@ -1024,7 +1024,7 @@ class TrainSC(TrainBase):
                             'sn_param_reg_global_bias_L2_loss', 'sn_param_reg_cat_bias_L2_loss',
                             'sn_param_reg_global_bias_L1_loss', 'sn_param_reg_cat_bias_L1_loss', 'sn_param_reg_cat_bias_orthogonality',
                             'output_param_reg_weights_loss', 'output_param_reg_bias_loss',
-                            'vae_param_reg_loss', 'global_bias_kl_divergence',
+                            'vae_param_reg_loss', 'vae_grad_l2_norm', 'global_bias_kl_divergence',
                             'cat_adverserial_loss','cat_discriminator_loss_total',
                             'cat_discriminator_loss_prediction', 'cat_discriminator_param_reg_loss']
         self._stats_cols.extend(['cat_' + cat_type + '_discriminator_grad_l2_norm' for cat_type in list(self.mod.signaling_network.cat_embeddings.keys())])
@@ -1133,6 +1133,8 @@ class TrainSC(TrainBase):
                          bionet_activation = self.pert_discriminator['params']['bionet_activation'], 
                          rnn_params = {'activation_function': self.mod.signaling_network.activation_function, 
                                        'leak': self.mod.signaling_network.bionet_params['leak']},
+                         smooth_labels = self.pert_discriminator['params']['smooth_labels'],
+                         epsilon_smooth = self.pert_discriminator['params']['epsilon_smooth'],                                
                          initialize = self.pert_discriminator['params']['initialize'],
                          n_hidden_nodes = self.pert_discriminator['params']['n_hidden_nodes'], 
                          seed = self.train_seed)
@@ -1174,6 +1176,8 @@ class TrainSC(TrainBase):
                                                     bionet_activation = self.cat_discriminator['params']['bionet_activation'], 
                                                     rnn_params = {'activation_function': self.mod.signaling_network.activation_function, 
                                                                 'leak': self.mod.signaling_network.bionet_params['leak']},
+                         smooth_labels = self.cat_discriminator['params']['smooth_labels'],
+                         epsilon_smooth = self.cat_discriminator['params']['epsilon_smooth'], 
                                                                initialize = self.cat_discriminator['params']['initialize'],
                                                                seed = self.train_seed)
                                 for covariate_cat, cat_embedding in self.mod.signaling_network.cat_embeddings.items()}
@@ -1430,7 +1434,7 @@ class TrainSC(TrainBase):
                 # discriminator optimization
                 # NOTE: discriminator is optimized prior to adverserial training (and loss re-calculated)
                 cat_discriminator_loss.backward() # if bias global is not detached, need to set retain_graph = True here
-                cat_l2s = np.array([self.get_global_l2_norm(mod_discriminator) for mod_discriminator in self.cat_discriminator['discriminators'].values()])
+                cat_grad_l2s = np.array([self.get_global_l2_norm(mod_discriminator) for mod_discriminator in self.cat_discriminator['discriminators'].values()])
                 self.cat_discriminator['optimizer'].step()
                 
                 # freeze discriminator (to prevent updating discriminator gradients when calling discriminator while 
@@ -1466,7 +1470,7 @@ class TrainSC(TrainBase):
 
                 # discriminator optimization
                 pert_discriminator_loss.backward() # if bias global is not detached, need to set retain_graph = True here
-                pert_l2 = self.get_global_l2_norm(self.pert_discriminator['discriminator']) # tracking
+                pert_grad_l2 = self.get_global_l2_norm(self.pert_discriminator['discriminator']) # tracking
                 self.pert_discriminator['optimizer'].step()
 
                 # freeze discriminator
@@ -1555,6 +1559,7 @@ class TrainSC(TrainBase):
 
                 # model gradient
                 tot_pred_loss.backward()
+                vae_grad_l2 = self.get_global_l2_norm(self.mod.signaling_network.vae) # tracking
                 self.add_gradient_noise(cur_lr, e, batch)
 #                 self.mod.add_gradient_noise(noise_level = self.hyper_params['gradient_noise_scale'])
                 self.prediction_optimizer.step()
@@ -1583,12 +1588,12 @@ class TrainSC(TrainBase):
                 sv = np.concatenate([sv,
                                     np.array([v.detach().item() for v in sn_param_reg.values()]),
                                     np.array([v.detach().item() for v in output_param_reg.values()]),
-                                    np.array([vae_reg.detach().item(), kl_divergence_gb.detach().item(),
+                                    np.array([vae_reg.detach().item(), vae_grad_l2, kl_divergence_gb.detach().item(),
                                             cur_catdisc_lambda*cat_adverserial_loss.detach().item(), cat_discriminator_loss.detach().item(), 
                                             cat_discriminator_loss_accuracy.detach().item(), cat_discriminator_reg.detach().item()]),
-                                    cat_l2s,
+                                    cat_grad_l2s,
                                     np.array([cur_pertdisc_lambda*pert_adverserial_loss.detach().item(), pert_discriminator_loss.detach().item(), 
-                                            pert_discriminator_loss_accuracy.detach().item(), pert_discriminator_reg.detach().item(), pert_l2
+                                            pert_discriminator_loss_accuracy.detach().item(), pert_discriminator_reg.detach().item(), pert_grad_l2
                                             ])
                                     ])
 

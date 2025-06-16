@@ -11,6 +11,7 @@ import numpy as np
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from ..utilities import set_seeds
 from .model_utilities import L2_reg
@@ -502,7 +503,9 @@ class CatDiscriminator(nn.Module):
     
     DEFAULT_HYPER_PARAMS = {**FCLayers.DEFAULT_HYPER_PARAMS, 
                             **{'n_hidden_nodes': [16, 16, 16]}, 
-                           'bionet_activation': False}
+                           'bionet_activation': False, 
+                           'smooth_labels': False, 
+                           'epsilon_smooth': 0.1}
     
     def __init__(
         self,
@@ -516,6 +519,8 @@ class CatDiscriminator(nn.Module):
         activation_fn: nn.Module | None = nn.LeakyReLU,
         bionet_activation: bool = False, 
         rnn_params: dict = {'activation_function': 'MML', 'leak': 0.01}, 
+        smooth_labels: bool = False, 
+        epsilon_smooth: float = 0.1,
         initialize: bool = True,
         dtype: torch.dtype=torch.float32,
         device: str = 'cpu', 
@@ -553,8 +558,12 @@ class CatDiscriminator(nn.Module):
           bionetwork 'activation_function' and 'leak'; see `model.bionetwork.forward` for details; necessary to know the exact
           bionet activation function being used
           only required if bionet_activation is True
+        smooth_labels: bool, optional
+            whether to smooth the labels (with epsilon parameter) (True) or not (False), by default False
+        epsilon_smooth: float, optional
+            if smoothing labels, epsilon parameter to apply smoothing with
         initialize: bool, optional
-            whether to initialize the linear layer weights using `torch.nn.init`, by default False
+            whether to initialize the linear layer weights using `torch.nn.init`, by default True
         dtype : torch.dtype, optional
             datatype to store values in torch, by default torch.float32
         device : str
@@ -564,19 +573,31 @@ class CatDiscriminator(nn.Module):
         """
         super().__init__()
         self.n_labels = n_labels
-        if self.n_labels > 2: # multi-class
-            self.loss_fn = nn.CrossEntropyLoss() # applies softmax to logits prior to CE
-            out_features = self.n_labels
-        elif self.n_labels == 2: # binary
-            self.loss_fn = nn.BCEWithLogitsLoss() # applies sigmoid to logits prior to CE
-            out_features = 1
-        else:
-            raise ValueError('There are no distinct classes.')
-
         self.device = device
         self.dtype = dtype
         self.seed = seed
         self.bionet_activation = bionet_activation
+        self.smooth_labels = smooth_labels
+        assert 0 < epsilon_smooth < 1, "epsilon_smooth must be between (0,1)"
+        self.epsilon_smooth = epsilon_smooth
+        
+
+        if self.n_labels > 2: # multi-class
+            if self.smooth_labels:
+                self.loss_fn = self.smooth_multi_loss
+            else:
+                self.loss_fn = nn.CrossEntropyLoss() # applies softmax to logits prior to CE
+            out_features = self.n_labels
+        elif self.n_labels == 2: # binary
+            if self.smooth_labels:
+                self.loss_fn = self.smooth_binary_loss
+            else:
+                self.loss_fn = nn.BCEWithLogitsLoss() # applies sigmoid to logits prior to CE
+            out_features = 1
+        else:
+            raise ValueError('There are no distinct classes.')
+
+
         
         cat_layers = []
         if self.bionet_activation: 
@@ -602,6 +623,16 @@ class CatDiscriminator(nn.Module):
     def forward(self, x):
         """Returns logits for labels"""
         return self.classifier(x) 
+    
+    def smooth_binary_loss(self, logits, labels):
+        smoothed_labels = labels * (1 - self.epsilon_smooth) + self.epsilon_smooth
+        return F.binary_cross_entropy_with_logits(logits, smoothed_labels, reduction='mean')
+    
+    def smooth_multi_loss(self, logits, labels):
+        one_hot = F.one_hot(labels, num_classes=self.n_labels)
+        smoothed_labels = one_hot * (1 - self.epsilon_smooth) + self.epsilon_smooth / self.n_labels
+        log_probs = F.log_softmax(logits, dim=1)
+        return F.kl_div(log_probs, smoothed_labels, reduction='batchmean')
 
     def get_probability(self, y):
         """Calculate the probability from output logits."""
