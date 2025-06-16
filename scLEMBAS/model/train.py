@@ -918,7 +918,8 @@ class TrainSC(TrainBase):
                  mod, 
                  prediction_optimizer: torch.optim, 
                  prediction_loss_fn: torch.nn.modules.loss,
-                 per_condition_loss: bool = False, 
+                 per_condition_loss: bool = False,
+                 gradient_ascent: bool = False, 
                  cat_discriminator_params: Dict = None,
                  pert_discriminator_params: Dict = None, 
                  hyper_params: Dict[str, Union[int, float]] = None,
@@ -933,6 +934,9 @@ class TrainSC(TrainBase):
         
         Parameters
         ----------
+        gradient_ascent: bool, optional
+            whether to use the gradient ascent label flipping trick for maintaining generator gradients (True) 
+            or the standard GAN loss (False), by default False
         per_condition_loss : bool
             whether to calculate the loss on all conditions simultaneously, or each condition separately, by default True
             particularly useful for EMD loss, which may transport conditions across each other
@@ -1003,6 +1007,7 @@ class TrainSC(TrainBase):
         self.n_eval_bootstrap = n_eval_bootstrap
         
         self.create_data_loader(include_covariates = True, include_expr = True)
+        self.gradient_ascent = gradient_ascent
         self.initialize_cat_discriminator(cat_discriminator_params)
         self.initialize_pert_discriminator(pert_discriminator_params) 
         
@@ -1010,7 +1015,7 @@ class TrainSC(TrainBase):
             self.hyper_params['gradient_noise_scale'] = torch.tensor([self.hyper_params['gradient_noise_scale']], 
                                                                      device = self.mod.device, 
                                                                      dtype = self.mod.dtype)
-        
+
     def _initialize_tracking(self): 
         self._stats_cols = ['epoch', 'batch_index', 
                             'learning_rate', 'cat_discriminator_learning_rate', 'pert_discriminator_learning_rate',
@@ -1151,6 +1156,31 @@ class TrainSC(TrainBase):
                                                               warmup_steps = self.pert_discriminator['params']['warmup_epochs'],
                                                               last_epoch = -1)
         self.pert_discriminator['reset_state'] = self.cat_discriminator['optimizer'].state.copy()
+        
+        # label flipping
+        if self.gradient_ascent and self.pert_discriminator['discriminator'].n_labels > 2:
+            raise ValueError('Need to check this code and adversarial gradient ascent portion are implemented correctly')
+
+            X_train = self.mod.df_to_tensor(self.X_train)
+            target = X_train.argmax(dim=1)
+            no_pert = X_train.sum(dim=1) == 0  
+            target[no_pert] = self.pert_discriminator['discriminator'].n_labels - 1
+
+            self.pert_class_probs = {}
+            self.pert_class_probs['probs'] = {}
+
+            classes, class_counts = torch.unique(target, return_counts = True)
+            class_probs = class_counts / class_counts.sum()
+
+            self.pert_class_probs['classes'] = classes
+
+            for cls in classes:
+                cls = cls.item()
+                # get probabilities when excluding true class
+                mask = torch.ones(self.pert_discriminator['discriminator'].n_labels, 
+                                  dtype=torch.bool, device=device)
+                mask[cls] = False
+                self.pert_class_probs['probs'][cls] = class_counts[mask] / class_counts[mask].sum()
     
     
     def initialize_cat_discriminator(self, cat_discriminator_params):
@@ -1200,6 +1230,56 @@ class TrainSC(TrainBase):
                                                               warmup_steps = self.cat_discriminator['params']['warmup_epochs'],
                                                               last_epoch = -1)
         self.cat_discriminator['reset_state'] = self.cat_discriminator['optimizer'].state.copy()
+        
+        # label flipping
+        if self.gradient_ascent:
+            covariates_train = self.mod.signaling_network.covariates_to_tensor(sample_ids = self.X_train.index)
+
+            self.cat_class_probs = {}
+            for cat_group_idx, (covariate_cat, discriminator) in enumerate(self.cat_discriminator['discriminators'].items()):
+                if discriminator.n_labels > 2:
+                    self.cat_class_probs[covariate_cat] = {}
+                    self.cat_class_probs[covariate_cat]['probs'] = {}
+
+
+                    classes, class_counts = torch.unique(covariates_train[:, cat_group_idx], return_counts = True)
+                    class_probs = class_counts / class_counts.sum()
+
+                    self.cat_class_probs[covariate_cat]['classes'] = classes
+
+                    for cls in classes:
+                        cls = cls.item()
+                        # get probabilities when excluding true class
+                        mask = torch.ones(discriminator.n_labels, dtype=torch.bool, device=self.mod.device)
+                        mask[cls] = False
+                        self.cat_class_probs[covariate_cat]['probs'][cls] = class_counts[mask] / class_counts[mask].sum()
+        
+        
+    @staticmethod
+    def flip_labels_uniform(true_labels, n_labels):
+        """Equal probability of drawing any class"""
+        flipped_labels = torch.randint_like(true_labels, low=0, high=n_labels)
+        match = flipped_labels == true_labels
+        while match.any():
+            flipped_labels[match] = torch.randint_like(flipped_labels[match], low=0, high=n_labels)
+            match = flipped_labels == true_labels
+
+        return flipped_labels
+
+    def flip_labels_proportional(self, true_labels, n_labels, classes, probs):
+        """Flip labels, drawing in proportion to the training class label"""
+        flipped_labels = torch.empty_like(true_labels)
+        for cls in classes:
+            cls = cls.item()
+            mask_cls = true_labels == cls
+            
+            if mask_cls.any():
+                mask = torch.ones(n_labels, dtype=torch.bool, device=self.mod.device)
+                mask[cls] = False
+                wrong_classes = classes[mask]
+                sampled = wrong_classes[torch.multinomial(probs[cls], num_samples=mask_cls.sum().item(), replacement=True)]
+                flipped_labels[mask_cls] = sampled
+        return flipped_labels
         
     def _check_discriminator_pw(self, discriminator_penalty_weight):
         if isinstance(discriminator_penalty_weight, float):
@@ -1534,24 +1614,37 @@ class TrainSC(TrainBase):
                 # adverserial portion -- same as discriminator, but recalculating on trained model
                 # categorical adversary
                 cat_adverserial_loss = torch.tensor(0, device = self.mod.device, dtype = self.mod.dtype)
-                for cat_group_idx, (cat, discriminator) in enumerate(self.cat_discriminator['discriminators'].items()):
+                for cat_group_idx, (covariate_cat, discriminator) in enumerate(self.cat_discriminator['discriminators'].items()):
                     bias_global_prediction = discriminator(bias_global) 
 
                     target = covariates_idx_[:, cat_group_idx]
                     if discriminator.n_labels == 2:
-                        target = target.to(self.mod.dtype).unsqueeze(1)
+                        target = target.to(self.mod.dtype).unsqueeze(1) if not self.gradient_ascent else 1 - target.to(self.mod.dtype).unsqueeze(1)
+                    else:
+                        if self.gradient_ascent:
+                            utils.set_seeds(self.mod.seed + e + batch)
+                            target = self.flip_labels_proportional(true_labels = target, 
+                                                                           classes = self.cat_class_probs[covariate_cat]['classes'], 
+                                                                           probs = self.cat_class_probs[covariate_cat]['probs'], 
+                                                                           n_labels = discriminator.n_labels)
 
                     cat_adverserial_loss += discriminator.loss_fn(bias_global_prediction, target)  
 
                 # perturbation adversary
                 bias_global_prediction = self.pert_discriminator['discriminator'](bias_global) 
-                if self.pert_discriminator['discriminator'].n_labels != 2:
+                if self.pert_discriminator['discriminator'].n_labels == 2:
+                    target = X_in_ if not self.gradient_ascent else X_in_
+                else:
                     target = X_in_.argmax(dim=1)
                     no_pert = X_in_.sum(dim=1) == 0  
                     target[no_pert] = self.pert_discriminator['discriminator'].n_labels - 1
-                else:
-                    target = X_in_#.long().reshape(-1)
-
+                    
+                    if self.gradient_ascent:
+                        utils.set_seeds(self.mod.seed + e + batch)
+                        target = self.flip_labels_proportional(true_labels = target, 
+                                                                       classes = self.pert_class_probs['classes'], 
+                                                                       probs = self.pert_class_probs['probs'], 
+                                                                       n_labels = self.pert_discriminator['discriminator'].n_labels)
                 pert_adverserial_loss = self.pert_discriminator['discriminator'].loss_fn(bias_global_prediction, target) 
                 
                 tot_pred_loss = tot_pred_loss - (cur_catdisc_lambda*cat_adverserial_loss) - (cur_pertdisc_lambda*pert_adverserial_loss)

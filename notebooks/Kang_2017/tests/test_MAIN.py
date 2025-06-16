@@ -72,7 +72,8 @@ parser.add_argument("--discriminator_batch_momentum", type=float)
 parser.add_argument("--spectral_norm", type=str_to_bool)
 parser.add_argument("--discriminator_lambda_L2", type=float)
 parser.add_argument("--discriminator_bionet_activation", type=str_to_bool)
-parser.add_argument("--smooth_labels", type = str_to_bool)
+parser.add_argument("--smooth_labels", type=str_to_bool)
+parser.add_argument("--gradient_ascent", type=str_to_bool)
 
 
 ########################################################################
@@ -122,8 +123,9 @@ spectral_norm = args.spectral_norm
 discriminator_lambda_L2 = 0 if spectral_norm else args.discriminator_lambda_L2
 discriminator_bionet_activation = args.discriminator_bionet_activation
 smooth_labels = args.smooth_labels
+gradient_ascent = args.gradient_ascent
 
-#python test_MAIN.py --index dev --run_type E --bn_weights_lambda_L2 1e-7 --uniform_lambda_L2 1e-7 --cat_max_norm 100 --global_bias_lambda_L2 0 --cat_bias_lambda_L2 0 --vae_scaling_KL 1e-2 --global_bias_lambda_L1 0 --cat_bias_lambda_L1 0 --vae_prior_mu 0 --vae_prior_sigma 1 --adj_scaling_KL 0 --adj_prior_mu 0 --adj_prior_sigma 0.2 --loss_type MSE --per_condition_loss true --cat_bias_orthogonality_scaler 0 --cat_max_penalty_weight 8 --cat_b_adv 1.5 --pert_max_penalty_weight 20 --pert_b_adv 2 --network_noise_scale 0.01 --min_network_noise 0.0025 --include_gradient_noise_vae true --include_gradient_noise_embedding true --constant_gradient_noise true --gradient_noise_scale 1e-9 --lr_period 4 --reset_state true --train_batch 500 --initialize_fc true --discriminator_batch_momentum 0 --spectral_norm false --discriminator_lambda_L2 1e-3 --discriminator_bionet_activation false --smooth_labels = false
+#python test_MAIN.py --index dev --run_type E --bn_weights_lambda_L2 1e-7 --uniform_lambda_L2 1e-7 --cat_max_norm 100 --global_bias_lambda_L2 0 --cat_bias_lambda_L2 0 --vae_scaling_KL 1e-2 --global_bias_lambda_L1 0 --cat_bias_lambda_L1 0 --vae_prior_mu 0 --vae_prior_sigma 1 --adj_scaling_KL 0 --adj_prior_mu 0 --adj_prior_sigma 0.2 --loss_type MSE --per_condition_loss true --cat_bias_orthogonality_scaler 0 --cat_max_penalty_weight 8 --cat_b_adv 1.5 --pert_max_penalty_weight 20 --pert_b_adv 2 --network_noise_scale 0.01 --min_network_noise 0.0025 --include_gradient_noise_vae true --include_gradient_noise_embedding true --constant_gradient_noise true --gradient_noise_scale 1e-9 --lr_period 4 --reset_state true --train_batch 500 --initialize_fc true --discriminator_batch_momentum 0 --spectral_norm false --discriminator_lambda_L2 1e-3 --discriminator_bionet_activation false --smooth_labels false --gradient_ascent false
 
 
 # 
@@ -179,6 +181,7 @@ smooth_labels = args.smooth_labels
 # discriminator_lambda_L2 = 0 if spectral_norm else 1e-3
 # discriminator_bionet_activation = False
 # smooth_labels = False
+# gradient_ascent = False
 
 
 # In[36]:
@@ -884,6 +887,7 @@ trainer = TR[mod_type](mod = mod,
                    prediction_optimizer = torch.optim.Adam,
                    prediction_loss_fn = prediction_loss_fn, 
                        per_condition_loss = per_condition_loss,
+                       gradient_ascent = gradient_ascent,
                   cat_discriminator_params = cat_discriminator_params,
                        pert_discriminator_params = pert_discriminator_params,
                    hyper_params = training_params,
@@ -1100,10 +1104,18 @@ print()
 print('-----Adversarial Tuning-----------')
 print('Train batch size: {}'.format(trainer.hyper_params['train_batch_size']))
 print()
+
 sl = False
 if 'smooth_labels' in trainer.pert_discriminator['discriminator'].__dict__:
     sl = trainer.pert_discriminator['discriminator'].smooth_labels
+ga = False
+if 'gradient_ascent' in trainer.__dict__ and trainer.gradient_ascent:
+    ga = True
+
 print('Label smoothing: {}'.format(sl))
+print('Gradient ascent: {}'.format(ga))
+
+print()
 print('Min/max Discriminator LR: ({:.2E}, {:.2E})'.format(trainer.pert_discriminator['params']['minimum_learning_rate'],
                                                         trainer.pert_discriminator['params']['maximum_learning_rate']))
 print('Discriminator dropout rate: {}'.format(trainer.pert_discriminator['params']['dropout_rate']))
