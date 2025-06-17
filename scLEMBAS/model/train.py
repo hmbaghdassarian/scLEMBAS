@@ -1633,7 +1633,7 @@ class TrainSC(TrainBase):
                 # perturbation adversary
                 bias_global_prediction = self.pert_discriminator['discriminator'](bias_global) 
                 if self.pert_discriminator['discriminator'].n_labels == 2:
-                    target = X_in_ if not self.gradient_ascent else X_in_
+                    target = X_in_ if not self.gradient_ascent else 1 - X_in_
                 else:
                     target = X_in_.argmax(dim=1)
                     no_pert = X_in_.sum(dim=1) == 0  
@@ -1647,6 +1647,13 @@ class TrainSC(TrainBase):
                                                                        n_labels = self.pert_discriminator['discriminator'].n_labels)
                 pert_adverserial_loss = self.pert_discriminator['discriminator'].loss_fn(bias_global_prediction, target) 
                 
+                if self.gradient_ascent:
+                    # goal is worse accuracy of discriminator
+                    # without label flipping trick, we are maximizing the loss of the actual labels
+                    # conversely, with label flipping, we are minimizing the loss with flipped labels
+                    pert_adverserial_loss = -pert_adverserial_loss
+                    cat_adverserial_loss = -cat_adverserial_loss
+
                 tot_pred_loss = tot_pred_loss - (cur_catdisc_lambda*cat_adverserial_loss) - (cur_pertdisc_lambda*pert_adverserial_loss)
 
 
