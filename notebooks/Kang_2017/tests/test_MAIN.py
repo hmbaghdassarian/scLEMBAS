@@ -68,12 +68,16 @@ parser.add_argument("--reset_state", type=str_to_bool, default='true', help="cat
 
 parser.add_argument("--train_batch", type=int)
 parser.add_argument("--initialize_fc", type=str_to_bool)
+parser.add_argument("--generator_dropout_rate", type=float)
+
 parser.add_argument("--discriminator_batch_momentum", type=float)
 parser.add_argument("--spectral_norm", type=str_to_bool)
 parser.add_argument("--discriminator_lambda_L2", type=float)
 parser.add_argument("--discriminator_bionet_activation", type=str_to_bool)
 parser.add_argument("--smooth_labels", type=str_to_bool)
 parser.add_argument("--gradient_ascent", type=str_to_bool)
+
+
 
 
 ########################################################################
@@ -118,6 +122,7 @@ reset_state = args.reset_state
 
 train_batch = args.train_batch
 initialize_fc = args.initialize_fc
+generator_dropout_rate = args.generator_dropout_rate
 discriminator_batch_momentum = None if args.discriminator_batch_momentum == 0 else args.discriminator_batch_momentum
 spectral_norm = args.spectral_norm
 discriminator_lambda_L2 = 0 if spectral_norm else args.discriminator_lambda_L2
@@ -125,7 +130,12 @@ discriminator_bionet_activation = args.discriminator_bionet_activation
 smooth_labels = args.smooth_labels
 gradient_ascent = args.gradient_ascent
 
-#python test_MAIN.py --index dev --run_type E --bn_weights_lambda_L2 1e-7 --uniform_lambda_L2 1e-7 --cat_max_norm 100 --global_bias_lambda_L2 0 --cat_bias_lambda_L2 0 --vae_scaling_KL 1e-2 --global_bias_lambda_L1 0 --cat_bias_lambda_L1 0 --vae_prior_mu 0 --vae_prior_sigma 1 --adj_scaling_KL 0 --adj_prior_mu 0 --adj_prior_sigma 0.2 --loss_type MSE --per_condition_loss true --cat_bias_orthogonality_scaler 0 --cat_max_penalty_weight 8 --cat_b_adv 1.5 --pert_max_penalty_weight 20 --pert_b_adv 2 --network_noise_scale 0.01 --min_network_noise 0.0025 --include_gradient_noise_vae true --include_gradient_noise_embedding true --constant_gradient_noise true --gradient_noise_scale 1e-9 --lr_period 4 --reset_state true --train_batch 500 --initialize_fc true --discriminator_batch_momentum 0 --spectral_norm false --discriminator_lambda_L2 1e-3 --discriminator_bionet_activation false --smooth_labels false --gradient_ascent false
+
+
+
+
+
+#python test_MAIN.py --index dev --run_type E --bn_weights_lambda_L2 1e-7 --uniform_lambda_L2 1e-7 --cat_max_norm 100 --global_bias_lambda_L2 0 --cat_bias_lambda_L2 0 --vae_scaling_KL 1e-2 --global_bias_lambda_L1 0 --cat_bias_lambda_L1 0 --vae_prior_mu 0 --vae_prior_sigma 1 --adj_scaling_KL 0 --adj_prior_mu 0 --adj_prior_sigma 0.2 --loss_type MSE --per_condition_loss true --cat_bias_orthogonality_scaler 0 --cat_max_penalty_weight 8 --cat_b_adv 1.5 --pert_max_penalty_weight 20 --pert_b_adv 2 --network_noise_scale 0.01 --min_network_noise 0.0025 --include_gradient_noise_vae true --include_gradient_noise_embedding true --constant_gradient_noise true --gradient_noise_scale 1e-9 --lr_period 4 --reset_state true --train_batch 500 --initialize_fc true --generator_dropout_rate 0.1 --discriminator_batch_momentum 0 --spectral_norm false --discriminator_lambda_L2 1e-3 --discriminator_bionet_activation false --smooth_labels false --gradient_ascent false
 
 
 # 
@@ -176,6 +186,7 @@ gradient_ascent = args.gradient_ascent
 
 # train_batch = 500
 # initialize_fc = True
+# generator_dropout_rate = 0.1
 # spectral_norm = False
 # discriminator_batch_momentum = None #if spectral_norm else 0.01
 # discriminator_lambda_L2 = 0 if spectral_norm else 1e-3
@@ -666,7 +677,9 @@ bionet_params = {'target_steps': 100,
                  'tolerance': 1e-5, 
                  'leak':1e-2}
 
-vae_params = {'vae_batch_momentum': 0.01, 'vae_layer_norm': False, 'vae_dropout_rate': 0.1,
+vae_params = {'vae_batch_momentum': 0.01, 
+              'vae_layer_norm': False, 
+              'vae_dropout_rate': generator_dropout_rate,
               'vae_activation_fn': nn.LeakyReLU,
               'vae_n_hidden_nodes': vae_n_hidden_nodes, 
               'vae_var_min': 1e-4, 

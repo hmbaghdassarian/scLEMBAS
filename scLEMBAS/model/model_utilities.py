@@ -10,10 +10,12 @@ from torch import nn
 
 
 def freeze_model(model):
+    model.eval() 
     for param in model.parameters():
         param.requires_grad = False
         
 def unfreeze_model(model):
+    model.train()
     for param in model.parameters():
         param.requires_grad = True
 

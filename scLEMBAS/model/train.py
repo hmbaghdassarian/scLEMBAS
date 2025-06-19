@@ -1155,7 +1155,7 @@ class TrainSC(TrainBase):
                                                               max_lr=self.pert_discriminator['params']['maximum_learning_rate'],
                                                               warmup_steps = self.pert_discriminator['params']['warmup_epochs'],
                                                               last_epoch = -1)
-        self.pert_discriminator['reset_state'] = self.cat_discriminator['optimizer'].state.copy()
+        self.pert_discriminator['reset_state'] = self.pert_discriminator['optimizer'].state.copy()
         
         # label flipping
         if self.gradient_ascent and self.pert_discriminator['discriminator'].n_labels > 2:
