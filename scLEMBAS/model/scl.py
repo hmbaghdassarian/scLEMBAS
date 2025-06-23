@@ -252,6 +252,28 @@ class SignalingModel(torch.nn.Module):
         Y_hat = self.output_layer(Y_full)
 
         return Y_hat, Y_full, biases
+    
+    
+    def forward_novar(self, X_in, covariates_idx: torch.Tensor, expr: torch.Tensor):
+        """Emulates the forward pass, but without including the global bias.
+
+        Parameters
+        ----------
+        X_in : torch.tensor
+            input ligand values 
+        covariates_idx : torch.Tensor
+            rows correspond to samples as in X_full. Each column represents one categorical covariate group. Values
+            in the columns represent the index mapping of the category label. This should be a row-wise subset of `signaling_network.covariates_idx`, which can also be obtained from `signaling_network.covariates_to_tensor()`
+            only relevant for categorical data, otherwise None
+        biases : tuple
+            tuple of bias_global, bias_mu, bias_log_sigma_squared
+            only relevant for single-cell, otherwise None
+        """
+        X_full = self.input_layer(X_in) # input ligands to signaling network
+        Y_full, _ = self.signaling_network.forward_novar(X_full, covariates_idx, expr) # RNN of full signaling network
+        Y_hat = self.output_layer(Y_full)
+
+        return Y_hat, Y_full, _
 
     def L2_reg(self,
                input_lambda_L2: Annotated[float, Ge(0)] = 0, 

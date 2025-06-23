@@ -144,12 +144,12 @@ lr_decay = args.lr_decay
 vae_lambda_l2 = args.vae_lambda_l2
 
 
-#python test_MAIN_scheduler.py --index dev --run_type E --bn_weights_lambda_L2 1e-7 --uniform_lambda_L2 1e-7 --cat_max_norm 100 --global_bias_lambda_L2 0 --cat_bias_lambda_L2 0 --vae_scaling_KL 1e-2 --global_bias_lambda_L1 0 --cat_bias_lambda_L1 0 --vae_prior_mu 0 --vae_prior_sigma 1 --adj_scaling_KL 0 --adj_prior_mu 0 --adj_prior_sigma 0.2 --loss_type MSE --per_condition_loss true --cat_bias_orthogonality_scaler 0 --cat_max_penalty_weight 10 --cat_b_adv 1 --pert_max_penalty_weight 10 --pert_b_adv 2.5 --network_noise_scale 0.01 --min_network_noise 0.0025 --include_gradient_noise_vae true --include_gradient_noise_embedding true --constant_gradient_noise true --gradient_noise_scale 1e-9 --lr_period 4 --reset_state true --train_batch 500 --initialize_fc true --generator_dropout_rate 0.5 --discriminator_dropout_rate 0.1 --discriminator_batch_momentum 0 --spectral_norm false --discriminator_lambda_L2 1e-3 --discriminator_bionet_activation false --smooth_labels false --gradient_ascent false --n_adversarial_start 0 --n_discriminator_train 1 --lr_decay 0.9 --vae_lambda_l2 1e-7
+#python test_MAIN_scheduler.py --index dev --run_type E --bn_weights_lambda_L2 1e-7 --uniform_lambda_L2 1e-7 --cat_max_norm 100 --global_bias_lambda_L2 0 --cat_bias_lambda_L2 0 --vae_scaling_KL 1e-2 --global_bias_lambda_L1 0 --cat_bias_lambda_L1 0 --vae_prior_mu 0 --vae_prior_sigma 1 --adj_scaling_KL 0 --adj_prior_mu 0 --adj_prior_sigma 0.2 --loss_type MSE --per_condition_loss true --cat_bias_orthogonality_scaler 0 --cat_max_penalty_weight 12 --cat_b_adv 2 --pert_max_penalty_weight 8 --pert_b_adv 3.5 --network_noise_scale 0.01 --min_network_noise 0.0025 --include_gradient_noise_vae true --include_gradient_noise_embedding true --constant_gradient_noise true --gradient_noise_scale 1e-9 --lr_period 4 --reset_state false --train_batch 500 --initialize_fc true --generator_dropout_rate 0.7 --discriminator_dropout_rate 0.3 --discriminator_batch_momentum 0 --spectral_norm false --discriminator_lambda_L2 1e-3 --discriminator_bionet_activation false --smooth_labels true --gradient_ascent true --n_adversarial_start 200 --n_discriminator_train 5 --lr_decay 0.9 --vae_lambda_l2 1e-5
 
 
 # 
 
-# In[35]:
+# In[1]:
 
 
 # fn = 'mini4_fc'#'trash'
@@ -178,10 +178,10 @@ vae_lambda_l2 = args.vae_lambda_l2
 # per_condition_loss = True
 
 # cat_bias_orthogonality_scaler = 0
-# cat_b_adv = 1.5
-# cat_max_penalty_weight = 8
-# pert_b_adv = 2
-# pert_max_penalty_weight = 20
+# cat_b_adv = 2
+# cat_max_penalty_weight = 12
+# pert_b_adv = 3.5
+# pert_max_penalty_weight = 8
 
 # network_noise_scale=0.01 
 # min_network_noise=0.0025
@@ -195,23 +195,23 @@ vae_lambda_l2 = args.vae_lambda_l2
 
 # train_batch = 500
 # initialize_fc = True
-# generator_dropout_rate = 0.1
-# discriminator_dropout_rate = 0.1
+# generator_dropout_rate = 0.7
+# discriminator_dropout_rate = 0.3
 # spectral_norm = False
 # discriminator_batch_momentum = None #if spectral_norm else 0.01
 # discriminator_lambda_L2 = 0 if spectral_norm else 1e-3
 # discriminator_bionet_activation = False
-# smooth_labels = False
-# gradient_ascent = False
+# smooth_labels = True
+# gradient_ascent = True
 
-# n_adversarial_start = 0
-# n_discriminator_train = 1
+# n_adversarial_start = 200
+# n_discriminator_train = 5
 
 # lr_decay = 0.9
-# vae_lambda_l2 = 1e-7
+# vae_lambda_l2 = 1e-5
 
 
-# In[36]:
+# In[2]:
 
 
 run_types = {'A': (1, True),
@@ -223,13 +223,14 @@ run_types = {'A': (1, True),
 seed, loo = run_types[run_type]
 
 
-# In[37]:
+# In[3]:
 
 
 visualize = False
 mod_type = 'default'
 subset = False
 short_run = False
+drop_low_counts = True
 seed_split = 888
 
 n_eval_cells = 20 if per_condition_loss else 100
@@ -246,7 +247,7 @@ else:
     prediction_loss_fn = SamplesLoss("sinkhorn", p=2, blur=0.05).to(device)
 
 
-# In[38]:
+# In[4]:
 
 
 n_fraction = 0.2
@@ -278,7 +279,7 @@ b_scale = 2
 #     fn += '_loo'
 
 
-# In[39]:
+# In[5]:
 
 
 import os
@@ -316,7 +317,7 @@ with warnings.catch_warnings():
     warnings.simplefilter("ignore", SparseEfficiencyWarning)
 
 
-# In[40]:
+# In[6]:
 
 
 import sys
@@ -359,7 +360,7 @@ from Kang_utils import (rev_stim, stim_map, rev_stim_map, adata_dimviz_bias, cle
                         get_prediction, adata_dimviz_prediction, prepare_for_metrics, get_loss)
 
 
-# In[41]:
+# In[7]:
 
 
 n_cores = 12
@@ -373,7 +374,7 @@ data_path = '/nobackup/users/hmbaghda/scLEMBAS/analysis'
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 
-# In[42]:
+# In[8]:
 
 
 adata = sc.read_h5ad(os.path.join(data_path, 'processed', 'kang_expr_scored.h5ad'))
@@ -391,6 +392,15 @@ target_label = 'target_genesymbol'
 weight_label = 'mode_of_action'
 stimulation_label = 'consensus_stimulation'
 inhibition_label = 'consensus_inhibition'
+
+
+# In[11]:
+
+
+if drop_low_counts:
+    drop_ct = tf_adata.obs.seurat_annotations.value_counts().index.tolist()[-3:]
+    tf_adata = tf_adata[~tf_adata.obs.seurat_annotations.isin(drop_ct)]
+    adata = adata[tf_adata.obs_names,:]
 
 
 # # 1. Create a novel train-test split:
@@ -702,6 +712,9 @@ def generate_lr_params(n_epochs, max_lr, lr_scaling_factor=10, lr_decay=0.75, ro
             n_optimizer_resets = 1
     else:
         n_optimizer_resets = 0
+        
+    if warmup_epochs >= T_0:
+        warmup_epochs = 0
 
     return {
         'max_epochs': n_epochs,

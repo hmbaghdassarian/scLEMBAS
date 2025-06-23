@@ -83,7 +83,7 @@ class TrainBase:
     """Base class for training the signaling model."""
 
     LR_PARAMS = {'max_epochs': 5000, 'maximum_learning_rate': 2e-3, 'minimum_learning_rate': 2e-4,
-                 'lr_restart_epoch': 1000, 'n_optimizer_resets': 2, 
+                 'lr_restart_epoch': 1000, 'n_optimizer_resets': 0, 
                 'lr_decay': 0.9, 'lr_restart_factor': 1, 'warmup_epochs': 500}
     BATCH_PARAMS = {'train_batch_size': 512, 'test_batch_size': 512, 'validation_batch_size': 512}
     NOISE_PARAMS = {'network_noise_scale': 0.01, # adjust according to projection_amplitude_in, this assumes default projection_amplitude_in = 3
@@ -979,7 +979,7 @@ class TrainSC(TrainBase):
         n_eval_bootstrap: int
             run downsampling this many times when downsampling for evaluation
 
-        
+        n_optimizer_resets is deprectaed (not implemented)
         
         """
 #         if not (type(mod.signaling_network) is BioNetSC):
@@ -997,9 +997,12 @@ class TrainSC(TrainBase):
         if sorted(pd.unique(self.X_train.values.ravel())) != [0,1]:
             raise ValueError('The current per-condition EMD loss can only handle categorical (e.g. binary) perturbation information encoded as 0 for no perturbation and 1 for perturbation')
         
-        assert 0 <= n_adversarial_start <= self.hyper_params['max_epochs'], "adverserial start is not in the epoch training range"
+        assert n_adversarial_start >= 0, "adverserial start must be non-negative"
         self.n_adversarial_start = n_adversarial_start
         self.n_discriminator_train = n_discriminator_train
+
+        if self.hyper_params['n_optimizer_resets'] != 0:
+            warnings.warn('The n_optimizer_resets parameter is deprecated, will not be used')
 
         self.per_condition_loss = per_condition_loss
         if type(self.prediction_loss_fn) == SamplesLoss:
@@ -1129,12 +1132,17 @@ class TrainSC(TrainBase):
                                                   np.array(noise_tracker)))  
 
   
-
     def initialize_vae(self, vae_params):
 
         self.vae_learning = {}
         self.vae_learning['params'] = update_with_defaults(self.VAE_PARAMS, vae_params)
-        self.vae_learning['params']['reset_optimizer_epoch'] = (self.hyper_params['max_epochs'] - self.n_adversarial_start) // (self.vae_learning['params']['n_optimizer_resets'] + 1) # if self.vae_learning['params']['n_optimizer_resets']  > 0 else torch.inf
+        if self.vae_learning['params']['n_optimizer_resets'] != 0:
+            warnings.warn('The n_optimizer_resets parameter is deprecated, will not be used')
+
+        if self.hyper_params['max_epochs'] > self.n_adversarial_start:
+            self.vae_learning['params']['reset_optimizer_epoch'] = (self.hyper_params['max_epochs'] - self.n_adversarial_start) // (self.vae_learning['params']['n_optimizer_resets'] + 1) # if self.vae_learning['params']['n_optimizer_resets']  > 0 else torch.inf
+        else:
+            self.vae_learning['params']['reset_optimizer_epoch'] = self.hyper_params['max_epochs'] + 1
 
         torch_type_params = ['lambda_l2', 'scaling_KL', 'prior_mu', 'prior_sigma']
         for param, param_value in self.vae_learning['params'].items():
@@ -1178,7 +1186,13 @@ class TrainSC(TrainBase):
         
         self.pert_discriminator = {}
         self.pert_discriminator['params'] = update_with_defaults(self.PERT_DISCRIMINATOR_PARAMS, pert_discriminator_params)
-        self.pert_discriminator['params']['reset_optimizer_epoch'] = (self.hyper_params['max_epochs'] - self.n_adversarial_start) // (self.pert_discriminator['params']['n_optimizer_resets']+ 1) #if self.pert_discriminator[['n_optimizer_resets']] > 0 else torch.inf
+        
+        if self.pert_discriminator['params']['n_optimizer_resets'] != 0:
+            warnings.warn('The n_optimizer_resets parameter is deprecated, will not be used')
+        if self.hyper_params['max_epochs'] > self.n_adversarial_start:
+            self.pert_discriminator['params']['reset_optimizer_epoch'] = (self.hyper_params['max_epochs'] - self.n_adversarial_start) // (self.pert_discriminator['params']['n_optimizer_resets']+ 1) #if self.pert_discriminator[['n_optimizer_resets']] > 0 else torch.inf
+        else:
+            self.pert_discriminator['params']['reset_optimizer_epoch'] = self.hyper_params['max_epochs'] + 1
 
         self.pert_discriminator['params']['discriminator_penalty_weight'] = self._check_discriminator_pw(self.pert_discriminator['params']['discriminator_penalty_weight'])
         if self.pert_discriminator['params']['discriminator_lambda_L2'] != 0 and self.pert_discriminator['params']['spectral_norm']:
@@ -1248,7 +1262,13 @@ class TrainSC(TrainBase):
         # self.cat_discriminator['params']['batch_momentum'] = None # bias is a vector in bulk; this should be eliminated in single-cell
         self.cat_discriminator = {}
         self.cat_discriminator['params'] = update_with_defaults(self.CAT_DISCRIMINATOR_PARAMS, cat_discriminator_params)
-        self.cat_discriminator['params']['reset_optimizer_epoch'] = (self.hyper_params['max_epochs'] - self.n_adversarial_start) // (self.cat_discriminator['params']['n_optimizer_resets'] + 1) # if self.cat_discriminator[['n_optimizer_resets']] > 0 else torch.inf
+
+        if self.cat_discriminator['params']['n_optimizer_resets'] != 0:
+            warnings.warn('The n_optimizer_resets parameter is deprecated, will not be used')
+        if self.hyper_params['max_epochs'] > self.n_adversarial_start:
+            self.cat_discriminator['params']['reset_optimizer_epoch'] = (self.hyper_params['max_epochs'] - self.n_adversarial_start) // (self.cat_discriminator['params']['n_optimizer_resets']+ 1) #if self.cat_discriminator[['n_optimizer_resets']] > 0 else torch.inf
+        else:
+            self.cat_discriminator['params']['reset_optimizer_epoch'] = self.hyper_params['max_epochs'] + 1
 
         self.cat_discriminator['params']['discriminator_penalty_weight'] = self._check_discriminator_pw(self.cat_discriminator['params']['discriminator_penalty_weight'])
         if self.cat_discriminator['params']['discriminator_lambda_L2'] != 0 and self.cat_discriminator['params']['spectral_norm']:
@@ -1396,11 +1416,17 @@ class TrainSC(TrainBase):
     
     def evaluate_mse_loss(self, y_out_, X_in_, covariates_idx_, expr_, e, batch):
         """Used for evaluation with MSE loss."""
+        cur_mode_train = self.mod.training
         self.mod.eval()
         with torch.inference_mode(): 
-            y_pred_eval, _, _ = self.mod(X_in_, covariates_idx_,  expr_) 
+            if self.n_adversarial_start <= e:
+                y_pred_eval, _, _ = self.mod(X_in_, covariates_idx_,  expr_) 
+            else:
+                y_pred_eval, _, _ = self.mod.forward_novar(X_in_, covariates_idx_,  expr_) 
             # below makes it condition specific or not
             eval_loss = self.compute_loss(y_out_, y_pred_eval, X_in_, covariates_idx_).item()
+        if cur_mode_train:
+            self.mod.train()
             
         return np.array([e, batch, eval_loss])
 
@@ -1410,7 +1436,9 @@ class TrainSC(TrainBase):
         test and train comparisons are not present. 
         For training, recomputed without addition of noise, etc. 
         """
+        raise ValueError('INTERNAL: Need to adjust for self.n_adversarial_start param, as done in evaluate_mse_loss')
         # comparable tracking of train data with test data
+        cur_mode_train = self.mod.training
         self.mod.eval()
         with torch.inference_mode(): 
             n_cells = X_in_.shape[0]
@@ -1436,6 +1464,8 @@ class TrainSC(TrainBase):
                 eval_sv = np.array([e, batch, eval_loss_full, n_cells, 0, eval_loss_full, n_cells])
             del y_pred_eval, _, eval_loss_full
             utils.clear_memory()
+        if cur_mode_train:
+            self.mod.train()
 
         return eval_sv
     
@@ -1447,6 +1477,8 @@ class TrainSC(TrainBase):
         Tracking of downsamples cells is on all cells in the batch, so it doesn't indicate which conditions
         were downsampled. 
         """
+        raise ValueError('INTERNAL: Need to adjust for self.n_adversarial_start param, as done in evaluate_mse_loss')
+        cur_mode_train = self.mod.training
         self.mod.eval()
         with torch.inference_mode(): 
             batch_conds = torch.cat([covariates_idx_, X_in_], dim = 1)
@@ -1497,6 +1529,8 @@ class TrainSC(TrainBase):
 
             del y_pred_eval, _, eval_loss_full
             utils.clear_memory()
+        if cur_mode_train:
+            self.mod.train()
         return eval_sv
 
     def train_model(self, verbose: bool = True):
@@ -1528,8 +1562,12 @@ class TrainSC(TrainBase):
             self.cat_discriminator['_cur_lr'] = self.cat_discriminator['optimizer'].param_groups[0]['lr']
             self.pert_discriminator['_cur_lr'] = self.pert_discriminator['optimizer'].param_groups[0]['lr']
             self.vae_learning['_cur_lr'] = self.vae_learning['optimizer'].param_groups[0]['lr']
-            cur_catdisc_lambda = self.cat_discriminator['params']['discriminator_penalty_weight'][e]
-            cur_pertdisc_lambda = self.pert_discriminator['params']['discriminator_penalty_weight'][e]
+            if self.hyper_params['max_epochs'] > self.n_adversarial_start:
+                cur_catdisc_lambda = self.cat_discriminator['params']['discriminator_penalty_weight'][e]
+                cur_pertdisc_lambda = self.pert_discriminator['params']['discriminator_penalty_weight'][e]
+            else:
+                cur_catdisc_lambda = torch.nan
+                cur_pertdisc_lambda = torch.nan
 
             # iterate through batches
             if self.mod.seed:
@@ -1872,14 +1910,15 @@ class TrainSC(TrainBase):
                 if verbose:
                     self.print_stats(e)
 
-            if np.logical_and(e % self.hyper_params['reset_optimizer_epoch'] == 0, e>0):
-                self.prediction_optimizer.state = self.reset_state.copy()
-            if ((e - self.n_adversarial_start) % self.cat_discriminator['params']['reset_optimizer_epoch'] == 0) and e > (self.n_adversarial_start + 1):
-                self.cat_discriminator['optimizer'].state = self.cat_discriminator['reset_state'].copy()
-            if ((e - self.n_adversarial_start) % self.pert_discriminator['params']['reset_optimizer_epoch'] == 0) and e > (self.n_adversarial_start + 1):
-                self.pert_discriminator['optimizer'].state = self.pert_discriminator['reset_state'].copy()
-            if ((e - self.n_adversarial_start) % self.vae_learning['params']['reset_optimizer_epoch'] == 0) and e > (self.n_adversarial_start + 1):
-                self.vae_learning['optimizer'].state = self.vae_learning['reset_state'].copy()
+            # deprresetting state
+            # if np.logical_and(e % self.hyper_params['reset_optimizer_epoch'] == 0, e>0):
+            #     self.prediction_optimizer.state = self.reset_state.copy()
+            # if ((e - self.n_adversarial_start) % self.cat_discriminator['params']['reset_optimizer_epoch'] == 0) and e > (self.n_adversarial_start + 1):
+            #     self.cat_discriminator['optimizer'].state = self.cat_discriminator['reset_state'].copy()
+            # if ((e - self.n_adversarial_start) % self.pert_discriminator['params']['reset_optimizer_epoch'] == 0) and e > (self.n_adversarial_start + 1):
+            #     self.pert_discriminator['optimizer'].state = self.pert_discriminator['reset_state'].copy()
+            # if ((e - self.n_adversarial_start) % self.vae_learning['params']['reset_optimizer_epoch'] == 0) and e > (self.n_adversarial_start + 1):
+            #     self.vae_learning['optimizer'].state = self.vae_learning['reset_state'].copy()
 
         # format the tracking metrics
         self.stats['train'] = pd.DataFrame(data = self.stats['train'], columns = self._stats_cols)
