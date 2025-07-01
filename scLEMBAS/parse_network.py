@@ -250,13 +250,13 @@ def add_omnipath_interaction(sn_ppis: pd.DataFrame,
         init = [np.nan]*sn_ppis.shape[1]
         init[sn_ppis.columns.tolist().index(source_label)] = source
         init[sn_ppis.columns.tolist().index(target_label)] = target
-        if moa is None or moa == 0:
+        if moa_ is None or moa_ == 0:
             init[sn_ppis.columns.tolist().index(stimulation_label)] = False
             init[sn_ppis.columns.tolist().index(inhibition_label)] = False
-        elif moa == 1:
+        elif moa_ == 1:
             init[sn_ppis.columns.tolist().index(stimulation_label)] = True
             init[sn_ppis.columns.tolist().index(inhibition_label)] = False
-        elif moa == -1:
+        elif moa_ == -1:
             init[sn_ppis.columns.tolist().index(stimulation_label)] = False
             init[sn_ppis.columns.tolist().index(inhibition_label)] = True
     
@@ -461,6 +461,7 @@ def create_connected_network(sn_ppis: pd.DataFrame, ligand_labels: List[str], tf
             for target in ligand_labels:
                 if source == target or nx.shortest_paths.has_path(G, source, target):
                     both_connected.add(source)
+                    break
     #     sn_ppis = sn_ppis[sn_ppis[[source_label, target_label]].apply(lambda row: row.isin(both_connected).all(), axis=1)]
         sn_ppis = sn_ppis[sn_ppis[source_label].isin(both_connected) & sn_ppis[target_label].isin(both_connected)]
         ligand_connections = map_connections(sn_ppis, ligand_labels_unfiltered, tf_labels, source_label, target_label)
