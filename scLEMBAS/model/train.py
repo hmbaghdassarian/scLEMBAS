@@ -83,7 +83,7 @@ class TrainBase:
     """Base class for training the signaling model."""
 
     LR_PARAMS = {'max_epochs': 5000, 'maximum_learning_rate': 2e-3, 'minimum_learning_rate': 2e-4,
-                 'lr_restart_epoch': 1000, 'reset_optimizer_epoch': 200, 
+                 'lr_restart_epoch': 1000, 'n_optimizer_resets': 0, 
                 'lr_decay': 0.9, 'lr_restart_factor': 1, 'warmup_epochs': 500}
     BATCH_PARAMS = {'train_batch_size': 512, 'test_batch_size': 512, 'validation_batch_size': 512}
     NOISE_PARAMS = {'network_noise_scale': 0.01, # adjust according to projection_amplitude_in, this assumes default projection_amplitude_in = 3
@@ -190,14 +190,20 @@ class TrainBase:
             self.hyper_params = self.HYPER_PARAMS.copy()
         else:
             self.hyper_params = {k: v for k,v in {**self.HYPER_PARAMS, **hyper_params}.items() if k in self.HYPER_PARAMS}
+
+        self.hyper_params['reset_optimizer_epoch'] = self.hyper_params['max_epochs'] // (self.hyper_params['n_optimizer_resets'] + 1) #if self.hyper_params['n_optimizer_resets'] > 0 else torch.inf
         
         for param, param_value in self.hyper_params.items():
-            if 'lambda' in param or 'vae' in param:
-                if not torch.is_tensor(param_value):
+            if 'lambda' in param and not torch.is_tensor(param_value):
                     self.hyper_params[param] = torch.tensor(param_value, device=self.mod.device, dtype=self.mod.dtype)   
 
+        if hasattr(self.mod.signaling_network, 'vae'):
+            vae_params = set(p for p in self.mod.signaling_network.vae.parameters())
+            non_vae_params = [p for p in self.mod.parameters() if p not in vae_params]
+        else:
+            non_vae_params = list(self.mod.parameters())
         self.prediction_loss_fn = prediction_loss_fn
-        self.prediction_optimizer = prediction_optimizer(self.mod.parameters(), 
+        self.prediction_optimizer = prediction_optimizer(non_vae_params, 
                                                  lr=self.hyper_params['maximum_learning_rate'], 
                                                  weight_decay=0)
         self.lr_scheduler = WarmupCosineAnnealingWarmRestarts(optimizer = self.prediction_optimizer,
@@ -642,7 +648,7 @@ class TrainCat(TrainBase):
     HYPER_PARAMS = {**TrainBase.HYPER_PARAMS, 
                     **{'cat_bias_lambda_L2': 0, # since cat max norm has been implemented
                        'cat_bias_lambda_L1': 0, 
-                       'cat_bias_orthogonality_scaler': 1} 
+                       'cat_bias_orthogonality_scaler': 0} 
                    }
     
     def __init__(self,
@@ -891,8 +897,6 @@ class TrainCat(TrainBase):
             print("Training ran in: {:.0f} min {:.2f} sec".format(mins, secs))
 
         return self.mod    
-    
-    
 
 class TrainSC(TrainBase):
     """Training the signaling model for single-cell data."""
@@ -903,10 +907,18 @@ class TrainSC(TrainBase):
                                 'discriminator_lambda_L2': 1e-5, 
                                'discriminator_penalty_weight': 1}}
     PERT_DISCRIMINATOR_PARAMS = CAT_DISCRIMINATOR_PARAMS.copy()
-    
-    HYPER_PARAMS = {**TrainCat.HYPER_PARAMS, 
-                    **{'vae_lambda_l2': 1e-5, 'vae_scaling_KL': 1e-2, 
-                       'vae_prior_mu': 0, 'vae_prior_sigma': 1},
+
+    # these are params for training, separate from the DEFAULT_HYPER_PARAMS for building the vae
+    # discriminators are both built and trained here, so they include both
+    VAE_PARAMS = {**{'lambda_l2': 1e-5, 
+                  'scaling_KL': 1e-2,
+                  'prior_mu': 0, 
+                  'prior_sigma': 1, 
+                  'optimizer': torch.optim.Adam}, 
+                  **{k: v for k,v in TrainBase.LR_PARAMS.items() if k != 'max_epochs'}}
+
+    # other training params
+    HYPER_PARAMS = {**TrainCat.HYPER_PARAMS,
                     **{'global_bias_lambda_L2': 0, 'global_bias_lambda_L1': 0}, # KL divergence regularization deals with this
                      **{'prediction_loss_fn_scaler': 1}, # regularizer/multipler for prediction loss output
                     **{'include_gradient_noise_vae': True, #add noise to vae params
@@ -918,10 +930,13 @@ class TrainSC(TrainBase):
                  mod, 
                  prediction_optimizer: torch.optim, 
                  prediction_loss_fn: torch.nn.modules.loss,
+                 n_adversarial_start: int = 0, # start immediately
+                 n_discriminator_train: int = 5, # train generator as frequently as discriminator
                  per_condition_loss: bool = False,
                  gradient_ascent: bool = False, 
                  cat_discriminator_params: Dict = None,
                  pert_discriminator_params: Dict = None, 
+                 vae_params: Dict = None,
                  hyper_params: Dict[str, Union[int, float]] = None,
                  train_split: Optional[Dict[str, Union[float, List[str]]]] = {'train': 0.8, 'test': 0.2, 'validation': None},
                  train_seed: int = None,
@@ -940,7 +955,13 @@ class TrainSC(TrainBase):
         per_condition_loss : bool
             whether to calculate the loss on all conditions simultaneously, or each condition separately, by default True
             particularly useful for EMD loss, which may transport conditions across each other
-            can also be useful for MSE, which may way abundant conditions more heavily when all calculated simultaneously
+            can also be useful for MSE, which may weigh abundant conditions more heavily when all calculated simultaneously
+        n_adversarial_start : int, optional
+            when to start adversarial training (before this, only the adj and categorical bias are learned)
+            allows the model to learn stimulation / categorical information without incorporating gene expression and the generator
+        n_discriminator_train : int, optional
+            how frequently to train the generator relative to the discriminator, by default 5
+            will train the discriminator every epoch, and generator every n_discriminator_train epochs
         cat_discriminator_params : Dict
             key word arguments to pass to `CatDiscriminator`. see TrainSC.cat_discriminator_params for defaults
             as well as:
@@ -950,18 +971,21 @@ class TrainSC(TrainBase):
                     scales the dscriminator loss to incorporate into the adverserial training this can either be a float, 
                     or a list of floats, where each element corresponds to the scaling for that epoch
         pert_discriminator_params : Dict
-            same as `stim_discriminator_params`
+            same as `cat_discriminator_params`
         n_eval_cells: int
+            only relevant for EMD loss
             downsample train/test/validation batches to this # of cells when evaluating loss
             which enables direct comparison between train and test/val for EMD loss
             EMD loss scales with sample size (more samples --> less loss given two IID datasets)
         n_eval_bootstrap: int
+            only relevant for EMD loss
             run downsampling this many times when downsampling for evaluation
-        
+
+        n_optimizer_resets is deprecated 
         
         """
-#         if not (type(mod.signaling_network) is BioNetSC):
-#             raise ValueError('You must use the correct training class to match the BioNet class.')
+        if not (type(mod.signaling_network) is BioNetSC):
+            raise ValueError('You must use the correct training class to match the BioNet class.')
 
         super().__init__(mod = mod, 
                            prediction_optimizer = prediction_optimizer, 
@@ -971,12 +995,22 @@ class TrainSC(TrainBase):
                            train_seed = train_seed,
                          track_validation = track_validation,
                          track_test = track_test)
-    
-        # per condition EMD loss check
+        
+        # X_in and per condition EMD loss check
         if sorted(pd.unique(self.X_train.values.ravel())) != [0,1]:
             raise ValueError('The current per-condition EMD loss can only handle categorical (e.g. binary) perturbation information encoded as 0 for no perturbation and 1 for perturbation')
+        if self.mod.X_in.sum(axis = 1).max() != 1:
+            raise ValueError('Currently, model training can only handle a single perturbation per cell')
+        if self.mod.X_in.sum(axis = 1).min() != 0:
+            warnings.warn('The input perturbation matrix does not contain unperturbed/ctrl cells as currently formatted')
         
-        
+        assert n_adversarial_start >= 0, "adverserial start must be non-negative"
+        self.n_adversarial_start = n_adversarial_start
+        self.n_discriminator_train = n_discriminator_train
+
+        if self.hyper_params['n_optimizer_resets'] != 0:
+            warnings.warn('The n_optimizer_resets parameter is deprecated, will not be used')
+
         self.per_condition_loss = per_condition_loss
         if type(self.prediction_loss_fn) == SamplesLoss:
             self._prediction_loss_name = 'EMD'
@@ -1010,6 +1044,8 @@ class TrainSC(TrainBase):
         self.gradient_ascent = gradient_ascent
         self.initialize_cat_discriminator(cat_discriminator_params)
         self.initialize_pert_discriminator(pert_discriminator_params) 
+
+        self.initialize_vae(vae_params)
         
         if self.hyper_params['constant_gradient_noise']:
             self.hyper_params['gradient_noise_scale'] = torch.tensor([self.hyper_params['gradient_noise_scale']], 
@@ -1019,6 +1055,7 @@ class TrainSC(TrainBase):
     def _initialize_tracking(self): 
         self._stats_cols = ['epoch', 'batch_index', 
                             'learning_rate', 'cat_discriminator_learning_rate', 'pert_discriminator_learning_rate',
+                            'vae_learning_rate',
                             'iter_time', 'spectral_radius', #'eig_sigma', 
                             'n_moa_violations',
                             'train_loss_total', 'train_loss_prediction',
@@ -1052,8 +1089,6 @@ class TrainSC(TrainBase):
 
         self._noise_cols = [col.replace('.', '_') for col in self._noise_cols]  
 
-
-
         self.stats['gradient_noise'] = np.empty((0, len(self._noise_cols)))
 
         if self.track_test or self.track_validation:
@@ -1081,6 +1116,8 @@ class TrainSC(TrainBase):
                 continue
             if not self.hyper_params['include_gradient_noise_embedding'] and 'cat_embeddings' in param_name:
                 continue
+            if self.hyper_params['include_gradient_noise_vae'] and self._no_vae and 'vae' in param_name:
+                noise_tracker.extend([0,0])
             if param.requires_grad:
                 # TODO: technically this should use the associated param mask
                 # but this should be VERY similar if not idetical
@@ -1099,7 +1136,41 @@ class TrainSC(TrainBase):
         self.mod._gradient_seed_counter += 1
         
         self.stats['gradient_noise'] = np.vstack((self.stats['gradient_noise'], 
-                                                  np.array(noise_tracker)))        
+                                                  np.array(noise_tracker)))  
+
+  
+    def initialize_vae(self, vae_params):
+
+        self.vae_learning = {}
+        self.vae_learning['params'] = update_with_defaults(self.VAE_PARAMS, vae_params)
+        if self.vae_learning['params']['n_optimizer_resets'] != 0:
+            warnings.warn('The n_optimizer_resets parameter is deprecated, will not be used')
+
+        if self.hyper_params['max_epochs'] > self.n_adversarial_start:
+            self.vae_learning['params']['reset_optimizer_epoch'] = (self.hyper_params['max_epochs'] - self.n_adversarial_start) // (self.vae_learning['params']['n_optimizer_resets'] + 1) # if self.vae_learning['params']['n_optimizer_resets']  > 0 else torch.inf
+        else:
+            self.vae_learning['params']['reset_optimizer_epoch'] = self.hyper_params['max_epochs'] + 1
+
+        torch_type_params = ['lambda_l2', 'scaling_KL', 'prior_mu', 'prior_sigma']
+        for param, param_value in self.vae_learning['params'].items():
+            if param in torch_type_params and not torch.is_tensor(param_value):
+                    self.hyper_params[param] = torch.tensor(param_value, device=self.mod.device, dtype=self.mod.dtype)  
+
+        self.vae_learning['optimizer'] = self.vae_learning['params']['optimizer'](self.mod.signaling_network.parameters(),
+                                                                                  lr = self.vae_learning['params']['maximum_learning_rate'],
+                                                                                  weight_decay = 0)
+        self.vae_learning['lr_scheduler'] = WarmupCosineAnnealingWarmRestarts(optimizer = self.vae_learning['optimizer'], 
+                                                                               T_0 = self.vae_learning['params']['lr_restart_epoch'],
+                                                                               T_mul = self.vae_learning['params']['lr_restart_factor'],
+                                                                               gamma = self.vae_learning['params']['lr_decay'],
+                                                                               eta_min = self.vae_learning['params']['minimum_learning_rate'],
+                                                              max_lr=self.vae_learning['params']['maximum_learning_rate'],
+                                                              warmup_steps = self.vae_learning['params']['warmup_epochs'],
+                                                              last_epoch = -1)
+        self.vae_learning['reset_state'] = self.vae_learning['optimizer'].state.copy()
+        
+        # for training without adversarial portion
+        freeze_model(model = self.pert_discriminator['discriminator'])   
         
     def initialize_pert_discriminator(self, pert_discriminator_params):
         if sorted(pd.unique(self.X_train.values.ravel())) != [0,1]:
@@ -1122,6 +1193,14 @@ class TrainSC(TrainBase):
         
         self.pert_discriminator = {}
         self.pert_discriminator['params'] = update_with_defaults(self.PERT_DISCRIMINATOR_PARAMS, pert_discriminator_params)
+        
+        if self.pert_discriminator['params']['n_optimizer_resets'] != 0:
+            warnings.warn('The n_optimizer_resets parameter is deprecated, will not be used')
+        if self.hyper_params['max_epochs'] > self.n_adversarial_start:
+            self.pert_discriminator['params']['reset_optimizer_epoch'] = (self.hyper_params['max_epochs'] - self.n_adversarial_start) // (self.pert_discriminator['params']['n_optimizer_resets']+ 1) #if self.pert_discriminator[['n_optimizer_resets']] > 0 else torch.inf
+        else:
+            self.pert_discriminator['params']['reset_optimizer_epoch'] = self.hyper_params['max_epochs'] + 1
+
         self.pert_discriminator['params']['discriminator_penalty_weight'] = self._check_discriminator_pw(self.pert_discriminator['params']['discriminator_penalty_weight'])
         if self.pert_discriminator['params']['discriminator_lambda_L2'] != 0 and self.pert_discriminator['params']['spectral_norm']:
             raise ValueError('Do not apply L2 regularization if using spectral norm.')        
@@ -1140,7 +1219,7 @@ class TrainSC(TrainBase):
                                        'leak': self.mod.signaling_network.bionet_params['leak']},
                          smooth_labels = self.pert_discriminator['params']['smooth_labels'],
                          epsilon_smooth = self.pert_discriminator['params']['epsilon_smooth'],                                
-                         initialize = self.pert_discriminator['params']['initialize'],
+                        #  initialize = self.pert_discriminator['params']['initialize'],
                          n_hidden_nodes = self.pert_discriminator['params']['n_hidden_nodes'], 
                          seed = self.train_seed)
     
@@ -1157,10 +1236,11 @@ class TrainSC(TrainBase):
                                                               last_epoch = -1)
         self.pert_discriminator['reset_state'] = self.pert_discriminator['optimizer'].state.copy()
         
+        # for training without adversarial portion
+        freeze_model(model = self.pert_discriminator['discriminator'])
+        
         # label flipping
         if self.gradient_ascent and self.pert_discriminator['discriminator'].n_labels > 2:
-            raise ValueError('Need to check this code and adversarial gradient ascent portion are implemented correctly')
-
             X_train = self.mod.df_to_tensor(self.X_train)
             target = X_train.argmax(dim=1)
             no_pert = X_train.sum(dim=1) == 0  
@@ -1170,7 +1250,7 @@ class TrainSC(TrainBase):
             self.pert_class_probs['probs'] = {}
 
             classes, class_counts = torch.unique(target, return_counts = True)
-            class_probs = class_counts / class_counts.sum()
+            # class_probs = class_counts / class_counts.sum()
 
             self.pert_class_probs['classes'] = classes
 
@@ -1178,7 +1258,7 @@ class TrainSC(TrainBase):
                 cls = cls.item()
                 # get probabilities when excluding true class
                 mask = torch.ones(self.pert_discriminator['discriminator'].n_labels, 
-                                  dtype=torch.bool, device=device)
+                                  dtype=torch.bool, device=self.mod.device)
                 mask[cls] = False
                 self.pert_class_probs['probs'][cls] = class_counts[mask] / class_counts[mask].sum()
     
@@ -1187,6 +1267,14 @@ class TrainSC(TrainBase):
         # self.cat_discriminator['params']['batch_momentum'] = None # bias is a vector in bulk; this should be eliminated in single-cell
         self.cat_discriminator = {}
         self.cat_discriminator['params'] = update_with_defaults(self.CAT_DISCRIMINATOR_PARAMS, cat_discriminator_params)
+
+        if self.cat_discriminator['params']['n_optimizer_resets'] != 0:
+            warnings.warn('The n_optimizer_resets parameter is deprecated, will not be used')
+        if self.hyper_params['max_epochs'] > self.n_adversarial_start:
+            self.cat_discriminator['params']['reset_optimizer_epoch'] = (self.hyper_params['max_epochs'] - self.n_adversarial_start) // (self.cat_discriminator['params']['n_optimizer_resets']+ 1) #if self.cat_discriminator[['n_optimizer_resets']] > 0 else torch.inf
+        else:
+            self.cat_discriminator['params']['reset_optimizer_epoch'] = self.hyper_params['max_epochs'] + 1
+
         self.cat_discriminator['params']['discriminator_penalty_weight'] = self._check_discriminator_pw(self.cat_discriminator['params']['discriminator_penalty_weight'])
         if self.cat_discriminator['params']['discriminator_lambda_L2'] != 0 and self.cat_discriminator['params']['spectral_norm']:
             raise ValueError('Do not apply L2 regularization if using spectral norm.')
@@ -1208,7 +1296,7 @@ class TrainSC(TrainBase):
                                                                 'leak': self.mod.signaling_network.bionet_params['leak']},
                          smooth_labels = self.cat_discriminator['params']['smooth_labels'],
                          epsilon_smooth = self.cat_discriminator['params']['epsilon_smooth'], 
-                                                               initialize = self.cat_discriminator['params']['initialize'],
+#                                                                initialize = self.cat_discriminator['params']['initialize'],
                                                                seed = self.train_seed)
                                 for covariate_cat, cat_embedding in self.mod.signaling_network.cat_embeddings.items()}
                         )
@@ -1231,6 +1319,10 @@ class TrainSC(TrainBase):
                                                               last_epoch = -1)
         self.cat_discriminator['reset_state'] = self.cat_discriminator['optimizer'].state.copy()
         
+        # for training without adversarial portion
+        for discriminator in self.cat_discriminator['discriminators'].values():
+            freeze_model(model = discriminator)
+        
         # label flipping
         if self.gradient_ascent:
             covariates_train = self.mod.signaling_network.covariates_to_tensor(sample_ids = self.X_train.index)
@@ -1243,7 +1335,7 @@ class TrainSC(TrainBase):
 
 
                     classes, class_counts = torch.unique(covariates_train[:, cat_group_idx], return_counts = True)
-                    class_probs = class_counts / class_counts.sum()
+                    # class_probs = class_counts / class_counts.sum()
 
                     self.cat_class_probs[covariate_cat]['classes'] = classes
 
@@ -1253,7 +1345,6 @@ class TrainSC(TrainBase):
                         mask = torch.ones(discriminator.n_labels, dtype=torch.bool, device=self.mod.device)
                         mask[cls] = False
                         self.cat_class_probs[covariate_cat]['probs'][cls] = class_counts[mask] / class_counts[mask].sum()
-        
         
     @staticmethod
     def flip_labels_uniform(true_labels, n_labels):
@@ -1282,13 +1373,18 @@ class TrainSC(TrainBase):
         return flipped_labels
         
     def _check_discriminator_pw(self, discriminator_penalty_weight):
-        if isinstance(discriminator_penalty_weight, float):
-            discriminator_penalty_weight = [discriminator_penalty_weight]*self.hyper_params['max_epochs']
-        elif isinstance(discriminator_penalty_weight, list):
-            if len(discriminator_penalty_weight) != self.hyper_params['max_epochs']:
-                raise ValueError('Must specify a discriminator penalty weight for each epoch')
+        if self.hyper_params['max_epochs'] > self.n_adversarial_start:
+            if isinstance(discriminator_penalty_weight, float):
+                discriminator_penalty_weight = [discriminator_penalty_weight]*(self.hyper_params['max_epochs'] - self.n_adversarial_start)
+            elif isinstance(discriminator_penalty_weight, list):
+                if len(discriminator_penalty_weight) != (self.hyper_params['max_epochs'] - self.n_adversarial_start):
+                    raise ValueError('Must specify a discriminator penalty weight for each epoch')
+            else:
+                raise ValueError("'discriminator_penalty_weight' must be a float or list")
+
+            discriminator_penalty_weight = self.n_adversarial_start * [0] + discriminator_penalty_weight
         else:
-            raise ValueError("'discriminator_penalty_weight' must be a float or list")
+            discriminator_penalty_weight = []
         return discriminator_penalty_weight
     
     def compute_loss_all(self, y_out_, Y_hat, X_in_, covariates_idx_):
@@ -1325,11 +1421,17 @@ class TrainSC(TrainBase):
     
     def evaluate_mse_loss(self, y_out_, X_in_, covariates_idx_, expr_, e, batch):
         """Used for evaluation with MSE loss."""
+        cur_mode_train = self.mod.training
         self.mod.eval()
         with torch.inference_mode(): 
-            y_pred_eval, _, _ = self.mod(X_in_, covariates_idx_,  expr_) 
+            if self.n_adversarial_start <= e:
+                y_pred_eval, _, _ = self.mod(X_in_, covariates_idx_,  expr_) 
+            else:
+                y_pred_eval, _, _ = self.mod.forward_novar(X_in_, covariates_idx_,  expr_) 
             # below makes it condition specific or not
             eval_loss = self.compute_loss(y_out_, y_pred_eval, X_in_, covariates_idx_).item()
+        if cur_mode_train:
+            self.mod.train()
             
         return np.array([e, batch, eval_loss])
 
@@ -1339,7 +1441,9 @@ class TrainSC(TrainBase):
         test and train comparisons are not present. 
         For training, recomputed without addition of noise, etc. 
         """
+        raise ValueError('INTERNAL: Need to adjust for self.n_adversarial_start param, as done in evaluate_mse_loss')
         # comparable tracking of train data with test data
+        cur_mode_train = self.mod.training
         self.mod.eval()
         with torch.inference_mode(): 
             n_cells = X_in_.shape[0]
@@ -1365,6 +1469,8 @@ class TrainSC(TrainBase):
                 eval_sv = np.array([e, batch, eval_loss_full, n_cells, 0, eval_loss_full, n_cells])
             del y_pred_eval, _, eval_loss_full
             utils.clear_memory()
+        if cur_mode_train:
+            self.mod.train()
 
         return eval_sv
     
@@ -1376,6 +1482,8 @@ class TrainSC(TrainBase):
         Tracking of downsamples cells is on all cells in the batch, so it doesn't indicate which conditions
         were downsampled. 
         """
+        raise ValueError('INTERNAL: Need to adjust for self.n_adversarial_start param, as done in evaluate_mse_loss')
+        cur_mode_train = self.mod.training
         self.mod.eval()
         with torch.inference_mode(): 
             batch_conds = torch.cat([covariates_idx_, X_in_], dim = 1)
@@ -1426,6 +1534,8 @@ class TrainSC(TrainBase):
 
             del y_pred_eval, _, eval_loss_full
             utils.clear_memory()
+        if cur_mode_train:
+            self.mod.train()
         return eval_sv
 
     def train_model(self, verbose: bool = True):
@@ -1434,7 +1544,7 @@ class TrainSC(TrainBase):
         Parameters
         ----------
         verbose : bool, optional
-           print stats during trainin, by default True
+            print stats during trainin, by default True
 
         Returns
         -------
@@ -1444,118 +1554,147 @@ class TrainSC(TrainBase):
             a list of the loss (excluding regularizations) across training iterations
         cur_eig : List[float], optional
             a list of the spectral_radius across training iterations
-       """
+        """
         start_time = time.time()
         self.mod.signaling_network.implement_mask() # shouldn't be necessary bc called in signaling_network init
-        
+
         torch.autograd.set_detect_anomaly(True)
-        
+
         for e in trange(self.hyper_params['max_epochs']):
+            self._no_vae = (self.n_adversarial_start > e) or (e % self.n_discriminator_train != 0)
+
             cur_lr = self.prediction_optimizer.param_groups[0]['lr']
             self.cat_discriminator['_cur_lr'] = self.cat_discriminator['optimizer'].param_groups[0]['lr']
             self.pert_discriminator['_cur_lr'] = self.pert_discriminator['optimizer'].param_groups[0]['lr']
-            cur_catdisc_lambda = self.cat_discriminator['params']['discriminator_penalty_weight'][e]
-            cur_pertdisc_lambda = self.pert_discriminator['params']['discriminator_penalty_weight'][e]
-
-            cur_vae_loss, cur_kl_loss, disc_loss_tot_train, disc_loss_pred_train, disc_param_loss = [], [], [], [], []
+            self.vae_learning['_cur_lr'] = self.vae_learning['optimizer'].param_groups[0]['lr']
+            if self.hyper_params['max_epochs'] > self.n_adversarial_start:
+                cur_catdisc_lambda = self.cat_discriminator['params']['discriminator_penalty_weight'][e]
+                cur_pertdisc_lambda = self.pert_discriminator['params']['discriminator_penalty_weight'][e]
+            else:
+                cur_catdisc_lambda = torch.nan
+                cur_pertdisc_lambda = torch.nan
 
             # iterate through batches
             if self.mod.seed:
                 utils.set_seeds(self.mod.seed + e)
             for batch, (X_in_, y_out_, covariates_idx_, expr_) in enumerate(self.train_dataloader):
+                # set train mode or not (discriminator done below)
                 self.mod.train()
-                for mod_discriminator in self.cat_discriminator['discriminators'].values():
-                    mod_discriminator.train()
-                self.pert_discriminator['discriminator'].train()
+                if self._no_vae:
+                    freeze_model(self.mod.signaling_network.vae)
+                else:
+                    unfreeze_model(self.mod.signaling_network.vae)
 
 
                 self.prediction_optimizer.zero_grad()
                 self.cat_discriminator['optimizer'].zero_grad()
                 self.pert_discriminator['optimizer'].zero_grad()
+                self.vae_learning['optimizer'].zero_grad()
 
                 X_in_, y_out_, covariates_idx_, expr_ = X_in_.to(self.mod.device), y_out_.to(self.mod.device), covariates_idx_.to(self.mod.device), expr_.to(self.mod.device)
 
                 ######################## Forward Pass ########################
                 X_full = self.mod.input_layer(X_in_) # transform to full network with ligand input concentrations
-                
+
                 # add noise to ninput
                 utils.set_seeds(self.mod.seed + self.mod._gradient_seed_counter)
                 network_noise = torch.randn(X_full.shape, device = X_full.device)
                 noise_scale_factor = self.hyper_params['network_noise_scale'] * (cur_lr/self.lr_scheduler.max_lr)
                 noise_scale_factor = max(noise_scale_factor, self.hyper_params['min_network_noise'])
                 X_full = X_full + (noise_scale_factor * network_noise) # randomly add noise to signaling network input, makes model more robust                Y_full, bias_terms = self.mod.signaling_network(X_full = X_full, 
-                
-                Y_full, bias_terms = self.mod.signaling_network(X_full = X_full, 
-                                                                 covariates_idx = covariates_idx_, 
-                                                                 expr = expr_) # train signaling network weights
-                bias_global, bias_mu, bias_log_sigma_squared = bias_terms
-                
+
+                # NEW
+                if self.n_adversarial_start <= e:
+                    Y_full, bias_terms = self.mod.signaling_network(X_full = X_full, 
+                                                                    covariates_idx = covariates_idx_, 
+                                                                    expr = expr_) # train signaling network weights
+                    bias_global, bias_mu, bias_log_sigma_squared = bias_terms
+                else:
+                    Y_full, _ = self.mod.signaling_network.forward_novar(X_full = X_full, 
+                                                                    covariates_idx = covariates_idx_, 
+                                                                    expr = expr_) # train signaling network weights
+
                 Y_hat = self.mod.output_layer(Y_full)
 
-                ######################## Categorical DISCRIMINATOR ########################
-                # discriminator prediction and loss
-                cat_discriminator_loss_accuracy = torch.tensor(0, device = self.mod.device, dtype = self.mod.dtype)
-                for cat_group_idx, (cat, discriminator) in enumerate(self.cat_discriminator['discriminators'].items()):
-                    bias_global_prediction = discriminator(bias_global.detach()) # predicted logits
-                    # if don't use retain_graph = True, then use bias_global.detach() here
+                if self.n_adversarial_start <= e:
+                    unfreeze_model(model = self.pert_discriminator['discriminator'])
+                    for discriminator in self.cat_discriminator['discriminators'].values():
+                        unfreeze_model(model = discriminator)
 
-                    target = covariates_idx_[:, cat_group_idx]
-                    if discriminator.n_labels == 2:
-                        target = target.to(self.mod.dtype).unsqueeze(1)
+                    ######################## Categorical DISCRIMINATOR ########################
+                    # discriminator prediction and loss
+                    cat_discriminator_loss_accuracy = torch.tensor(0, device = self.mod.device, dtype = self.mod.dtype)
+                    for cat_group_idx, (cat, discriminator) in enumerate(self.cat_discriminator['discriminators'].items()):
+                        bias_global_prediction = discriminator(bias_global.detach()) # predicted logits
+                        # if don't use retain_graph = True, then use bias_global.detach() here
 
-                    cat_discriminator_loss_accuracy += discriminator.loss_fn(bias_global_prediction, target)   
+                        target = covariates_idx_[:, cat_group_idx]
+                        if discriminator.n_labels == 2:
+                            target = target.to(self.mod.dtype).unsqueeze(1)
 
-                # discriminator regularization
-                cat_discriminator_reg = torch.tensor(0, device = self.mod.device, dtype = self.mod.dtype)
-                for discriminator in self.cat_discriminator['discriminators'].values():
-                    cat_discriminator_reg += discriminator.L2_reg(self.cat_discriminator['params']['discriminator_lambda_L2'])
-                cat_discriminator_loss = cat_discriminator_loss_accuracy + cat_discriminator_reg
-                
-                # discriminator optimization
-                # NOTE: discriminator is optimized prior to adverserial training (and loss re-calculated)
-                cat_discriminator_loss.backward() # if bias global is not detached, need to set retain_graph = True here
-                cat_grad_l2s = np.array([self.get_global_l2_norm(mod_discriminator) for mod_discriminator in self.cat_discriminator['discriminators'].values()])
-                self.cat_discriminator['optimizer'].step()
-                
-                # freeze discriminator (to prevent updating discriminator gradients when calling discriminator while 
-                # training generator adverserially below)
-                for discriminator in self.cat_discriminator['discriminators'].values():
-                    freeze_model(model = discriminator)
-                    
-                # NOTE: 
-                # a good adverserial check here is to see if the vae (and all self.mod) param gradients are still 0, 
-                # as the backward pass for prediction has not yet been called; when using the retain_graph = True
-                # and not calling bias_global.detach() above, the gradients from calculating the discriminator loss
-                # on bias global were leaking into the generator portion
-                
-                ######################## Perturbation DISCRIMINATOR ########################
-                # same implementation as categorical discriminator currently
-                # discriminator prediction and loss
-                bias_global_prediction = self.pert_discriminator['discriminator'](bias_global.detach()) # predicted logits
+                        cat_discriminator_loss_accuracy += discriminator.loss_fn(bias_global_prediction, target)   
 
-                if self.pert_discriminator['discriminator'].n_labels != 2:
-                    target = X_in_.argmax(dim=1)
-                    # differentiate between rows with no perturbation and rows with perturbation at column 1 (index 0)
-                    no_pert = X_in_.sum(dim=1) == 0  
-                    target[no_pert] = self.pert_discriminator['discriminator'].n_labels - 1 # -1 for indexing
+                    # discriminator regularization
+                    cat_discriminator_reg = torch.tensor(0, device = self.mod.device, dtype = self.mod.dtype)
+                    for discriminator in self.cat_discriminator['discriminators'].values():
+                        cat_discriminator_reg += discriminator.L2_reg(self.cat_discriminator['params']['discriminator_lambda_L2'])
+                    cat_discriminator_loss = cat_discriminator_loss_accuracy + cat_discriminator_reg
+
+                    # discriminator optimization
+                    # NOTE: discriminator is optimized prior to adverserial training (and loss re-calculated)
+                    cat_discriminator_loss.backward() # if bias global is not detached, need to set retain_graph = True here
+                    cat_grad_l2s = np.array([self.get_global_l2_norm(mod_discriminator) for mod_discriminator in self.cat_discriminator['discriminators'].values()])
+                    self.cat_discriminator['optimizer'].step()
+
+                    # freeze discriminator (to prevent updating discriminator gradients when calling discriminator while 
+                    # training generator adverserially below)
+                    for discriminator in self.cat_discriminator['discriminators'].values():
+                        freeze_model(model = discriminator)
+
+                    # NOTE: 
+                    # a good adverserial check here is to see if the vae (and all self.mod) param gradients are still 0, 
+                    # as the backward pass for prediction has not yet been called; when using the retain_graph = True
+                    # and not calling bias_global.detach() above, the gradients from calculating the discriminator loss
+                    # on bias global were leaking into the generator portion
+
+                    ######################## Perturbation DISCRIMINATOR ########################
+                    # same implementation as categorical discriminator currently
+                    # discriminator prediction and loss
+                    bias_global_prediction = self.pert_discriminator['discriminator'](bias_global.detach()) # predicted logits
+
+                    if self.pert_discriminator['discriminator'].n_labels != 2:
+                        target = X_in_.argmax(dim=1)
+                        # differentiate between rows with no perturbation and rows with perturbation at column 1 (index 0)
+                        no_pert = X_in_.sum(dim=1) == 0  
+                        target[no_pert] = self.pert_discriminator['discriminator'].n_labels - 1 # -1 for indexing
+                    else:
+                        target = X_in_#.long().reshape(-1)
+
+
+                    pert_discriminator_loss_accuracy = self.pert_discriminator['discriminator'].loss_fn(bias_global_prediction, target)   
+
+                    # discriminator regularization
+                    pert_discriminator_reg = self.pert_discriminator['discriminator'].L2_reg(self.pert_discriminator['params']['discriminator_lambda_L2'])
+                    pert_discriminator_loss = pert_discriminator_loss_accuracy + pert_discriminator_reg
+
+                    # discriminator optimization
+                    pert_discriminator_loss.backward() # if bias global is not detached, need to set retain_graph = True here
+                    pert_grad_l2 = self.get_global_l2_norm(self.pert_discriminator['discriminator']) # tracking
+                    self.pert_discriminator['optimizer'].step()
+
+                    # freeze discriminator
+                    freeze_model(model = self.pert_discriminator['discriminator'])
                 else:
-                    target = X_in_#.long().reshape(-1)
+                    cat_discriminator_loss = torch.tensor(0.0)
+                    pert_discriminator_loss = torch.tensor(0.0)
+                    cat_discriminator_loss_accuracy = torch.tensor(0.0)
+                    pert_discriminator_loss_accuracy = torch.tensor(0.0)
+                    cat_discriminator_reg = torch.tensor(0.0)
+                    pert_discriminator_reg = torch.tensor(0.0)
+                    cat_grad_l2s = np.array([0]*len(self.cat_discriminator['discriminators']))
+                    pert_grad_l2 = 0
 
 
-                pert_discriminator_loss_accuracy = self.pert_discriminator['discriminator'].loss_fn(bias_global_prediction, target)   
-
-                # discriminator regularization
-                pert_discriminator_reg = self.pert_discriminator['discriminator'].L2_reg(self.pert_discriminator['params']['discriminator_lambda_L2'])
-                pert_discriminator_loss = pert_discriminator_loss_accuracy + pert_discriminator_reg
-
-                # discriminator optimization
-                pert_discriminator_loss.backward() # if bias global is not detached, need to set retain_graph = True here
-                pert_grad_l2 = self.get_global_l2_norm(self.pert_discriminator['discriminator']) # tracking
-                self.pert_discriminator['optimizer'].step()
-
-                # freeze discriminator
-                freeze_model(model = self.pert_discriminator['discriminator'])
-                
                 ######################## LEMBAS and generator ########################
                 # reconstruction loss
                 prediction_loss = self.compute_loss(y_out_, Y_hat, X_in_, covariates_idx_)
@@ -1568,118 +1707,127 @@ class TrainSC(TrainBase):
                                                                                     power_steps = self.hyper_params['power_steps_spectral'])
                 uniform_reg = self.mod.uniform_regularization(lambda_L2 = self.hyper_params['uniform_lambda_L2']*cur_lr, Y_full = Y_full, 
                                                         target_min = 0, target_max = self.hyper_params['uniform_max']) # uniform distribution
+
                 input_param_reg, sn_param_reg, output_param_reg = self.mod.L2_reg(input_lambda_L2=self.hyper_params['input_lambda_L2'],
                                             bn_weights_lambda_L2=self.hyper_params['bn_weights_lambda_L2'], 
                                             global_bias_lambda_L2=self.hyper_params['global_bias_lambda_L2'], 
-                                            bias_global = bias_global,
+                                            bias_global = torch.tensor(0) if self._no_vae else bias_global,
                                             cat_bias_lambda_L2=self.hyper_params['cat_bias_lambda_L2'],
                                             output_weights_lambda_L2=self.hyper_params['output_weights_lambda_L2'],
                                             output_bias_lambda_L2=self.hyper_params['output_bias_lambda_L2'])
-                sn_bias_l1_reg = self.mod.signaling_network.L1_reg_bias(bias_global = bias_global, 
+                sn_bias_l1_reg = self.mod.signaling_network.L1_reg_bias(bias_global = torch.tensor(0) if self._no_vae else bias_global, 
                                                                         global_bias_lambda_L1 = self.hyper_params['global_bias_lambda_L1'], 
                                                                         cat_bias_lambda_L1 = self.hyper_params['cat_bias_lambda_L1'])
-#                 from collections import OrderedDict
-#                 sn_cat_bias_orthogonality_reg = OrderedDict({'cat_bias_orthogonality_loss': 0})
+    #                 from collections import OrderedDict
+    #                 sn_cat_bias_orthogonality_reg = OrderedDict({'cat_bias_orthogonality_loss': 0})
                 sn_cat_bias_orthogonality_reg = self.mod.signaling_network.cat_orthogonality_regularization(covariates_idx = covariates_idx_,
                                                                                                             X_in = X_in_,
                                                                                                             regularization_scaler = self.hyper_params['cat_bias_orthogonality_scaler'])
                 sn_param_reg = {**sn_param_reg, **sn_bias_l1_reg, **sn_cat_bias_orthogonality_reg}
                 param_reg = input_param_reg + sum(sn_param_reg.values()) + sum(output_param_reg.values())
-                vae_reg = self.mod.signaling_network.vae.L2_reg(lambda_L2=self.hyper_params['vae_lambda_l2']) # VAE loss
+                vae_reg = torch.tensor(0.0)
+                if not self._no_vae:
+                    vae_reg = self.mod.signaling_network.vae.L2_reg(lambda_L2=self.vae_learning['params']['lambda_l2']) 
                 param_reg += vae_reg
-                   
+
                 # NOTE: KL divergence is scaled to match loss magnitudes; no bias regularization given KL regularization
                 # can use MMD in the future if KL unstable
-                
+
                 # for adj matrix 
                 if self.hyper_params['adj_scaling_KL'] == 0:
                     kl_divergence_adj = torch.tensor(0.0, device=self.mod.device, dtype=self.mod.dtype)
                 else:
                     unmasked_weights = self.mod.signaling_network.weights[~self.mod.signaling_network.mask]
                     kl_divergence_adj = self.hyper_params['adj_scaling_KL'] *kl_divergence_normal(empirical_values = unmasked_weights, 
-                                                             mu=self.hyper_params['adj_prior_mu'], 
-                                                             sigma=self.hyper_params['adj_prior_sigma'], 
-                                                             eps=1e-8)
-                
-                # for global bias
-                kl_divergence_gb = self.mod.signaling_network.vae.KL_divergence(z_mu = bias_mu, 
-                                                                             z_log_sigma_squared = bias_log_sigma_squared, 
-                                                                             scaling_factor = self.hyper_params['vae_scaling_KL'], 
-                                                                             prior_mu = self.hyper_params['vae_prior_mu'], 
-                                                                             prior_sigma = self.hyper_params['vae_prior_sigma'])
-                
+                                                                mu=self.hyper_params['adj_prior_mu'], 
+                                                                sigma=self.hyper_params['adj_prior_sigma'], 
+                                                                eps=1e-8)
+
+                kl_divergence_gb = torch.tensor(0.0)
+                if not self._no_vae:
+                    # for global bias
+                    kl_divergence_gb = self.mod.signaling_network.vae.KL_divergence(z_mu = bias_mu, 
+                                                                                z_log_sigma_squared = bias_log_sigma_squared, 
+                                                                                scaling_factor = self.vae_learning['params']['scaling_KL'], 
+                                                                                prior_mu = self.vae_learning['params']['prior_mu'], 
+                                                                                prior_sigma = self.vae_learning['params']['prior_sigma'])
                 tot_pred_loss = prediction_loss + sign_reg + param_reg + stability_loss + uniform_reg + kl_divergence_gb + kl_divergence_adj
 
-                # adverserial portion -- same as discriminator, but recalculating on trained model
-                # adverserial portion -- same as discriminator, but recalculating on trained model
-                # categorical adversary
-                cat_adverserial_loss = torch.tensor(0, device = self.mod.device, dtype = self.mod.dtype)
-                for cat_group_idx, (covariate_cat, discriminator) in enumerate(self.cat_discriminator['discriminators'].items()):
-                    bias_global_prediction = discriminator(bias_global) 
+                pert_adverserial_loss, cat_adverserial_loss = torch.tensor(0.0), torch.tensor(0.0)
+                if not self._no_vae:
 
-                    target = covariates_idx_[:, cat_group_idx]
-                    if discriminator.n_labels == 2:
-                        target = target.to(self.mod.dtype).unsqueeze(1) if not self.gradient_ascent else 1 - target.to(self.mod.dtype).unsqueeze(1)
+                    # adverserial portion -- same as discriminator, but recalculating on trained model
+                    # adverserial portion -- same as discriminator, but recalculating on trained model
+                    # categorical adversary
+                    cat_adverserial_loss = torch.tensor(0, device = self.mod.device, dtype = self.mod.dtype)
+                    for cat_group_idx, (covariate_cat, discriminator) in enumerate(self.cat_discriminator['discriminators'].items()):
+                        bias_global_prediction = discriminator(bias_global) 
+
+                        target = covariates_idx_[:, cat_group_idx]
+                        if discriminator.n_labels == 2:
+                            target = target.to(self.mod.dtype).unsqueeze(1) if not self.gradient_ascent else 1 - target.to(self.mod.dtype).unsqueeze(1)
+                        else:
+                            if self.gradient_ascent:
+                                utils.set_seeds(self.mod.seed + e + batch)
+                                target = self.flip_labels_proportional(true_labels = target, 
+                                                                            classes = self.cat_class_probs[covariate_cat]['classes'], 
+                                                                            probs = self.cat_class_probs[covariate_cat]['probs'], 
+                                                                            n_labels = discriminator.n_labels)
+
+                        cat_adverserial_loss += discriminator.loss_fn(bias_global_prediction, target)  
+
+                    # perturbation adversary
+                    bias_global_prediction = self.pert_discriminator['discriminator'](bias_global) 
+                    if self.pert_discriminator['discriminator'].n_labels == 2:
+                        target = X_in_ if not self.gradient_ascent else 1 - X_in_
                     else:
+                        target = X_in_.argmax(dim=1)
+                        no_pert = X_in_.sum(dim=1) == 0  
+                        target[no_pert] = self.pert_discriminator['discriminator'].n_labels - 1
+
                         if self.gradient_ascent:
                             utils.set_seeds(self.mod.seed + e + batch)
                             target = self.flip_labels_proportional(true_labels = target, 
-                                                                           classes = self.cat_class_probs[covariate_cat]['classes'], 
-                                                                           probs = self.cat_class_probs[covariate_cat]['probs'], 
-                                                                           n_labels = discriminator.n_labels)
+                                                                        classes = self.pert_class_probs['classes'], 
+                                                                        probs = self.pert_class_probs['probs'], 
+                                                                        n_labels = self.pert_discriminator['discriminator'].n_labels)
+                    pert_adverserial_loss = self.pert_discriminator['discriminator'].loss_fn(bias_global_prediction, target) 
 
-                    cat_adverserial_loss += discriminator.loss_fn(bias_global_prediction, target)  
-
-                # perturbation adversary
-                bias_global_prediction = self.pert_discriminator['discriminator'](bias_global) 
-                if self.pert_discriminator['discriminator'].n_labels == 2:
-                    target = X_in_ if not self.gradient_ascent else 1 - X_in_
-                else:
-                    target = X_in_.argmax(dim=1)
-                    no_pert = X_in_.sum(dim=1) == 0  
-                    target[no_pert] = self.pert_discriminator['discriminator'].n_labels - 1
-                    
                     if self.gradient_ascent:
-                        utils.set_seeds(self.mod.seed + e + batch)
-                        target = self.flip_labels_proportional(true_labels = target, 
-                                                                       classes = self.pert_class_probs['classes'], 
-                                                                       probs = self.pert_class_probs['probs'], 
-                                                                       n_labels = self.pert_discriminator['discriminator'].n_labels)
-                pert_adverserial_loss = self.pert_discriminator['discriminator'].loss_fn(bias_global_prediction, target) 
-                
-                if self.gradient_ascent:
-                    # goal is worse accuracy of discriminator
-                    # without label flipping trick, we are maximizing the loss of the actual labels
-                    # conversely, with label flipping, we are minimizing the loss with flipped labels
-                    pert_adverserial_loss = -pert_adverserial_loss
-                    cat_adverserial_loss = -cat_adverserial_loss
+                        # goal is worse accuracy of discriminator
+                        # without label flipping trick, we are maximizing the loss of the actual labels
+                        # conversely, with label flipping, we are minimizing the loss with flipped labels
+                        pert_adverserial_loss = -pert_adverserial_loss
+                        cat_adverserial_loss = -cat_adverserial_loss
 
                 tot_pred_loss = tot_pred_loss - (cur_catdisc_lambda*cat_adverserial_loss) - (cur_pertdisc_lambda*pert_adverserial_loss)
 
 
                 # model gradient
                 tot_pred_loss.backward()
-                vae_grad_l2 = self.get_global_l2_norm(self.mod.signaling_network.vae) # tracking
+
+                # tracking
+                vae_grad_l2 = 0
+                if self.n_adversarial_start <= e:
+                    vae_grad_l2 = self.get_global_l2_norm(self.mod.signaling_network.vae) 
+
                 self.add_gradient_noise(cur_lr, e, batch)
-#                 self.mod.add_gradient_noise(noise_level = self.hyper_params['gradient_noise_scale'])
+    #                 self.mod.add_gradient_noise(noise_level = self.hyper_params['gradient_noise_scale'])
                 self.prediction_optimizer.step()
+                if not self._no_vae:
+                    self.vae_learning['optimizer'].step()
                 self.mod.signaling_network.implement_mask() # moved out of forward pass to ensure after last backpass these are 0
 
-                # unfreeze discriminator for training in next epoch/batch
-                for discriminator in self.cat_discriminator['discriminators'].values():
-                    unfreeze_model(model = discriminator)
-                unfreeze_model(model = self.pert_discriminator['discriminator'])
-                    
                 # NOTE: 
                 # a good adverserial check here is to see if the discriminator parameter gradients have changed since 
                 # calling cat_discriminator_loss.backward(); they should not have, but i've found calling the discriminator forward pass 
                 # during the adversarial training and the tot_pred_loss.backward() does update them unless I manually freeze them
 
-                
+
                 # bias global masking can stay in forward pass because it is generated during the forward pass and 
                 # won't be updated in the back pass
 
-                sv = np.array([e + 1, batch, cur_lr, self.cat_discriminator['_cur_lr'], self.pert_discriminator['_cur_lr'],
+                sv = np.array([e + 1, batch, cur_lr, self.cat_discriminator['_cur_lr'], self.pert_discriminator['_cur_lr'], self.vae_learning['_cur_lr'],
                             time.time() - start_time, spectral_radius, 
                     self.mod.signaling_network.count_sign_mismatch(), 
                     tot_pred_loss.detach().item(), prediction_loss.detach().item(), #train_pearson_r, 
@@ -1699,12 +1847,12 @@ class TrainSC(TrainBase):
 
 
                 self.stats['train'] = np.vstack((self.stats['train'], sv))
-                
+
                 # comparable tracking of train data with test data
                 if self.track_test or self.track_validation:
                     eval_sv = self.evaluate_loss(y_out_, X_in_, covariates_idx_, expr_, e, batch)
                     self.stats['train_eval'] = np.vstack((self.stats['train_eval'], eval_sv))
-                
+
                 # free up CUDA mem
                 del sign_reg, stability_loss, uniform_reg, param_reg, prediction_loss
                 del input_param_reg, sn_param_reg, output_param_reg
@@ -1715,8 +1863,11 @@ class TrainSC(TrainBase):
                 utils.clear_memory()
 
             self.lr_scheduler.step()
-            self.cat_discriminator['lr_scheduler'].step()
-            self.pert_discriminator['lr_scheduler'].step()
+            if self.n_adversarial_start <= e:
+                self.cat_discriminator['lr_scheduler'].step()
+                self.pert_discriminator['lr_scheduler'].step()
+            if not self._no_vae:
+                self.vae_learning['lr_scheduler'].step()
 
             # test/validation
             data_types = []
@@ -1742,7 +1893,7 @@ class TrainSC(TrainBase):
                     log_error += ' for layers ' + ', '.join(param_names)
                     logging.error(log_error)
                     raise ValueError(log_error)
-                    
+
                 # masks implemented correctly
                 correct_masking = True
                 for idx, cat_group in enumerate(self.mod.signaling_network.cat_embeddings.keys()):
@@ -1753,24 +1904,27 @@ class TrainSC(TrainBase):
                 mask_coords = torch.nonzero(self.mod.signaling_network.mask.detach())
                 if not (self.mod.signaling_network.weights.detach()[mask_coords[:, 0], mask_coords[:, 1]] == 0).all():
                     correct_masking = False
-                mask_coords = torch.nonzero(self.mod.signaling_network.bias_mask.T.expand(bias_global.shape[0], -1))
-                if not (bias_global.detach()[mask_coords[:, 0], mask_coords[:, 1]] == 0).all():
-                    correct_masking = False
+                # mask_coords = torch.nonzero(self.mod.signaling_network.bias_mask.T.expand(bias_global.shape[0], -1))
+                # if not (bias_global.detach()[mask_coords[:, 0], mask_coords[:, 1]] == 0).all():
+                #     correct_masking = False
                 if not correct_masking:
                     log_error = 'Masking is not being implemented correctly'
                     logging.error(log_error)
                     raise ValueError(log_error)
-                    
+
                 if verbose:
                     self.print_stats(e)
 
-            if np.logical_and(e % self.hyper_params['reset_optimizer_epoch'] == 0, e>0):
-                self.prediction_optimizer.state = self.reset_state.copy()
-            if (e % self.cat_discriminator['params']['reset_optimizer_epoch'] == 0) and e > 0:
-                self.cat_discriminator['optimizer'].state = self.cat_discriminator['reset_state'].copy()
-            if (e % self.pert_discriminator['params']['reset_optimizer_epoch'] == 0) and e > 0:
-                self.pert_discriminator['optimizer'].state = self.pert_discriminator['reset_state'].copy()
-        
+            # deprresetting state
+            # if np.logical_and(e % self.hyper_params['reset_optimizer_epoch'] == 0, e>0):
+            #     self.prediction_optimizer.state = self.reset_state.copy()
+            # if ((e - self.n_adversarial_start) % self.cat_discriminator['params']['reset_optimizer_epoch'] == 0) and e > (self.n_adversarial_start + 1):
+            #     self.cat_discriminator['optimizer'].state = self.cat_discriminator['reset_state'].copy()
+            # if ((e - self.n_adversarial_start) % self.pert_discriminator['params']['reset_optimizer_epoch'] == 0) and e > (self.n_adversarial_start + 1):
+            #     self.pert_discriminator['optimizer'].state = self.pert_discriminator['reset_state'].copy()
+            # if ((e - self.n_adversarial_start) % self.vae_learning['params']['reset_optimizer_epoch'] == 0) and e > (self.n_adversarial_start + 1):
+            #     self.vae_learning['optimizer'].state = self.vae_learning['reset_state'].copy()
+
         # format the tracking metrics
         self.stats['train'] = pd.DataFrame(data = self.stats['train'], columns = self._stats_cols)
         reg_idx = [col_idx for col_idx, col_name in enumerate(self.stats['train'].columns.tolist()) if col_name.startswith('sn_param_reg')]
@@ -1778,38 +1932,38 @@ class TrainSC(TrainBase):
 
         reg_idx = [col_idx for col_idx, col_name in enumerate(self.stats['train'].columns.tolist()) if col_name.startswith('output_param_reg')]
         self.stats['train'].insert(max(reg_idx) + 1, 'output_param_reg_tot_loss', self.stats['train'].iloc[:, reg_idx].sum(axis = 1))
-        
+
         # sanity check
         loss_cols = [
-               'train_loss_prediction', 'sign_reg_loss',
-               'stability_reg_loss', 'uniform_reg_loss', 'input_param_reg_loss',
-               'sn_param_reg_tot_loss', 'output_param_reg_tot_loss', 'vae_param_reg_loss', 'global_bias_kl_divergence', 'sn_param_reg_weights_kl_divergence']
+                'train_loss_prediction', 'sign_reg_loss',
+                'stability_reg_loss', 'uniform_reg_loss', 'input_param_reg_loss',
+                'sn_param_reg_tot_loss', 'output_param_reg_tot_loss', 'vae_param_reg_loss', 'global_bias_kl_divergence', 'sn_param_reg_weights_kl_divergence']
 
         reg_tot = self.stats['train'][loss_cols].sum(axis = 1)
         if not np.allclose(reg_tot - self.stats['train']['cat_adverserial_loss'] - self.stats['train']['pert_adverserial_loss'], self.stats['train']['train_loss_total']):
             warnings.warn('Training loss tracking is incorrect')
-        
+
         if not np.allclose(self.stats['train']['cat_discriminator_loss_total'], 
-                           self.stats['train'][['cat_discriminator_loss_prediction', 
+                            self.stats['train'][['cat_discriminator_loss_prediction', 
                                                 'cat_discriminator_param_reg_loss']].sum(axis = 1)):
             raise ValueError('Categorical discriminator loss tracking is incorrect')
         if not np.allclose(self.stats['train']['pert_discriminator_loss_total'], 
-                           self.stats['train'][['pert_discriminator_loss_prediction', 
+                            self.stats['train'][['pert_discriminator_loss_prediction', 
                                                 'pert_discriminator_param_reg_loss']].sum(axis = 1)):
             raise ValueError('Perturbation discriminator loss tracking is incorrect')
-        
-        
+
+
         if self.track_test or self.track_validation:
             self.stats['train_eval'] = pd.DataFrame(data = self.stats['train_eval'], columns = self._stats_cols_eval)
             if self.track_test:
                 self.stats['test'] = pd.DataFrame(data = self.stats['test'], columns = self._stats_cols_eval) 
             if self.track_validation:
                 self.stats['validation'] = pd.DataFrame(data = self.stats['validation'], columns = self._stats_cols_eval) 
-        
+
         self.stats['gradient_noise'] = pd.DataFrame(data = self.stats['gradient_noise'], 
                                                     columns = self._noise_cols)
 
-        
+
         if verbose:
             mins, secs = divmod(time.time() - start_time, 60)
             print("Training ran in: {:.0f} min {:.2f} sec".format(mins, secs))

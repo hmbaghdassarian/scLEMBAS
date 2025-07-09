@@ -180,7 +180,7 @@ class FCLayers(nn.Module):
     DEFAULT_HYPER_PARAMS = {'batch_momentum': 0.01, 'layer_norm': False, 'spectral_norm': False,
                             'dropout_rate': 0.1,
                         'activation_fn': nn.ReLU, # can make as None to have purely linear
-                            'initialize': True
+                            # 'initialize': True
                         }
     def __init__(self, layers: List[int],
                  batch_momentum: float = 0.01,
@@ -188,7 +188,7 @@ class FCLayers(nn.Module):
                  spectral_norm: bool = False,
                  dropout_rate: int | float = 0.1,
                  activation_fn: nn.Module | None = nn.ReLU,
-                 initialize: bool = True,
+                #  initialize: bool = True,
                  dtype: torch.dtype=torch.float32,
                  device: str = 'cpu', 
                 ):
@@ -230,7 +230,7 @@ class FCLayers(nn.Module):
         self.activation_fn = activation_fn
         self.dtype = dtype
         self.device = device
-        self.initialize = initialize
+        # self.initialize = initialize
 
         # check only one type of normalization is being applied
         norm_flags = [
@@ -253,8 +253,8 @@ class FCLayers(nn.Module):
         linear_layer = nn.Linear(in_features = n_in, out_features = n_out, bias = True, 
                                                        device = self.device, dtype = self.dtype)
         
-        if self.initialize:
-            self._initialize_weights(linear_layer)
+        # if self.initialize:
+        self._initialize_weights(linear_layer)
         if self.spectral_norm:
             linear_layer = nn.utils.spectral_norm(linear_layer)
         
@@ -300,6 +300,7 @@ class GaussianVariationalEncoder(nn.Module):
     DEFAULT_HYPER_PARAMS = {f"vae_{key}": value for key, value in 
                             {**FCLayers.DEFAULT_HYPER_PARAMS, 
                             **{'n_hidden_nodes': [1024, 768, 512], 'var_min': 1e-4}}.items()}
+    del DEFAULT_HYPER_PARAMS['vae_spectral_norm']
     
     def __init__(self, n_features: int, n_latent: int,
                  var_min: float = 1e-4,
@@ -309,7 +310,7 @@ class GaussianVariationalEncoder(nn.Module):
                  layer_norm: bool = False,
                  dropout_rate: int | float = 0.1,
                  activation_fn: nn.Module | None = nn.LeakyReLU,
-                 initialize: bool = False, 
+                #  initialize: bool = False, 
                  dtype: torch.dtype=torch.float32,
                  device: str = 'cpu', 
                  seed: int = 888
@@ -375,7 +376,7 @@ class GaussianVariationalEncoder(nn.Module):
                                       layer_norm = layer_norm,
                                       spectral_norm = False,
                                       dropout_rate = dropout_rate,
-                                      initialize = initialize,
+                                    #   initialize = initialize,
                                       activation_fn = activation_fn,
                                       dtype = self.dtype, device = self.device)
         self.z_mean = nn.Linear(n_encode_in, n_encode_out, device = self.device, dtype = self.dtype)
@@ -521,7 +522,7 @@ class CatDiscriminator(nn.Module):
         rnn_params: dict = {'activation_function': 'MML', 'leak': 0.01}, 
         smooth_labels: bool = False, 
         epsilon_smooth: float = 0.1,
-        initialize: bool = True,
+        # initialize: bool = True,
         dtype: torch.dtype=torch.float32,
         device: str = 'cpu', 
         seed: int = 888, 
@@ -610,13 +611,13 @@ class CatDiscriminator(nn.Module):
                                    spectral_norm = spectral_norm,
                                    dropout_rate = dropout_rate, 
                                    activation_fn = activation_fn, 
-                                   initialize = initialize,
+                                #    initialize = initialize,
                                    dtype = self.dtype, device = self.device))
         cat_layers.append(FCLayers(layers = [n_hidden_nodes[-1], out_features], 
                                    dtype = self.dtype, device = self.device,
                                    batch_momentum = None, layer_norm = False, 
-                                   spectral_norm = spectral_norm, dropout_rate = None, activation_fn = None, 
-                                  initialize = initialize))
+                                   spectral_norm = spectral_norm, dropout_rate = None, activation_fn = None))
+                                #   initialize = initialize))
 
         self.classifier = nn.Sequential(*cat_layers)
 

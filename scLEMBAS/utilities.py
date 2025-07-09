@@ -14,7 +14,7 @@ def clear_memory():
     gc.collect()
     torch.cuda.empty_cache()
     torch.cuda.ipc_collect()
-    torch.cuda.reset_peak_memory_stats()
+#     torch.cuda.reset_peak_memory_stats()
 
 
 def set_seeds(seed: int=888):

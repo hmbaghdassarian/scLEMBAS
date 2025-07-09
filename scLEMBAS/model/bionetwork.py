@@ -26,7 +26,7 @@ from ..utilities import set_seeds
 class BioNetBase(nn.Module):
     """Builds the RNN on the signaling network topology."""
     
-    DEFAULT_PARAMETERS = {'target_steps': 100, 'max_steps': 300, 'exp_factor': 20, 'leak': 0.01, 'tolerance': 1e-5}
+    DEFAULT_PARAMETERS = {'target_steps': 100, 'max_steps': 150, 'exp_factor': 50, 'leak': 0.01, 'tolerance': 1e-5}
 
     def __init__(self, edge_list: np.array, 
                  edge_MOA: np.array, 
@@ -849,7 +849,7 @@ class BioNetSC(BioNetCat):
                                    layer_norm = self.bionet_params['vae_layer_norm'], 
                                    dropout_rate = self.bionet_params['vae_dropout_rate'], 
                                    activation_fn = self.bionet_params['vae_activation_fn'],
-                                   initialize =  self.bionet_params['vae_initialize'],
+                                #    initialize =  self.bionet_params['vae_initialize'],
                                               device = self.device, dtype = self.dtype, 
                                               seed = seed
                                   )

@@ -75,7 +75,7 @@ tf_adata = io.read_tfad(os.path.join(data_path, 'processed', author + '_consensu
 # 1) Mean accuracy score across 5-fold CV of a logistic regression classifier trained on the PLS components (cannot directly use PLS model CV because it is technically a regression model on the one-hot encodings, and the high R^2 does not necessarily mean high classification accuracy)
 # 2) Explained variance in the X and y blocks
 
-# In[13]:
+# In[4]:
 
 
 def ss_explained_var(Y, Y_pred):
@@ -88,15 +88,22 @@ def prepare_input_matrix(tf_adata,
                          control_confounders = True, 
                         enc_X = None):
     
-    """Prepares input for PLSR, and fits one-hot encodings of confounding categorical covariates (cell line)"""
+    """Prepares input for PLSR, and fits one-hot encodings of 
+    confounding categorical covariates (cell line and plate)
+    
+    *Note, noticed that adding in cell cycle scores doesn't make a difference, but including
+    the plate does make a substantial difference in assessment metrics. 
+    """
     X = tf_adata.X
     if control_confounders:
-        # covariates
-#         cell_line = tf_adata.obs['cell_line'].astype(str).values
-#         plate = tf_adata.obs['plate'].astype(str).values
+#         # covariates
+        cell_line = tf_adata.obs['cell_line'].astype(str).values
+        plate = tf_adata.obs['plate'].astype(str).values
 
-#         enc_X = OneHotEncoder(sparse_output=False, drop='first')  # drop to avoid collinearity
-#         covariates = enc_X.fit_transform(np.stack([cell_line, plate], axis=1)) # plate + cell
+        if enc_X is None:
+            enc_X = OneHotEncoder(sparse_output=False, drop='first')  # drop to avoid collinearity
+            enc_X.fit(np.stack([cell_line, plate], axis=1))
+            covariates = enc_X.transform(np.stack([cell_line, plate], axis=1)) 
 
 #         cell_cycle_scores = np.concatenate([
 #             tf_adata.obs['S_score'].values.reshape(-1, 1),
@@ -107,14 +114,6 @@ def prepare_input_matrix(tf_adata,
 #         cell_cycle_scaled = scaler.fit_transform(cell_cycle_scores)
 
 #         X = np.concatenate([X, covariates, cell_cycle_scaled], axis=1)
-
-        cell_line = tf_adata.obs['cell_line'].astype(str).values.reshape(-1, 1)
-    
-        if enc_X is None:
-            enc_X = OneHotEncoder(sparse_output=False, drop='first')
-            enc_X.fit(cell_line)
-        covariates = enc_X.transform(cell_line)
-
         X = np.concatenate([X, covariates], axis=1)
     return X, enc_X
 
@@ -197,12 +196,12 @@ def pls_da(tf_adata,
     return models, assessment, X_pls
 
 
-# In[338]:
+# In[5]:
 
 
 assessment_df = []
 pls_components_max = 25
-for n_components in trange(1, pls_components_max + 1):
+for n_components in tqdm(range(pls_components_max, 0, -1)): #(1, pls_components_max + 1):
     _, assessment, _= pls_da(tf_adata = tf_adata, 
                                  n_components = n_components ,
                                  control_confounders = True, 
@@ -214,4 +213,5 @@ for n_components in trange(1, pls_components_max + 1):
     assessment_df.append(assessment)
     
 assessment_df = pd.DataFrame(assessment_df)
-assessments_df.to_csv(os.path.join(data_path, 'interim', author + '_PLS_drug_scores.csv'))
+assessment_df = assessment_df.sort_values(by = 'n_components').reset_index(drop = True)
+assessment_df.to_csv(os.path.join(data_path, 'interim', author + '_PLS_drug_scores.csv'))
