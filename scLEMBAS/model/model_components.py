@@ -634,14 +634,7 @@ class CatDiscriminator(nn.Module):
         smoothed_labels = one_hot * (1 - self.epsilon_smooth) + self.epsilon_smooth / self.n_labels
         log_probs = F.log_softmax(logits, dim=1)
         return F.kl_div(log_probs, smoothed_labels, reduction='batchmean')
-
-    def get_probability(self, y):
-        """Calculate the probability from output logits."""
-        if self.n_labels > 2:
-            return F.softmax(y.detach(), dim=-1)
-        else:
-            return F.sigmoid(y.detach(), dim = -1) # probability of the "positive" (labeled "1") layer
-        
+    
     def L2_reg(self, lambda_L2: Annotated[float, Ge(0)] = 0):
         """Get the L2 regularization term for the linear layers' parameters.
         
@@ -665,3 +658,60 @@ class CatDiscriminator(nn.Module):
             regularization_loss = lambda_L2 * regularization_loss
         
         return regularization_loss
+
+    def get_probability(self, y):
+        """Calculate the probability from output logits."""
+        if self.n_labels > 2:
+            return F.softmax(y.detach(), dim=-1)
+        else:
+            return F.sigmoid(y.detach(), dim = -1) # probability of the "positive" (labeled "1") layer
+        
+    def random_loss(self, class_probs):
+        """
+        Calculates the expected loss of a discriminator with random predictions.
+
+        To estimate the baseline KL divergence for a random discriminator under label smoothing, 
+        we compute the average KL divergence between each smoothed one-hot label 
+        (i.e., the softened target for each class) and a fixed "random" prediction distribution (class-weighted). 
+        This simulates the expected loss a discriminator would incur if it always output the same uninformative 
+        prediction, allowing us to benchmark how well it is performing compared to chance. 
+        By averaging across all possible true classes, we account for the full range of label configurations 
+        the discriminator might encounter.
+
+
+        Parameters
+        ----------
+        class_probs 
+            an array of the probabilities of each class for weighting unbalanced classes in random loss calculation
+        """
+
+    #     class_probs = tf_adata[train_cells,:].obs[cat_col].value_counts(normalize = True).values
+        if self.n_labels != 2 and self.smooth_labels:
+            loss_type = 'KL_divergence'
+        else:
+            loss_type = 'cross_entropy'
+
+        if len(class_probs) != self.n_labels:
+            raise ValueError('The class_probs must be the same length as self.n_labels')
+
+        if loss_type == 'cross_entropy':
+            return -np.sum(class_probs * np.log(class_probs))
+        else: # loss_type == 'KL_divergence':
+            total_kl = 0
+
+            Q = torch.tensor(class_probs, dtype=torch.float32) # random prediction
+            log_Q = torch.log(Q + 1e-10)
+
+            for i in range(self.n_labels):
+                # Smoothed target for class i
+                one_hot = np.zeros(self.n_labels)
+                one_hot[i] = 1
+                smoothed = one_hot * (1 - self.epsilon_smooth) + self.epsilon_smooth / self.n_labels
+
+                P = torch.tensor(smoothed, dtype=torch.float32) # label-smoothing adjusted true target
+
+                kl = F.kl_div(log_Q, P, reduction='sum')
+                total_kl += class_probs[i] * kl.item() # gives a weighted average
+
+            return total_kl
+        

@@ -3,7 +3,7 @@ Helper functions for running and training the SignalingModel.
 """
 import os
 import time
-from typing import List
+from typing import List, Literal
 import gc
 
 import torch
@@ -181,8 +181,6 @@ def get_lr(iter: int, max_iter: int, max_height: float = 1e-3,
 #     msg += ', r={:.5f}'.format(stats_df.loc[epoch, 'learning_rate'])
 #     msg += ', v={:.5f}'.format(stats_df.loc[epoch, 'n_moa_violations'])
 #     print(msg)
-    
-
 
 def get_moving_average(values: np.array, n_steps: int):
     """Get the moving average of a tracked state across n_steps. Serves to smooth value. 
@@ -211,6 +209,70 @@ def flatten_list(nested_list):
     Flattens a list of lists into a single list.
     """
     return [item for sublist in nested_list for item in sublist]
+
+
+def random_discriminator_loss(
+    n_labels: int,
+    class_probs,
+    epsilon_smooth: float = None ,
+    loss_type: Literal['KL_divergence', 'cross_entropy'] = 'KL_divergence'):
+    """
+    Calculates the expected loss of a discriminator with random predictions.
+    
+    To estimate the baseline KL divergence for a random discriminator under label smoothing, 
+    we compute the average KL divergence between each smoothed one-hot label 
+    (i.e., the softened target for each class) and a fixed "random" prediction distribution (class-weighted). 
+    This simulates the expected loss a discriminator would incur if it always output the same uninformative 
+    prediction, allowing us to benchmark how well it is performing compared to chance. 
+    By averaging across all possible true classes, we account for the full range of label configurations 
+    the discriminator might encounter.
+    
+    This is the same function as the method in the CatDiscriminator class.
+    
+
+    Parameters
+    ----------
+    n_labels : int
+        the total number of labels
+    class_probs 
+        an array of the probabilities of each class for weighting unbalanced classes in random loss calculation
+    epsilon_smooth : float, optional
+        the smoothing parameter used for the labels, by default None
+    loss_type : Literal['KL_divergence', 'cross_entropy'], optional
+        the loss type used by the discriminator, by default 'KL_divergence'
+    """
+    
+#     class_probs = tf_adata[train_cells,:].obs[cat_col].value_counts(normalize = True).values
+    
+    if (epsilon_smooth is None) or (n_labels == 2) and loss_type == 'KL_divergence':
+        raise ValueError('Expected cross entropy loss')
+    if len(class_probs) != n_labels:
+        raise ValueError('The class_probs must be the same length as n_labels')
+        
+    if loss_type == 'cross_entropy':
+        return -np.sum(class_probs * np.log(class_probs))
+    elif loss_type == 'KL_divergence':
+        total_kl = 0
+        
+        Q = torch.tensor(class_probs, dtype=torch.float32) # random prediction
+        log_Q = torch.log(Q + 1e-10)
+        
+        for i in range(n_labels):
+            # Smoothed target for class i
+            one_hot = np.zeros(n_labels)
+            one_hot[i] = 1
+            smoothed = one_hot * (1 - epsilon_smooth) + epsilon_smooth / n_labels
+
+            P = torch.tensor(smoothed, dtype=torch.float32) # label-smoothing adjusted true target
+            
+            
+
+            kl = F.kl_div(log_Q, P, reduction='sum')
+            total_kl += class_probs[i] * kl.item() # gives a weighted average
+
+        return total_kl
+    else:
+        raise ValueError('Incorrect loss type specified')
 
 # import copy
 # mod_rand = copy.deepcopy(mod)

@@ -1937,7 +1937,7 @@ class TrainSC(TrainBase):
         loss_cols = [
                 'train_loss_prediction', 'sign_reg_loss',
                 'stability_reg_loss', 'uniform_reg_loss', 'input_param_reg_loss',
-                'sn_param_reg_tot_loss', 'output_param_reg_tot_loss', 'vae_param_reg_loss', 'global_bias_kl_divergence', 'sn_param_reg_weights_kl_divergence']
+                'sn_param_reg_tot_loss', 'output_param_reg_tot_loss', 'vae_param_reg_loss', 'global_bias_kl_divergence']
 
         reg_tot = self.stats['train'][loss_cols].sum(axis = 1)
         if not np.allclose(reg_tot - self.stats['train']['cat_adverserial_loss'] - self.stats['train']['pert_adverserial_loss'], self.stats['train']['train_loss_total']):
