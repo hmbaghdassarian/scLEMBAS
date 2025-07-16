@@ -58,11 +58,19 @@ def write_tfad(tf_adata: anndata.AnnData, file_name: str):
     file_name : str
         full path and file name to write tf_adata
     """
-    for embedding in ['pca', 'umap']:
+    for embedding in ['pca', 'umap', 'pls', 'umap_pls']:
         if embedding in tf_adata.uns:
             if embedding + '_mod' in tf_adata.uns[embedding]:
-                write_pickled_object(tf_adata.uns[embedding][embedding + '_mod'], file_name.replace('.h5ad', embedding + '.pickle'))
+                write_pickled_object(tf_adata.uns[embedding][embedding + '_mod'], 
+                             file_name.replace('.h5ad', embedding + '.pickle'))
                 del tf_adata.uns[embedding][embedding + '_mod']
+
+                if embedding == 'pls':
+                    for encoder in ['encoder_x', 'encoder_y']:
+                        write_pickled_object(tf_adata.uns[embedding][encoder], 
+                                 file_name.replace('.h5ad', encoder + '.pickle'))
+                        del tf_adata.uns[embedding][encoder]
+    
     tf_adata.write_h5ad(os.path.join(file_name))
 
 def read_tfad(file_name: str):
@@ -75,9 +83,13 @@ def read_tfad(file_name: str):
     """
 
     tf_adata = sc.read_h5ad(file_name)
-    for embedding in ['pca', 'umap']:
+    for embedding in ['pca', 'umap', 'pls', 'umap_pls']:
         file_name_ = file_name.replace('.h5ad', embedding +'.pickle')
         if os.path.isfile(file_name_):
             tf_adata.uns[embedding][embedding + '_mod'] = read_pickled_object(file_name_)
+
+            if embedding == 'pls':
+                for encoder in ['encoder_x', 'encoder_y']:
+                    tf_adata.uns[embedding][encoder] = read_pickled_object(file_name.replace('.h5ad', encoder + '.pickle'))
 
     return tf_adata

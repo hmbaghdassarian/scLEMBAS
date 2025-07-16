@@ -4,30 +4,30 @@
 import random
 from collections import defaultdict
 import os
-from typing import Literal
+from typing import Literal, List
 import joblib
 
 from tqdm import tqdm, trange
 
-from tqdm import trange
 
 import numpy as np
 import pandas as pd
 import scanpy as sc
 
 from sklearn.model_selection import KFold, StratifiedKFold, cross_val_score
-from sklearn.metrics import normalized_mutual_info_score
+# from sklearn.metrics import normalized_mutual_info_score
 from sklearn.cross_decomposition import PLSRegression
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.pipeline import make_pipeline
 
-
 import torch
+from geomloss import SamplesLoss
 
 import sys
 sclembas_path = '/home/hmbaghda/Projects/scLEMBAS'
 sys.path.insert(1, os.path.join(sclembas_path))
 from scLEMBAS import utilities as utils
+from scLEMBAS import preprocess as pp
 
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -57,7 +57,7 @@ def prepare_input_matrix(adata,
         if enc_X is None:
             enc_X = OneHotEncoder(sparse_output=False, drop='first')  # drop to avoid collinearity
             enc_X.fit(np.stack([cell_line, plate], axis=1))
-            covariates = enc_X.transform(np.stack([cell_line, plate], axis=1)) 
+        covariates = enc_X.transform(np.stack([cell_line, plate], axis=1)) 
 
 #         cell_cycle_scores = np.concatenate([
 #             adata.obs['S_score'].values.reshape(-1, 1),
@@ -485,6 +485,8 @@ def setup_prediction(mod,
     
     iterable_conds = test_conds if counterfactual is not None else train_conds
     
+    counterfactual_cond_map = {} # map from control to prediction
+    
     plates = []
     for cond in tqdm(sorted(iterable_conds)):
         ct, pert = cond.split('^')
@@ -495,6 +497,8 @@ def setup_prediction(mod,
             ctrl_cond = cat_counterfactual_map[cond] + '^' + pert
         elif counterfactual == None: # no counterfactual, just predict the same thing
             ctrl_cond = cond
+            
+        counterfactual_cond_map[cond] = ctrl_cond
 
         if not ctrl_cond in train_conds:
             raise ValueError('The control condition {} for asking the counterfactual is not in the train conditions'.format(ct))
@@ -539,6 +543,7 @@ def setup_prediction(mod,
         obs.loc[ctrl_cells, pert_col] = ctrl_pert
 
     obs['condition'] = obs[cat_col].astype(str) + '^' + obs[pert_col].astype(str)
+    obs['counterfactual_condition'] = obs.condition.map(counterfactual_cond_map)
     obs['plate'] = plates
     
     for col in obs:
@@ -899,40 +904,195 @@ def get_prediction(mod,
 #     return_full = False
 # )
 # ----------------------------------------USAGE----------------------------------------
-def adata_dimviz_bias(adata, reduction_type, cat, subset_size = int(1e4), seed = 888):
-    """reduction type is one of ['pca', 'umap', 'pls', 'umap_pls']
-    
-    umap_pls is the categorical umap built off the pls output, where as umap is the standard one built off the pca output.
-    
+
+def get_loss(tf_adata, tf_adata_predicted, device = device):
+    """Calculates the loss between predicted and actual data per condition. 
+    geom_loss by default normalizes to sample size so that doesn't need to be done. 
+    Does take average across conditions for the total loss (rather than simply summing), so that it does not change with 
+    the number of conditions 
     """
-    reduction_type_ = reduction_type
-    if reduction_type == 'pls':
-        viz_df = pd.DataFrame(adata.uns['pls']['X_pls'])
-    elif reduction_type == 'umap_pls':
-        viz_df = pd.DataFrame(adata.uns['pls']['umap_embedding'])
-        reduction_type_ = 'umap (pls)'
+    loss_fn = SamplesLoss("sinkhorn", p=2, blur=0.05).to(device)
+    loss = {}
+    conds = tf_adata_predicted.obs.condition.unique()
+    for cond in conds:
+        y_predicted = torch.tensor(tf_adata_predicted[tf_adata_predicted.obs.condition == cond, ].to_df().values).to(device)
+        y_actual = torch.tensor(tf_adata[tf_adata.obs.condition == cond, ].to_df().values).to(device)
+        loss[cond] = loss_fn(y_predicted, y_actual)
+        utils.clear_memory()
+    loss['Mean EMD Loss'] = sum(loss.values())/len(loss) # averaged across condition to not scale with n_conditions
+    
+    
+    return {k: float(v.cpu().numpy()) for k,v in loss.items()}
+
+
+def project_prediction(
+    tf_adata, 
+    tf_adata_predicted, 
+    linear_projection: Literal['pca', 'pls'], 
+    run_umap: bool = True
+):
+    """Projects the predicted data into the existing embedding.
+
+    Parameters
+    ----------
+    tf_adata : _type_
+        the actual TF activity data, with necessary embedding objects
+    tf_adata_predicted : _type_
+        the predicted TF activity data, with necessary embedding objects
+    linear_projection : Literal['pca', 'pls']
+        the linear embedding to use
+    run_umap : bool, optional
+        whether to run umap on the linear embedding output, by default True
+    """
+
+    lp_mod = tf_adata.uns[linear_projection][linear_projection + '_mod']
+    lp_rank = tf_adata.uns[linear_projection][linear_projection + '_rank']
+
+    if linear_projection == 'pca':
+        X_in_pred = tf_adata_predicted.to_df().values
+    elif linear_projection == 'pls':
+        X_in_pred, _ = prepare_input_matrix(adata = tf_adata_predicted,
+                            control_confounders = True,
+                            enc_X = tf_adata.uns['pls']['encoder_x'])
+
+    X_lp_pred = lp_mod.transform(X_in_pred)
+
+    if run_umap:
+        umap_key = 'umap' if linear_projection == 'pca' else 'umap_pls'
+
+        umap_mod = tf_adata.uns[umap_key][umap_key + '_mod']
+        umap_embedding_pred = umap_mod.transform(X_lp_pred[:, :lp_rank])
+
+    # join the models
+    tf_adata_actual = tf_adata.copy()
+    tf_adata_actual.obs['batch'] = 'actual'
+    tf_adata_actual.obs['counterfactual_condition'] = None # to retain this column in the predicted object
+
+    tf_adata_predicted.obs['batch'] = 'predicted'
+
+    tf_adata_merged = sc.concat([tf_adata_actual, tf_adata_predicted])
+    tf_adata_merged.obs['barcode'] = tf_adata_merged.obs.index.tolist()
+
+    if len(set(tf_adata_merged.obs_names)) < len(tf_adata_merged.obs_names):
+        tf_adata_merged.obs_names_make_unique()
+
+    # add the embeddings
+    tf_adata_merged.obsm['X_' + linear_projection] = np.concatenate(
+        [tf_adata_actual.obsm['X_' + linear_projection], X_lp_pred],
+        axis = 0
+    )
+
+    if run_umap:
+        tf_adata_merged.obsm['X_' + umap_key] = np.concatenate(
+                [tf_adata_actual.obsm['X_' + umap_key], umap_embedding_pred],
+                axis = 0
+            )
+        
+    del tf_adata_actual
+    
+    return tf_adata_merged
+
+def all_rows_close(arr, tol=1e-5):
+    diffs = np.abs(arr[:, None, :] - arr[None, :, :])
+    return np.all(diffs <= tol)
+
+def merge_novar_predictions(tf_adata_predicted, remove_type, 
+                           pert_col = 'drug', 
+                           cat_col = 'cell_line', 
+                           atol = 1e-5):
+    """Checks that predictions without global bias don't have variance and merges."""
+
+    if remove_type == 'total_bias':
+        same_col = pert_col
+    elif remove_type == ['adj', 'global_bias']:
+        same_col = cat_col
+    elif remove_type == 'global_bias':
+        same_col = 'condition'
     else:
-        viz_df = pd.DataFrame(adata.obsm['X_' + reduction_type])
-        if reduction_type == 'pca':
-            reduction_type_ = 'pc'
+        raise ValueError('Only predictions without global bias should not vary between cells')
 
-    viz_df = pd.concat([viz_df, pd.DataFrame(adata.obs[cat]).reset_index(drop = True)], ignore_index = True, axis = 1)
+    # check that predictions are unique according to component removal
+    same_group = tf_adata_predicted.obs[same_col].unique()
+    for sg in same_group:
+        sg_adata = tf_adata_predicted[tf_adata_predicted.obs[same_col] == sg, :]
+        value_check = all_rows_close(sg_adata.to_df().values, tol = atol)
+        if not value_check:
+            raise ValueError('Expected predictions to be same by grouping for {}'.format(remove_type))
+#         else:
+#             keep_idx.append(sg_adata.obs_names[0])
+            
+    
+    # repeate, this time merging non-unique values by condition 
+    # instead of merging by "same_col" bc need a unique value per condition for visualizations
+    keep_idx = []
+    same_group = tf_adata_predicted.obs['condition'].unique()
+    for sg in same_group:
+        sg_adata = tf_adata_predicted[tf_adata_predicted.obs['condition'] == sg, :]
+        keep_idx.append(sg_adata.obs_names[0])
+    
+    return tf_adata_predicted[keep_idx, :].copy()
 
-    viz_df.columns = [reduction_type_.upper() + str(i+1) for i in range(viz_df.shape[1])]
-    viz_df.columns = viz_df.columns[:-1].tolist() + [cat]
-    
-    nmi = normalized_mutual_info_score(adata.obs.leiden, adata.obs[cat])
-    
+
+reduction_type_map = {'pca': 'pc', 
+                      'pls': 'pls', 
+                      'umap': 'umap', 
+                      'umap_pls': 'umap (pls)'}
+def adata_dimviz(
+        adata, 
+        reduction_type: Literal['pca', 'pls', 'umap', 'umap_pls'], 
+        cats: List[str], 
+        subset_size: int = int(1e4), 
+        seed: int = 888):
+    """Formats for visualization of embedding
+
+    Parameters
+    ----------
+    adata : _type_
+        AnnData object
+    reduction_type : Literal['pca', 'pls', 'umap', 'umap_pls']
+        embedding to visualize
+    cats : List[str]
+        columns in adata.obs to retain
+    subset_size : int, optional
+        proportionally subsets across all cats, by default int(1e4)
+    seed : int, optional
+        random state, by default 888
+    """
+
+
+    reduction_type_ = reduction_type_map[reduction_type]
+
+    if type(cats) != list:
+        cats = [cats]
+
+    viz_df = pd.DataFrame(adata.obsm['X_' + reduction_type])
+    viz_df = pd.concat([viz_df, pd.DataFrame(adata.obs[cats]).reset_index(drop = True)], ignore_index = True, axis = 1)
+    viz_df.columns = [reduction_type_.upper() + str(i+1) for i in range(viz_df.shape[1])][:-len(cats)] + cats
+
+
+#     nmi = normalized_mutual_info_score(adata.obs.leiden, adata.obs[cat])
+
     if subset_size is not None and subset_size < viz_df.shape[0]:
-        cell_prop = viz_df[cat].value_counts()/viz_df.shape[0]
+        grouped = viz_df.groupby(cats, observed=False)
+        cell_prop = viz_df[cats].value_counts(normalize = True)
         index_to_keep = []
-        for cell_type in viz_df[cat].unique():
-            np.random.seed(seed)
-            index_to_keep += np.random.choice(viz_df[viz_df[cat] == cell_type].index, 
-                                              size = int(np.round(cell_prop.loc[cell_type]*subset_size)), 
-                                              replace = False).tolist()
+        for cat_type, cat_df in grouped:
+            mask = (viz_df[cats].values == cat_type)
+            if len(cats) > 1:
+                mask = mask.all(axis=1)
+            all_barcodes = viz_df[mask].index
+            
+            cat_subset_size = np.round(max(1, np.round(cell_prop.loc[cat_type]*subset_size)))
+            cat_subset_size = min(cat_subset_size, len(all_barcodes))
+            cat_subset_size = int(cat_subset_size)
+
+            index_to_keep += np.random.choice(all_barcodes, 
+                         size = cat_subset_size,
+                         replace = False).tolist()
+
         viz_df = viz_df.loc[index_to_keep, :]
-    
+
     # shuffle
     viz_df = viz_df.sample(frac=1, random_state = seed).reset_index(drop=True)
-    return viz_df,nmi
+    
+    return viz_df
