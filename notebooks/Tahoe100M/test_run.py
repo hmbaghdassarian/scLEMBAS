@@ -31,7 +31,8 @@ parser.add_argument("--noadv", type=str_to_bool, required=True)
 parser.add_argument("--max_epochs", type=int, required=True)
 
 parser.add_argument("--KL_scaling", type=float, required=True)
-parser.add_argument("--n_discriminator_train", type=int, required=True)
+parser.add_argument("--n_cat_discriminator_train", type=int, required=True)
+parser.add_argument("--n_pert_discriminator_train", type = int, required = True)
 parser.add_argument("--gen_max_lr", type=float, required=True)
 parser.add_argument("--pert_spectral_norm", type=str_to_bool, required=True)
 parser.add_argument("--cat_spectral_norm", type=str_to_bool, required=True)
@@ -46,17 +47,18 @@ subset_size = args.subset_size
 no_adv = args.noadv
 KL_scaling = args.KL_scaling
 max_epochs = args.max_epochs
-n_discriminator_train = args.n_discriminator_train
+n_cat_discriminator_train = args.n_cat_discriminator_train
+n_pert_discriminator_train = args.n_pert_discriminator_train
 gen_max_lr = args.gen_max_lr
 pert_spectral_norm = args.pert_spectral_norm
 cat_spectral_norm = args.cat_spectral_norm
 cat_max_penalty_weight = args.cat_max_penalty_weight
 
 
-# python test_run.py --index 24 --subset_size 0.05 --noadv false --max_epochs 600 --KL_scaling 1e-2 --n_discriminator_train 5 --gen_max_lr 1e-2 --pert_spectral_norm true --cat_spectral_norm true --cat_max_penalty_weight 11
+# python test_run.py --index 24 --subset_size 0.05 --noadv false --max_epochs 600 --KL_scaling 1e-2 --n_cat_discriminator_train 5 --n_pert_discriminator_train 5 --gen_max_lr 1e-2 --pert_spectral_norm true --cat_spectral_norm true --cat_max_penalty_weight 11
 
 
-# In[182]:
+# In[101]:
 
 
 # fn = '24'
@@ -64,14 +66,15 @@ cat_max_penalty_weight = args.cat_max_penalty_weight
 # no_adv = False
 # KL_scaling = 1e-2
 # max_epochs = 600
-# n_discriminator_train = 5
+# n_cat_discriminator_train = 5
+# n_pert_discriminator_train = 5
 # gen_max_lr = 1e-2
 # pert_spectral_norm = True
 # cat_spectral_norm = True
 # cat_max_penalty_weight = 11
 
 
-# In[183]:
+# In[102]:
 
 
 import os
@@ -99,13 +102,13 @@ from scLEMBAS.model.scl import SignalingModel
 import Tahoe_utils as Tu
 
 
-# In[184]:
+# In[103]:
 
 
 subset = True
 
 
-# In[185]:
+# In[104]:
 
 
 n_cores = 30
@@ -125,7 +128,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Load data:
 
-# In[186]:
+# In[105]:
 
 
 sn_ppis = pd.read_csv(os.path.join(data_path, 'processed', author + '_sn_ppis.csv'), 
@@ -156,7 +159,7 @@ if len(set(tf_adata.obs.cell_line)) != len(tf_adata.obs.cell_line.cat.categories
 
 # # Train/test split:
 
-# In[187]:
+# In[106]:
 
 
 train_split, test_split = Tu.Tahoe100M_split(tf_adata,
@@ -181,19 +184,19 @@ drug_counts = pd.DataFrame({
 }).sort_values(by = 'train', ascending = True)
 
 
-# In[188]:
+# In[107]:
 
 
 cell_line_counts
 
 
-# In[189]:
+# In[108]:
 
 
 drug_counts
 
 
-# In[190]:
+# In[109]:
 
 
 if subset:
@@ -216,60 +219,46 @@ if subset:
 
 # # Hyper-parameters:
 
-# In[191]:
+# In[110]:
 
 
 def generate_lr_params(n_epochs, 
                        max_lr, 
                        lr_scaling_factor=10, 
                        lr_decay=0.75,
-                       n_restarts = 4,
-                       n_discriminator_train=5, 
-                       n_adversarial_start = 0,
+                       n_restarts=4,
+                       n_cat_discriminator_train=5,
+                       n_pert_discriminator_train=5,
+                       n_adversarial_start=0,
                        role='scl'):
     """
     Generate LR scheduler params for WarmupCosineAnnealingWarmRestarts
     that ensures discriminator and generator follow the same curve in real (epoch) time.
 
-    Parameters:
-        - n_epochs: total training epochs
-        - max_lr: peak learning rate
-        - lr_scaling_factor: factor to determine min LR
-        - lr_decay: gamma decay per restart
-        - n_restarts: desired number of cosine peaks (n_restarts)
-        - n_adversarial_start: epoch when adversarial training begins
-        - n_discriminator_train: frequency of discriminator training relative to generator
-        - role: 'scl' or discriminator' or 'generator'
+    For 'generator', it updates when either discriminator is active.
 
     Returns:
         Dict of scheduler parameters
     """
-    
-    
-    
+
     total_active_epochs = n_epochs
-    n_discriminator_train_ = 1
-    if role in ['discriminator', 'generator']:
+    n_steps = n_epochs  # default for SCL
+
+    if role in ['cat_discriminator', 'pert_discriminator']:
         total_active_epochs = n_epochs - n_adversarial_start
-        if role == 'generator':
-            n_discriminator_train_ = n_discriminator_train
-            
-#     n_restarts = 4 if total_active_epochs // n_discriminator_train_ > 500 else 2
+        n_steps = total_active_epochs // 1
 
+    elif role == 'generator':
+        # Generator steps on any epoch divisible by either cat or pert discriminator schedule
+        effective_epochs = range(n_adversarial_start, n_epochs)
+        n_steps = sum(
+            (e % n_cat_discriminator_train == 0) or (e % n_pert_discriminator_train == 0)
+            for e in effective_epochs
+        )
 
-    T_0 = max(1, (total_active_epochs // n_discriminator_train_) // n_restarts)
-    warmup_epochs = max(1, (total_active_epochs // n_discriminator_train_) // 10)
+    T_0 = max(1, n_steps // n_restarts)
+    warmup_epochs = max(1, n_steps // 10)
 
-#     if reset_state:
-#         if total_active_epochs // n_discriminator_train_ > 400:
-#             n_optimizer_resets = 2
-#         elif total_active_epochs // n_discriminator_train_ < 100:
-#             n_optimizer_resets = 0
-#         else:
-#             n_optimizer_resets = 1
-#     else:
-#         n_optimizer_resets = 0
-        
     if warmup_epochs >= T_0:
         warmup_epochs = 0
 
@@ -277,15 +266,15 @@ def generate_lr_params(n_epochs,
         'max_epochs': n_epochs,
         'maximum_learning_rate': max_lr,
         'minimum_learning_rate': max_lr / lr_scaling_factor,
-        'lr_restart_epoch': T_0,  
-        'n_optimizer_resets': 0,  # no longer used
+        'lr_restart_epoch': T_0,
+        'n_optimizer_resets': 0,
         'lr_decay': lr_decay,
         'lr_restart_factor': 1,
         'warmup_epochs': warmup_epochs
     }
 
 
-# In[192]:
+# In[111]:
 
 
 projection_amplitude_in = 10
@@ -313,7 +302,7 @@ noise_params = {
 }
 
 
-# In[193]:
+# In[112]:
 
 
 loss_scaler = 100
@@ -351,14 +340,15 @@ lr_params = generate_lr_params(n_epochs = max_epochs,
                                lr_decay = lr_decay,
                                n_restarts = n_restarts,
                                n_adversarial_start = np.nan, 
-                               n_discriminator_train = np.nan, 
+                               n_cat_discriminator_train = np.nan, 
+                               n_pert_discriminator_train = np.nan,
                                role = 'scl')
 
 # reset_state = False # DEPRECATED
 # initialize_fc = True # DEPRECATED
 
 
-# In[194]:
+# In[113]:
 
 
 bionet_params['cat_max_norm'] = 100
@@ -388,7 +378,7 @@ regularization_params = {
 }
 
 
-# In[195]:
+# In[114]:
 
 
 training_params = {
@@ -404,7 +394,7 @@ training_params['prediction_loss_fn_scaler'] = loss_scaler
 
 # VAE:
 
-# In[196]:
+# In[115]:
 
 
 # building
@@ -434,15 +424,14 @@ vae_params = {
 }
 
 n_adversarial_start = 0 
-n_discriminator_train = n_discriminator_train #5
 n_restarts_adversarial = 4
 vae_lr_params = generate_lr_params(n_epochs = max_epochs,
                                    max_lr = gen_max_lr, #max_lr,
                                    lr_scaling_factor = lr_scaling_factor, 
                                    lr_decay = lr_decay,
                                    n_restarts = n_restarts_adversarial,
-                                   n_adversarial_start = n_adversarial_start, 
-                                   n_discriminator_train = n_discriminator_train,
+                               n_cat_discriminator_train = n_cat_discriminator_train, 
+                               n_pert_discriminator_train = n_pert_discriminator_train,
                                    role = 'generator')
 vae_params = {**vae_params, **vae_lr_params}
 del vae_params['max_epochs']
@@ -450,7 +439,7 @@ del vae_params['max_epochs']
 
 # Discriminator:
 
-# In[197]:
+# In[116]:
 
 
 discriminator_lambda_L2 = 1e-3
@@ -471,21 +460,8 @@ discriminator_params = {
     'epsilon_smooth': np.nan
 }
 
-discriminator_lr_params = generate_lr_params(
-    n_epochs = max_epochs,
-    max_lr = max_lr,
-    lr_scaling_factor = lr_scaling_factor, 
-    lr_decay = lr_decay,
-    n_restarts = n_restarts_adversarial,
-    n_adversarial_start = n_adversarial_start, 
-    n_discriminator_train = n_discriminator_train,
-    role = 'discriminator')
-del discriminator_lr_params['max_epochs']
 
-discriminator_params = {**discriminator_params, **discriminator_lr_params}
-
-
-# In[198]:
+# In[117]:
 
 
 # architecture -- pert >> cat bc harder classification problem
@@ -520,7 +496,7 @@ cat_discriminator_params['epsilon_smooth'] = 1/tf_adata.obs.cell_line.nunique()
 pert_discriminator_params['epsilon_smooth'] = 1/tf_adata.obs.drug.nunique()
 
 
-# In[214]:
+# In[124]:
 
 
 def expand_elements(lst, n_discriminator_train):
@@ -533,40 +509,75 @@ cat_b_adv = 2.5
 pert_max_penalty_weight = 10 #15
 pert_b_adv = 2 #10
 
-n_adj = 1 if n_discriminator_train > 1 else 0
+n_adj = 1 if n_cat_discriminator_train > 1 else 0
 cat_discriminator_penalty_weight = pp.discriminator_weight_curve(
-    n_epochs = int((max_epochs - n_adversarial_start)/n_discriminator_train) - n_adj,
+    n_epochs = int((max_epochs - n_adversarial_start)/n_cat_discriminator_train) - n_adj,
     min_penalty_weight = 0.1,
     max_penalty_weight = cat_max_penalty_weight,
     a = 1,
     b = cat_b_adv, 
     curve_type = 'power')
-cat_discriminator_penalty_weight = expand_elements(cat_discriminator_penalty_weight, n_discriminator_train)
-cat_discriminator_penalty_weight = [0]*n_adj*n_discriminator_train + cat_discriminator_penalty_weight
+cat_discriminator_penalty_weight = expand_elements(cat_discriminator_penalty_weight, n_cat_discriminator_train)
+cat_discriminator_penalty_weight = [0]*n_adj*n_cat_discriminator_train + cat_discriminator_penalty_weight
 cat_discriminator_params['discriminator_penalty_weight'] = cat_discriminator_penalty_weight
-
 
 n_pert_train = 300
 pert_discriminator_penalty_weight = [0] * n_pert_train
 
-n_adj = n_discriminator_train if n_discriminator_train > 1 and n_pert_train == 0 else 0
+n_adj = n_pert_discriminator_train if n_pert_discriminator_train > 1 and n_pert_train == 0 else 0
 pdpw2 = pp.discriminator_weight_curve(
-    n_epochs = int((max_epochs - n_pert_train - n_adversarial_start)/n_discriminator_train) - n_adj,
+    n_epochs = int((max_epochs - n_pert_train - n_adversarial_start)/n_pert_discriminator_train) - n_adj,
     min_penalty_weight = 1e-5,
     max_penalty_weight = pert_max_penalty_weight,
     a = 1,
     b = pert_b_adv, 
     curve_type = 'power')
-pdpw2 = expand_elements(pdpw2, n_discriminator_train)
-pert_discriminator_penalty_weight += [0]*n_adj*n_discriminator_train + pdpw2
+pdpw2 = expand_elements(pdpw2, n_pert_discriminator_train)
+pert_discriminator_penalty_weight += [0]*n_adj*n_pert_discriminator_train + pdpw2
 
 
 pert_discriminator_params['discriminator_penalty_weight'] = pert_discriminator_penalty_weight
 
 
+# In[120]:
+
+
+# discriminator LRs
+
+# categorical
+discriminator_lr_params = generate_lr_params(
+    n_epochs = max_epochs,
+    max_lr = max_lr,
+    lr_scaling_factor = lr_scaling_factor, 
+    lr_decay = lr_decay,
+    n_restarts = n_restarts_adversarial,
+    n_adversarial_start = n_adversarial_start, 
+    n_pert_discriminator_train = np.nan,
+    n_cat_discriminator_train = n_cat_discriminator_train,
+    role = 'cat_discriminator')
+del discriminator_lr_params['max_epochs']
+
+cat_discriminator_params = {**cat_discriminator_params, **discriminator_lr_params}
+
+# perturbation
+discriminator_lr_params = generate_lr_params(
+    n_epochs = max_epochs,
+    max_lr = max_lr,
+    lr_scaling_factor = lr_scaling_factor, 
+    lr_decay = lr_decay,
+    n_restarts = n_restarts_adversarial,
+    n_adversarial_start = n_adversarial_start, 
+    n_pert_discriminator_train = n_pert_discriminator_train,
+    n_cat_discriminator_train = np.nan,
+    role = 'pert_discriminator')
+del discriminator_lr_params['max_epochs']
+
+pert_discriminator_params = {**pert_discriminator_params, **discriminator_lr_params}
+
+
 # Visualize hyperparameters:
 
-# In[148]:
+# In[121]:
 
 
 fig, ax = plt.subplots(ncols = 2, figsize = (13,5))
@@ -585,7 +596,7 @@ fig.tight_layout();
 
 # # Build model and trainer
 
-# In[21]:
+# In[ ]:
 
 
 # input stimulation
@@ -593,7 +604,93 @@ X_in = pd.get_dummies(tf_adata.obs.drug).astype(int)
 X_in.drop(columns = 'DMSO_TF', inplace = True) # all 0s
 
 
-# In[22]:
+# In[98]:
+
+
+# lr_mod = SignalingModel(
+#     net = sn_ppis,
+#     X_in = X_in,
+#     y_out = tf_adata.to_df().copy(), 
+#     expr = expr, 
+#     covariates = tf_adata.obs.copy(),
+#     categorical_covariate_keys = ['cell_line'],
+#     projection_amplitude_in = projection_amplitude_in, 
+#     projection_amplitude_out = projection_amplitude_out,
+#     weight_label = weight_label, source_label = source_label, target_label = target_label,
+#     bionet_params = bionet_params, 
+#     dtype = torch.float32, device = device, seed = mod_seed)
+
+# lr_mod.input_layer.weights.requires_grad = False # don't learn scaling factors for the ligand input concentrations
+# lr_mod.signaling_network.prescale_weights(target_radius = target_spectral_radius) # spectral radius
+
+
+
+# lr_trainer = TrainSC(
+#     mod = mod,
+#     prediction_optimizer = torch.optim.Adam,
+#     prediction_loss_fn = prediction_loss_fn, 
+#     per_condition_loss = per_condition_loss,
+#     n_adversarial_start = n_adversarial_start, 
+#     n_cat_discriminator_train = n_cat_discriminator_train,
+#     n_pert_discriminator_train = n_pert_discriminator_train,
+#     gradient_ascent = True,
+#     cat_discriminator_params = cat_discriminator_params,
+#     pert_discriminator_params = pert_discriminator_params,
+#     vae_params = vae_params,
+#     hyper_params = training_params,
+#     train_split = {'train': train_cells, 'test': test_cells, 'validation': None}, 
+#     train_seed = mod_seed, 
+#     track_test = True,
+#     track_validation = False, 
+#     n_eval_cells = np.nan, 
+#     n_eval_bootstrap = np.nan
+# )
+
+# import collections
+# from tqdm import trange
+# lrs = collections.defaultdict(list)
+# for e in trange(lr_trainer.hyper_params['max_epochs']):
+#     lr_trainer._no_cat_vae = (
+#         (e < lr_trainer.n_adversarial_start) or
+#         (e % lr_trainer.n_cat_discriminator_train != 0) or
+#         (e == 0 and lr_trainer.n_cat_discriminator_train > 1)
+#     )
+
+#     lr_trainer._no_pert_vae = (
+#         (e < lr_trainer.n_adversarial_start) or
+#         (e % lr_trainer.n_pert_discriminator_train != 0) or
+#         (e == 0 and lr_trainer.n_pert_discriminator_train > 1)
+#     )
+#     lr_trainer._no_vae = (lr_trainer._no_cat_vae and lr_trainer._no_pert_vae)
+    
+#     lrs['scl'].append(lr_trainer.prediction_optimizer.param_groups[0]['lr'])
+#     lrs['vae'].append(lr_trainer.vae_learning['optimizer'].param_groups[0]['lr'])
+#     lrs['cat_discriminator'].append(lr_trainer.cat_discriminator['optimizer'].param_groups[0]['lr'])
+#     lrs['pert_discriminator'].append(lr_trainer.pert_discriminator['optimizer'].param_groups[0]['lr'])
+
+
+#     lr_trainer.lr_scheduler.step()
+#     if lr_trainer.n_adversarial_start <= e:
+#         lr_trainer.cat_discriminator['lr_scheduler'].step()
+#         lr_trainer.pert_discriminator['lr_scheduler'].step()
+#     if not lr_trainer._no_vae:
+#         lr_trainer.vae_learning['lr_scheduler'].step()
+        
+# lrs = pd.DataFrame(lrs)
+
+# ncols = lrs.shape[1]
+# fig, ax = plt.subplots(ncols = ncols, figsize = (5.1*ncols, 5))
+
+# for (j, col) in enumerate(lrs.columns):
+#     sns.lineplot(lrs[col], ax = ax[j])
+#     ax[j].set_title(col)
+    
+# fig.tight_layout()
+# ;
+# del lr_trainer
+
+
+# In[ ]:
 
 
 mod = SignalingModel(
@@ -623,7 +720,8 @@ if not no_adv:
         prediction_loss_fn = prediction_loss_fn, 
         per_condition_loss = per_condition_loss,
         n_adversarial_start = n_adversarial_start, 
-        n_discriminator_train = n_discriminator_train,
+    n_cat_discriminator_train = n_cat_discriminator_train,
+    n_pert_discriminator_train = n_pert_discriminator_train,
         gradient_ascent = True,
         cat_discriminator_params = cat_discriminator_params,
         pert_discriminator_params = pert_discriminator_params,
@@ -654,7 +752,8 @@ else:
         prediction_loss_fn = prediction_loss_fn, 
         per_condition_loss = per_condition_loss,
         n_adversarial_start = n_adversarial_start, 
-        n_discriminator_train = n_discriminator_train,
+    n_cat_discriminator_train = n_cat_discriminator_train,
+    n_pert_discriminator_train = n_pert_discriminator_train,
         gradient_ascent = True,
         cat_discriminator_params = cdp_noadv,
         pert_discriminator_params = pdp_noadv,
