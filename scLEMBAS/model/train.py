@@ -1561,7 +1561,7 @@ class TrainSC(TrainBase):
         torch.autograd.set_detect_anomaly(True)
 
         for e in trange(self.hyper_params['max_epochs']):
-            self._no_vae = (self.n_adversarial_start > e) or (e % self.n_discriminator_train != 0)
+            self._no_vae = (self.n_adversarial_start > e) or (e % self.n_discriminator_train != 0) or (self.n_discriminator_train > 1 and e == 0)
 
             cur_lr = self.prediction_optimizer.param_groups[0]['lr']
             self.cat_discriminator['_cur_lr'] = self.cat_discriminator['optimizer'].param_groups[0]['lr']
