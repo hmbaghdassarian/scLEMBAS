@@ -586,14 +586,18 @@ class CatDiscriminator(nn.Module):
         if self.n_labels > 2: # multi-class
             if self.smooth_labels:
                 self.loss_fn = self.smooth_multi_loss
+                self.eval_loss_fn = self._kl_with_hard_labels
             else:
                 self.loss_fn = nn.CrossEntropyLoss() # applies softmax to logits prior to CE
+                self.eval_loss_fn = self.loss_fn
             out_features = self.n_labels
         elif self.n_labels == 2: # binary
             if self.smooth_labels:
                 self.loss_fn = self.smooth_binary_loss
+                self.eval_loss_fn = nn.BCEWithLogitsLoss()
             else:
                 self.loss_fn = nn.BCEWithLogitsLoss() # applies sigmoid to logits prior to CE
+                self.eval_loss_fn = self.loss_fn
             out_features = 1
         else:
             raise ValueError('There are no distinct classes.')
@@ -635,6 +639,11 @@ class CatDiscriminator(nn.Module):
         log_probs = F.log_softmax(logits, dim=1)
         return F.kl_div(log_probs, smoothed_labels, reduction='batchmean')
     
+    def _kl_with_hard_labels(self, logits, labels):
+        one_hot = F.one_hot(labels, num_classes=self.n_labels).float()
+        log_probs = F.log_softmax(logits, dim=1)
+        return F.kl_div(log_probs, one_hot, reduction='batchmean')
+    
     def L2_reg(self, lambda_L2: Annotated[float, Ge(0)] = 0):
         """Get the L2 regularization term for the linear layers' parameters.
         
@@ -666,7 +675,7 @@ class CatDiscriminator(nn.Module):
         else:
             return F.sigmoid(y.detach(), dim = -1) # probability of the "positive" (labeled "1") layer
         
-    def random_loss(self, class_probs):
+    def random_loss(self, class_probs, train_mode = True):
         """
         Calculates the expected loss of a discriminator with random predictions.
 
@@ -684,34 +693,49 @@ class CatDiscriminator(nn.Module):
         class_probs 
             an array of the probabilities of each class for weighting unbalanced classes in random loss calculation
         """
-
-    #     class_probs = tf_adata[train_cells,:].obs[cat_col].value_counts(normalize = True).values
-        if self.n_labels != 2 and self.smooth_labels:
-            loss_type = 'KL_divergence'
-        else:
-            loss_type = 'cross_entropy'
-
         if len(class_probs) != self.n_labels:
             raise ValueError('The class_probs must be the same length as self.n_labels')
+            
+        eps = self.epsilon_smooth if train_mode else 0
+        if self.n_labels == 2:
+            # Binary classification baseline
+            p1 = class_probs[1]
+            p0 = class_probs[0]
 
-        if loss_type == 'cross_entropy':
-            return -np.sum(class_probs * np.log(class_probs))
-        else: # loss_type == 'KL_divergence':
-            total_kl = 0
+            # Model outputs random prediction equal to p1
+            y_pred = p1
 
-            Q = torch.tensor(class_probs, dtype=torch.float32) # random prediction
-            log_Q = torch.log(Q + 1e-10)
+            # Target labels after smoothing
+            t1 = 1.0 - eps
+            t0 = eps
 
-            for i in range(self.n_labels):
-                # Smoothed target for class i
-                one_hot = np.zeros(self.n_labels)
-                one_hot[i] = 1
-                smoothed = one_hot * (1 - self.epsilon_smooth) + self.epsilon_smooth / self.n_labels
+            # BCE(t, y_pred) = -[t * log(y_pred) + (1 - t) * log(1 - y_pred)]
+            bce_1 = - (t1 * np.log(y_pred + 1e-10) + (1 - t1) * np.log(1 - y_pred + 1e-10))
+            bce_0 = - (t0 * np.log(y_pred + 1e-10) + (1 - t0) * np.log(1 - y_pred + 1e-10))
 
-                P = torch.tensor(smoothed, dtype=torch.float32) # label-smoothing adjusted true target
+            return p1 * bce_1 + p0 * bce_0
+        
+        
+        else:
+            if self.smooth_labels: # KL divergence (used in training, kept for eval but with eps = 0)
+                total_kl = 0
 
-                kl = F.kl_div(log_Q, P, reduction='sum')
-                total_kl += class_probs[i] * kl.item() # gives a weighted average
+                Q = torch.tensor(class_probs, dtype=torch.float32) # random prediction
+                log_Q = torch.log(Q + 1e-10)
 
-            return total_kl
+                for i in range(self.n_labels):
+                    # Smoothed target for class i
+                    one_hot = np.zeros(self.n_labels)
+                    one_hot[i] = 1
+                    smoothed = one_hot * (1 - eps) + eps / self.n_labels
+
+                    P = torch.tensor(smoothed, dtype=torch.float32) # label-smoothing adjusted true target
+
+                    kl = F.kl_div(log_Q, P, reduction='sum')
+                    total_kl += class_probs[i] * kl.item() # gives a weighted average
+                return total_kl
+            else: # cross entropy
+                return -np.sum(class_probs * np.log(class_probs)) 
+
+
         
