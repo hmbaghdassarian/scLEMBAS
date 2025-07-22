@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[134]:
+# In[2]:
 
 
 import argparse
@@ -73,7 +73,7 @@ cat_max_penalty_weight = args.cat_max_penalty_weight
 # python test_run.py --index 49 --subset_size 0.05 --noadv false --max_epochs 600 --KL_scaling 5e-5 --n_cat_discriminator_train 5 --n_pert_discriminator_train 5 --cat_dropout 0.3 --n_adversarial_start 0 --gen_max_lr 1e-4 --cat_max_lr 1e-2 --pert_max_lr 1e-2 --cat_max_penalty_weight 11 
 
 
-# In[1]:
+# In[4]:
 
 
 # fn = '49'
@@ -88,8 +88,8 @@ cat_max_penalty_weight = args.cat_max_penalty_weight
 # cat_dropout = 0.1
 # n_adversarial_start = 0
 
-# gen_max_lr = 1e-2
-# cat_max_lr = 1e-2
+# gen_max_lr = 1e-4
+# cat_max_lr = 1e-3
 # pert_max_lr = 1e-2
 
 
@@ -99,7 +99,7 @@ cat_max_penalty_weight = args.cat_max_penalty_weight
 # cat_max_penalty_weight = 11
 
 
-# In[138]:
+# In[5]:
 
 
 import os
@@ -127,13 +127,13 @@ from scLEMBAS.model.scl import SignalingModel
 import Tahoe_utils as Tu
 
 
-# In[102]:
+# In[6]:
 
 
 subset = True
 
 
-# In[103]:
+# In[7]:
 
 
 n_cores = 30
@@ -153,7 +153,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Load data:
 
-# In[174]:
+# In[8]:
 
 
 sn_ppis = pd.read_csv(os.path.join(data_path, 'processed', author + '_sn_ppis.csv'), 
@@ -184,7 +184,7 @@ if len(set(tf_adata.obs.cell_line)) != len(tf_adata.obs.cell_line.cat.categories
 
 # # Train/test split:
 
-# In[175]:
+# In[9]:
 
 
 train_split, test_split = Tu.Tahoe100M_split(tf_adata,
@@ -209,19 +209,19 @@ drug_counts = pd.DataFrame({
 }).sort_values(by = 'train', ascending = True)
 
 
-# In[176]:
+# In[10]:
 
 
 cell_line_counts
 
 
-# In[177]:
+# In[11]:
 
 
 drug_counts
 
 
-# In[178]:
+# In[12]:
 
 
 if subset:
@@ -244,7 +244,7 @@ if subset:
 
 # # Hyper-parameters:
 
-# In[179]:
+# In[13]:
 
 
 def generate_lr_params(n_epochs, 
@@ -301,7 +301,7 @@ def generate_lr_params(n_epochs,
     }
 
 
-# In[180]:
+# In[14]:
 
 
 projection_amplitude_in = 10
@@ -329,7 +329,7 @@ noise_params = {
 }
 
 
-# In[181]:
+# In[15]:
 
 
 loss_scaler = 100
@@ -376,7 +376,7 @@ lr_params = generate_lr_params(n_epochs = max_epochs,
 # initialize_fc = True # DEPRECATED
 
 
-# In[182]:
+# In[16]:
 
 
 bionet_params['cat_max_norm'] = 100
@@ -406,7 +406,7 @@ regularization_params = {
 }
 
 
-# In[183]:
+# In[17]:
 
 
 training_params = {
@@ -422,7 +422,7 @@ training_params['prediction_loss_fn_scaler'] = loss_scaler
 
 # VAE:
 
-# In[184]:
+# In[18]:
 
 
 # building
@@ -467,7 +467,7 @@ del vae_params['max_epochs']
 
 # Discriminator:
 
-# In[185]:
+# In[19]:
 
 
 discriminator_lambda_L2 = 1e-3
@@ -489,7 +489,7 @@ discriminator_params = {
 }
 
 
-# In[186]:
+# In[20]:
 
 
 # architecture -- pert >> cat bc harder classification problem
@@ -528,7 +528,7 @@ cat_discriminator_params['epsilon_smooth'] = 1/tf_adata.obs.cell_line.nunique()
 pert_discriminator_params['epsilon_smooth'] = 1/tf_adata.obs.drug.nunique()
 
 
-# In[187]:
+# In[21]:
 
 
 # adverserial penalty curve
@@ -592,7 +592,7 @@ pert_discriminator_params['discriminator_penalty_weight'] = pert_discriminator_p
 # pert_discriminator_params['discriminator_penalty_weight'] = pert_discriminator_penalty_weight
 
 
-# In[188]:
+# In[22]:
 
 
 # discriminator LRs
@@ -630,7 +630,7 @@ pert_discriminator_params = {**pert_discriminator_params, **discriminator_lr_par
 
 # Visualize hyperparameters:
 
-# In[189]:
+# In[23]:
 
 
 fig, ax = plt.subplots(ncols = 2, figsize = (13,5))
@@ -649,7 +649,7 @@ fig.tight_layout();
 
 # # Build model and trainer
 
-# In[190]:
+# In[24]:
 
 
 # input stimulation
@@ -657,7 +657,7 @@ X_in = pd.get_dummies(tf_adata.obs.drug).astype(int)
 X_in.drop(columns = 'DMSO_TF', inplace = True) # all 0s
 
 
-# In[191]:
+# In[25]:
 
 
 # lr_mod = SignalingModel(
@@ -731,7 +731,7 @@ X_in.drop(columns = 'DMSO_TF', inplace = True) # all 0s
 # del lr_trainer
 
 
-# In[192]:
+# In[26]:
 
 
 mod = SignalingModel(
@@ -749,6 +749,31 @@ mod = SignalingModel(
 
 mod.input_layer.weights.requires_grad = False # don't learn scaling factors for the ligand input concentrations
 mod.signaling_network.prescale_weights(target_radius = target_spectral_radius) # spectral radius
+
+
+# In[27]:
+
+
+ziprainer = TrainSC(
+    mod = mod,
+    prediction_optimizer = torch.optim.Adam,
+    prediction_loss_fn = prediction_loss_fn, 
+    per_condition_loss = per_condition_loss,
+    n_adversarial_start = n_adversarial_start, 
+n_cat_discriminator_train = n_cat_discriminator_train,
+n_pert_discriminator_train = n_pert_discriminator_train,
+    gradient_ascent = True,
+    cat_discriminator_params = cat_discriminator_params,
+    pert_discriminator_params = pert_discriminator_params,
+    vae_params = vae_params,
+    hyper_params = training_params,
+    train_split = {'train': train_cells, 'test': test_cells, 'validation': None}, 
+    train_seed = mod_seed, 
+    track_test = True,
+    track_validation = False, 
+    n_eval_cells = np.nan, 
+    n_eval_bootstrap = np.nan
+)
 
 
 # In[25]:

@@ -671,11 +671,8 @@ def run_prediction(mod,
     #                 X_new = torch.mm(torch.zeros(mod.signaling_network.weights.shape,
     #                             device = mod.signaling_network.device, 
     #                             requires_grad=False), X_new)
-                if 'signaling_weights_scaler' in mod.signaling_network.bionet_params: #DEV
-                     X_new = torch.mm(mod.signaling_network.weights*mod.signaling_network.bionet_params['signaling_weights_scaler'],
-                                      X_new) # scale matrix by edge weights
-                else:
-                    X_new = torch.mm(mod.signaling_network.weights, X_new) # scale matrix by edge weights
+
+                X_new = torch.mm(mod.signaling_network.weights, X_new) # scale matrix by edge weights
 
                 X_new = X_new + X_bias  # add original values and bias       
                 X_new = mod.signaling_network.activation(X_new, mod.signaling_network.bionet_params['leak'])
@@ -929,9 +926,10 @@ def project_prediction(
     tf_adata, 
     tf_adata_predicted, 
     linear_projection: Literal['pca', 'pls'], 
-    run_umap: bool = True
+    run_umap: bool = True, 
+    merge: bool = True
 ):
-    """Projects the predicted data into the existing embedding.
+    """Projects the predicted data into the existing embedding of the actual data.
 
     Parameters
     ----------
@@ -943,6 +941,8 @@ def project_prediction(
         the linear embedding to use
     run_umap : bool, optional
         whether to run umap on the linear embedding output, by default True
+    merge: bool, optional
+        whether to combine the predicted AnnData object with the actual, by default True
     """
 
     lp_mod = tf_adata.uns[linear_projection][linear_projection + '_mod']
@@ -963,34 +963,41 @@ def project_prediction(
         umap_mod = tf_adata.uns[umap_key][umap_key + '_mod']
         umap_embedding_pred = umap_mod.transform(X_lp_pred[:, :lp_rank])
 
-    # join the models
-    tf_adata_actual = tf_adata.copy()
-    tf_adata_actual.obs['batch'] = 'actual'
-    tf_adata_actual.obs['counterfactual_condition'] = None # to retain this column in the predicted object
-
-    tf_adata_predicted.obs['batch'] = 'predicted'
-
-    tf_adata_merged = sc.concat([tf_adata_actual, tf_adata_predicted])
-    tf_adata_merged.obs['barcode'] = tf_adata_merged.obs.index.tolist()
-
-    if len(set(tf_adata_merged.obs_names)) < len(tf_adata_merged.obs_names):
-        tf_adata_merged.obs_names_make_unique()
-
-    # add the embeddings
-    tf_adata_merged.obsm['X_' + linear_projection] = np.concatenate(
-        [tf_adata_actual.obsm['X_' + linear_projection], X_lp_pred],
-        axis = 0
-    )
-
-    if run_umap:
-        tf_adata_merged.obsm['X_' + umap_key] = np.concatenate(
-                [tf_adata_actual.obsm['X_' + umap_key], umap_embedding_pred],
-                axis = 0
-            )
-        
-    del tf_adata_actual
     
-    return tf_adata_merged
+    tf_adata_predicted.obs['batch'] = 'predicted'
+    if merge:
+        tf_adata_actual = tf_adata.copy()
+        tf_adata_actual.obs['batch'] = 'actual'
+        tf_adata_actual.obs['counterfactual_condition'] = None # to retain this column in the predicted object
+
+        tf_adata_merged = sc.concat([tf_adata_actual, tf_adata_predicted])
+        tf_adata_merged.obs['barcode'] = tf_adata_merged.obs.index.tolist()
+
+        if len(set(tf_adata_merged.obs_names)) < len(tf_adata_merged.obs_names):
+            tf_adata_merged.obs_names_make_unique()
+
+        # add the embeddings
+        tf_adata_merged.obsm['X_' + linear_projection] = np.concatenate(
+            [tf_adata_actual.obsm['X_' + linear_projection], X_lp_pred],
+            axis = 0
+        )
+
+        if run_umap:
+            tf_adata_merged.obsm['X_' + umap_key] = np.concatenate(
+                    [tf_adata_actual.obsm['X_' + umap_key], umap_embedding_pred],
+                    axis = 0
+                )
+            
+        del tf_adata_actual
+        
+        return tf_adata_merged
+    else:
+        tf_adata_predicted.obsm['X_' + linear_projection] = X_lp_pred
+
+        if run_umap:
+            tf_adata_predicted.obsm['X_' + umap_key] = umap_embedding_pred
+        
+        return tf_adata_predicted
 
 def all_rows_close(arr, tol=1e-5):
     diffs = np.abs(arr[:, None, :] - arr[None, :, :])
