@@ -37,7 +37,8 @@ parser.add_argument("--n_adversarial_start", type = int, required = True)
 
 parser.add_argument("--cat_dropout", type=float, required=True)
 
-
+parser.add_argument("--generator_dropout_rate", type=float, required=True)
+parser.add_argument("--n_layers_vae", type=int, required=True)
 
 parser.add_argument("--gen_max_lr", type=float, required=True)
 parser.add_argument("--cat_max_lr", type=float, required=True)
@@ -66,27 +67,30 @@ pert_max_lr = args.pert_max_lr
 
 cat_dropout = args.cat_dropout
 
+generator_dropout_rate = args.generator_dropout_rate
+n_layers_vae = args.n_layers_vae
+
 
 cat_max_penalty_weight = args.cat_max_penalty_weight
 
 
-# python test_run.py --index 49 --subset_size 0.05 --noadv false --max_epochs 600 --KL_scaling 5e-5 --n_cat_discriminator_train 5 --n_pert_discriminator_train 5 --cat_dropout 0.3 --n_adversarial_start 0 --gen_max_lr 1e-4 --cat_max_lr 1e-2 --pert_max_lr 1e-2 --cat_max_penalty_weight 11 
+# python test_run.py --index 49 --subset_size 0.05 --noadv false --max_epochs 600 --KL_scaling 5e-5 --n_cat_discriminator_train 5 --n_pert_discriminator_train 5 --cat_dropout 0.3 --n_adversarial_start 0 --gen_max_lr 1e-4 --cat_max_lr 1e-2 --pert_max_lr 1e-2 --cat_max_penalty_weight 11 --generator_dropout_rate 0.7 --n_layers_vae 1 
 
 
-# In[4]:
+# In[1]:
 
 
 # fn = '49'
 # subset_size = 0.05
 # no_adv = False
-# max_epochs = 600
+# max_epochs = 600 #5
 
 # KL_scaling = 1e-2
 
 # n_cat_discriminator_train = 5
 # n_pert_discriminator_train = 5
 # cat_dropout = 0.1
-# n_adversarial_start = 0
+# n_adversarial_start = 0 #601
 
 # gen_max_lr = 1e-4
 # cat_max_lr = 1e-3
@@ -96,10 +100,13 @@ cat_max_penalty_weight = args.cat_max_penalty_weight
 # # pert_spectral_norm = True
 # # cat_spectral_norm = True
 
+# generator_dropout_rate = 0.7 
+# n_layers_vae  = 1
+
 # cat_max_penalty_weight = 11
 
 
-# In[5]:
+# In[2]:
 
 
 import os
@@ -127,13 +134,13 @@ from scLEMBAS.model.scl import SignalingModel
 import Tahoe_utils as Tu
 
 
-# In[6]:
+# In[3]:
 
 
 subset = True
 
 
-# In[7]:
+# In[4]:
 
 
 n_cores = 30
@@ -153,7 +160,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Load data:
 
-# In[8]:
+# In[5]:
 
 
 sn_ppis = pd.read_csv(os.path.join(data_path, 'processed', author + '_sn_ppis.csv'), 
@@ -184,7 +191,7 @@ if len(set(tf_adata.obs.cell_line)) != len(tf_adata.obs.cell_line.cat.categories
 
 # # Train/test split:
 
-# In[9]:
+# In[6]:
 
 
 train_split, test_split = Tu.Tahoe100M_split(tf_adata,
@@ -209,19 +216,19 @@ drug_counts = pd.DataFrame({
 }).sort_values(by = 'train', ascending = True)
 
 
-# In[10]:
+# In[7]:
 
 
 cell_line_counts
 
 
-# In[11]:
+# In[8]:
 
 
 drug_counts
 
 
-# In[12]:
+# In[9]:
 
 
 if subset:
@@ -244,7 +251,7 @@ if subset:
 
 # # Hyper-parameters:
 
-# In[13]:
+# In[10]:
 
 
 def generate_lr_params(n_epochs, 
@@ -270,6 +277,8 @@ def generate_lr_params(n_epochs,
     n_steps = n_epochs  # default for SCL
 
     if role in ['generator', 'cat_discriminator', 'pert_discriminator']:
+        if n_adversarial_start >= n_epochs: # won't be used anyways
+            n_adversarial_start = 0
         total_active_epochs = n_epochs - n_adversarial_start
         n_steps = total_active_epochs // 1
 
@@ -301,7 +310,7 @@ def generate_lr_params(n_epochs,
     }
 
 
-# In[14]:
+# In[11]:
 
 
 projection_amplitude_in = 10
@@ -329,7 +338,7 @@ noise_params = {
 }
 
 
-# In[15]:
+# In[12]:
 
 
 loss_scaler = 100
@@ -376,7 +385,7 @@ lr_params = generate_lr_params(n_epochs = max_epochs,
 # initialize_fc = True # DEPRECATED
 
 
-# In[16]:
+# In[13]:
 
 
 bionet_params['cat_max_norm'] = 100
@@ -406,7 +415,7 @@ regularization_params = {
 }
 
 
-# In[17]:
+# In[14]:
 
 
 training_params = {
@@ -422,15 +431,15 @@ training_params['prediction_loss_fn_scaler'] = loss_scaler
 
 # VAE:
 
-# In[18]:
+# In[15]:
 
 
 # building
-n_layers_vae = 1
+# n_layers_vae = 1
 n_nodes = len(set(sn_ppis[source_label].tolist() + sn_ppis[target_label].tolist()))
 vae_n_hidden_nodes = list(np.round(np.linspace(adata.shape[1], n_nodes, n_layers_vae + 2)).astype(int)[1:-1])
 
-generator_dropout_rate = 0.7
+# generator_dropout_rate = 0.7
 vae_mod_params = {
     'vae_batch_momentum': 0.01, 
     'vae_layer_norm': False, 
@@ -458,6 +467,7 @@ vae_lr_params = generate_lr_params(n_epochs = max_epochs,
                                    lr_scaling_factor = lr_scaling_factor, 
                                    lr_decay = lr_decay,
                                    n_restarts = n_restarts_adversarial,
+                                   n_adversarial_start = n_adversarial_start,
 #                                n_cat_discriminator_train = n_cat_discriminator_train, 
 #                                n_pert_discriminator_train = n_pert_discriminator_train,
                                    role = 'generator')
@@ -467,7 +477,7 @@ del vae_params['max_epochs']
 
 # Discriminator:
 
-# In[19]:
+# In[16]:
 
 
 discriminator_lambda_L2 = 1e-3
@@ -489,7 +499,7 @@ discriminator_params = {
 }
 
 
-# In[20]:
+# In[17]:
 
 
 # architecture -- pert >> cat bc harder classification problem
@@ -528,33 +538,37 @@ cat_discriminator_params['epsilon_smooth'] = 1/tf_adata.obs.cell_line.nunique()
 pert_discriminator_params['epsilon_smooth'] = 1/tf_adata.obs.drug.nunique()
 
 
-# In[21]:
+# In[18]:
 
 
 # adverserial penalty curve
-cat_max_penalty_weight = 11
+# cat_max_penalty_weight = 11
 cat_b_adv = 2.5
 pert_max_penalty_weight = 10 #15
 pert_b_adv = 2 #10
 
-cat_discriminator_params['discriminator_penalty_weight'] = pp.discriminator_weight_curve(
-    n_epochs = max_epochs - n_adversarial_start,
-    min_penalty_weight = 0.1,
-    max_penalty_weight = cat_max_penalty_weight,
-    a = 1,
-    b = cat_b_adv, 
-    curve_type = 'power')
+if n_adversarial_start < max_epochs:
+    cat_discriminator_params['discriminator_penalty_weight'] = pp.discriminator_weight_curve(
+        n_epochs = max_epochs - n_adversarial_start,
+        min_penalty_weight = 0.1,
+        max_penalty_weight = cat_max_penalty_weight,
+        a = 1,
+        b = cat_b_adv, 
+        curve_type = 'power')
 
-n_pert_train = int(max_epochs/2)
-pert_discriminator_penalty_weight = [0] * n_pert_train
-pert_discriminator_penalty_weight += pp.discriminator_weight_curve(
-    n_epochs = max_epochs - n_pert_train - n_adversarial_start,
-    min_penalty_weight = 1e-5,
-    max_penalty_weight = pert_max_penalty_weight,
-    a = 1,
-    b = pert_b_adv, 
-    curve_type = 'power')
-pert_discriminator_params['discriminator_penalty_weight'] = pert_discriminator_penalty_weight
+    n_pert_train = int(max_epochs/2)
+    pert_discriminator_penalty_weight = [0] * n_pert_train
+    pert_discriminator_penalty_weight += pp.discriminator_weight_curve(
+        n_epochs = max_epochs - n_pert_train - n_adversarial_start,
+        min_penalty_weight = 1e-5,
+        max_penalty_weight = pert_max_penalty_weight,
+        a = 1,
+        b = pert_b_adv, 
+        curve_type = 'power')
+    pert_discriminator_params['discriminator_penalty_weight'] = pert_discriminator_penalty_weight
+else:
+    cat_discriminator_params['discriminator_penalty_weight'] = [0]*max_epochs
+    pert_discriminator_params['discriminator_penalty_weight'] = [0]*max_epochs
 
 
 
@@ -592,7 +606,7 @@ pert_discriminator_params['discriminator_penalty_weight'] = pert_discriminator_p
 # pert_discriminator_params['discriminator_penalty_weight'] = pert_discriminator_penalty_weight
 
 
-# In[22]:
+# In[19]:
 
 
 # discriminator LRs
@@ -630,7 +644,7 @@ pert_discriminator_params = {**pert_discriminator_params, **discriminator_lr_par
 
 # Visualize hyperparameters:
 
-# In[23]:
+# In[20]:
 
 
 fig, ax = plt.subplots(ncols = 2, figsize = (13,5))
@@ -649,7 +663,7 @@ fig.tight_layout();
 
 # # Build model and trainer
 
-# In[24]:
+# In[21]:
 
 
 # input stimulation
@@ -657,7 +671,7 @@ X_in = pd.get_dummies(tf_adata.obs.drug).astype(int)
 X_in.drop(columns = 'DMSO_TF', inplace = True) # all 0s
 
 
-# In[25]:
+# In[22]:
 
 
 # lr_mod = SignalingModel(
@@ -731,7 +745,7 @@ X_in.drop(columns = 'DMSO_TF', inplace = True) # all 0s
 # del lr_trainer
 
 
-# In[26]:
+# In[23]:
 
 
 mod = SignalingModel(
@@ -749,31 +763,6 @@ mod = SignalingModel(
 
 mod.input_layer.weights.requires_grad = False # don't learn scaling factors for the ligand input concentrations
 mod.signaling_network.prescale_weights(target_radius = target_spectral_radius) # spectral radius
-
-
-# In[27]:
-
-
-ziprainer = TrainSC(
-    mod = mod,
-    prediction_optimizer = torch.optim.Adam,
-    prediction_loss_fn = prediction_loss_fn, 
-    per_condition_loss = per_condition_loss,
-    n_adversarial_start = n_adversarial_start, 
-n_cat_discriminator_train = n_cat_discriminator_train,
-n_pert_discriminator_train = n_pert_discriminator_train,
-    gradient_ascent = True,
-    cat_discriminator_params = cat_discriminator_params,
-    pert_discriminator_params = pert_discriminator_params,
-    vae_params = vae_params,
-    hyper_params = training_params,
-    train_split = {'train': train_cells, 'test': test_cells, 'validation': None}, 
-    train_seed = mod_seed, 
-    track_test = True,
-    track_validation = False, 
-    n_eval_cells = np.nan, 
-    n_eval_bootstrap = np.nan
-)
 
 
 # In[25]:
