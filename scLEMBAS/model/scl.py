@@ -248,7 +248,7 @@ class SignalingModel(torch.nn.Module):
             only relevant for single-cell, otherwise None
         """
         X_full = self.input_layer(X_in) # input ligands to signaling network
-        Y_full, biases = self.signaling_network(X_full, covariates_idx, expr) # RNN of full signaling network
+        Y_full, biases, rnn_iter_t = self.signaling_network(X_full, covariates_idx, expr) # RNN of full signaling network
         Y_hat = self.output_layer(Y_full)
 
         return Y_hat, Y_full, biases
@@ -270,7 +270,7 @@ class SignalingModel(torch.nn.Module):
             only relevant for single-cell, otherwise None
         """
         X_full = self.input_layer(X_in) # input ligands to signaling network
-        Y_full, _ = self.signaling_network.forward_novar(X_full, covariates_idx, expr) # RNN of full signaling network
+        Y_full, _, rnn_iter_t = self.signaling_network.forward_novar(X_full, covariates_idx, expr) # RNN of full signaling network
         Y_hat = self.output_layer(Y_full)
 
         return Y_hat, Y_full, _

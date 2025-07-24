@@ -922,10 +922,15 @@ class BioNetSC(BioNetCat):
         
         bias_tot = bias_global.T + bias_cats
         X_bias = X_full.T + bias_tot # this is the bias and ligand input combined
-        X_new = torch.zeros_like(X_bias) #initialize hidden state values at 0
         
+        # single pass 
+#         X_new = torch.mm(self.weights, X_bias)
+#         X_new = self.activation(X_new, self.bionet_params['leak'])        
+
+        # RNN
+        X_new = torch.zeros_like(X_bias) #initialize hidden state values at 0
         for t in range(self.bionet_params['max_steps']): # like an RNN, updating from previous time step
-            X_old = X_new
+            X_old = X_new.detach()
             X_new = torch.mm(self.weights, X_new) # scale matrix by edge weights
             
             X_new = X_new + X_bias  # add original values and bias       
@@ -937,7 +942,8 @@ class BioNetSC(BioNetCat):
                     break
 
         Y_full = X_new.T
-        return Y_full, (bias_global, bias_mu, bias_log_sigma_squared)
+        return Y_full, (bias_global, bias_mu, bias_log_sigma_squared), t
+        
     
     def forward_novar(self, X_full: torch.Tensor, covariates_idx: torch.Tensor, expr: torch.Tensor):
         """Emulates the forward pass, but without including the global bias.
@@ -968,9 +974,14 @@ class BioNetSC(BioNetCat):
         bias_tot = bias_cats
         X_bias = X_full.T + bias_tot # this is the bias and ligand input combined
         X_new = torch.zeros_like(X_bias) #initialize hidden state values at 0
+        
+        # single pass 
+#         X_new = torch.mm(self.weights, X_bias)
+#         X_new = self.activation(X_new, self.bionet_params['leak'])  
 
+        # RNN
         for t in range(self.bionet_params['max_steps']): # like an RNN, updating from previous time step
-            X_old = X_new
+            X_old = X_new.detach()
             X_new = torch.mm(self.weights, X_new) # scale matrix by edge weights
 
             X_new = X_new + X_bias  # add original values and bias       
@@ -982,7 +993,7 @@ class BioNetSC(BioNetCat):
                     break
 
         Y_full = X_new.T
-        return Y_full, None
+        return Y_full, None, t
     
     def L1_reg_bias(self, 
                bias_global, 

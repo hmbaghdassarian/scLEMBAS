@@ -152,7 +152,7 @@ vae_lambda_l2 = args.vae_lambda_l2
 # In[1]:
 
 
-# fn = 'mini4_fc'#'trash'
+# fn = 'dev'#'trash'
 # run_type = 'E'
 # fn += run_type
 # # seed = 3
@@ -327,7 +327,7 @@ from scLEMBAS import io
 
 # from scLEMBAS.model.train_dev_mu_regularizer import TrainSC as TrainSCDevMu
 # from scLEMBAS.model.train_dev_weights_standard import TrainSC as TrainSCDevWstandard
-from scLEMBAS.model.train_scheduler import TrainSC
+from scLEMBAS.model.train import TrainSC
 from scLEMBAS.preprocess import discriminator_weight_curve, embed_tf_activity, get_alignment_score
 
 
@@ -397,6 +397,18 @@ inhibition_label = 'consensus_inhibition'
 # In[11]:
 
 
+tf_adata.obs.seurat_annotations.nunique()
+
+
+# In[ ]:
+
+
+
+
+
+# In[10]:
+
+
 if drop_low_counts:
     drop_ct = tf_adata.obs.seurat_annotations.value_counts().index.tolist()[-3:]
     tf_adata = tf_adata[~tf_adata.obs.seurat_annotations.isin(drop_ct)]
@@ -405,7 +417,7 @@ if drop_low_counts:
 
 # # 1. Create a novel train-test split:
 
-# In[43]:
+# In[11]:
 
 
 def ood_split(tf_adata, 
@@ -523,7 +535,7 @@ def ood_split(tf_adata,
         return None, None, None, None
 
 
-# In[44]:
+# In[12]:
 
 
 contingency_table = pd.crosstab(tf_adata.obs['stim'], tf_adata.obs['seurat_annotations'], 
@@ -532,7 +544,7 @@ contingency_table = contingency_table.T.sort_values(by = 'Total').T
 bins = pd.qcut(contingency_table.T.Total, q = 4, labels = False)
 
 
-# In[45]:
+# In[13]:
 
 
 if not loo:
@@ -882,7 +894,7 @@ vae_params = {**{'prior_mu': vae_prior_mu,
                  **generate_lr_params(n_epochs = max_epochs, 
                                      max_lr = max_lr, 
                                      lr_scaling_factor = 10, lr_decay = lr_decay, 
-                                     role = 'generator')
+                                     role = 'discriminator') # generator
              }
 del vae_params['max_epochs']
 
@@ -922,92 +934,92 @@ training_params['gradient_noise_scale'] = gradient_noise_scale
 # In[4]:
 
 
-fm = SM[mod_type](net = sn_ppis,
-                 X_in = pd.DataFrame(tf_adata.obs.stim.cat.codes, columns = ['IFNB1']),
-                 y_out = tf_adata.to_df().copy(), 
-                 expr = adata.to_df().copy(), 
-                 covariates = tf_adata.obs.copy(),
-                 categorical_covariate_keys = ['seurat_annotations'],
-                 projection_amplitude_in = projection_amplitude_in, 
-                 projection_amplitude_out = projection_amplitude_out,
-                 weight_label = weight_label, source_label = source_label, target_label = target_label,
-                 bionet_params = bionet_params, 
-                 dtype = torch.float32, device = device, seed = seed)
+# fm = SM[mod_type](net = sn_ppis,
+#                  X_in = pd.DataFrame(tf_adata.obs.stim.cat.codes, columns = ['IFNB1']),
+#                  y_out = tf_adata.to_df().copy(), 
+#                  expr = adata.to_df().copy(), 
+#                  covariates = tf_adata.obs.copy(),
+#                  categorical_covariate_keys = ['seurat_annotations'],
+#                  projection_amplitude_in = projection_amplitude_in, 
+#                  projection_amplitude_out = projection_amplitude_out,
+#                  weight_label = weight_label, source_label = source_label, target_label = target_label,
+#                  bionet_params = bionet_params, 
+#                  dtype = torch.float32, device = device, seed = seed)
 
-fm.input_layer.weights.requires_grad = False # don't learn scaling factors for the ligand input concentrations
-fm.signaling_network.prescale_weights(target_radius = target_spectral_radius) # spectral radius
-
-
+# fm.input_layer.weights.requires_grad = False # don't learn scaling factors for the ligand input concentrations
+# fm.signaling_network.prescale_weights(target_radius = target_spectral_radius) # spectral radius
 
 
-tr = TR[mod_type](mod = fm,
-                   prediction_optimizer = torch.optim.Adam,
-                   prediction_loss_fn = prediction_loss_fn, 
-                       per_condition_loss = per_condition_loss,
-                       n_adversarial_start = n_adversarial_start, 
-                       n_discriminator_train = n_discriminator_train,
-                       gradient_ascent = gradient_ascent,
-                  cat_discriminator_params = cat_discriminator_params,
-                       pert_discriminator_params = pert_discriminator_params,
-                       vae_params = vae_params,
-                   hyper_params = training_params,
-                   train_split = {'train': train_cells, 'test': test_cells, 'validation': None}, 
-                   train_seed = seed, 
-                   track_test = True,
-                   track_validation = False, 
-                      n_eval_cells = n_eval_cells, 
-                      n_eval_bootstrap = 3)
 
-lrs = {'mod': [], 
-      'cat_disc': [], 
-      'pert_disc': [], 
-      'vae': []}
-for e in range(tr.hyper_params['max_epochs']):
-    no_vae = (tr.n_adversarial_start > e) or (e % tr.n_discriminator_train != 0)
+
+# tr = TR[mod_type](mod = fm,
+#                    prediction_optimizer = torch.optim.Adam,
+#                    prediction_loss_fn = prediction_loss_fn, 
+#                        per_condition_loss = per_condition_loss,
+#                        n_adversarial_start = n_adversarial_start, 
+#                        n_discriminator_train = n_discriminator_train,
+#                        gradient_ascent = gradient_ascent,
+#                   cat_discriminator_params = cat_discriminator_params,
+#                        pert_discriminator_params = pert_discriminator_params,
+#                        vae_params = vae_params,
+#                    hyper_params = training_params,
+#                    train_split = {'train': train_cells, 'test': test_cells, 'validation': None}, 
+#                    train_seed = seed, 
+#                    track_test = True,
+#                    track_validation = False, 
+#                       n_eval_cells = n_eval_cells, 
+#                       n_eval_bootstrap = 3)
+
+# lrs = {'mod': [], 
+#       'cat_disc': [], 
+#       'pert_disc': [], 
+#       'vae': []}
+# for e in range(tr.hyper_params['max_epochs']):
+#     no_vae = (tr.n_adversarial_start > e) or (e % tr.n_discriminator_train != 0)
     
-    lrs['mod'].append(tr.prediction_optimizer.param_groups[0]['lr'])
-    lrs['vae'].append(tr.vae_learning['optimizer'].param_groups[0]['lr'])
-    lrs['cat_disc'].append(tr.cat_discriminator['optimizer'].param_groups[0]['lr'])
-    lrs['pert_disc'].append(tr.cat_discriminator['optimizer'].param_groups[0]['lr'])
-    if tr.n_adversarial_start <= e:
-        tr.cat_discriminator['lr_scheduler'].step()
-        tr.pert_discriminator['lr_scheduler'].step()
-    if not no_vae:
-        tr.vae_learning['lr_scheduler'].step()
-    tr.lr_scheduler.step()
+#     lrs['mod'].append(tr.prediction_optimizer.param_groups[0]['lr'])
+#     lrs['vae'].append(tr.vae_learning['optimizer'].param_groups[0]['lr'])
+#     lrs['cat_disc'].append(tr.cat_discriminator['optimizer'].param_groups[0]['lr'])
+#     lrs['pert_disc'].append(tr.cat_discriminator['optimizer'].param_groups[0]['lr'])
+#     if tr.n_adversarial_start <= e:
+#         tr.cat_discriminator['lr_scheduler'].step()
+#         tr.pert_discriminator['lr_scheduler'].step()
+#     if not no_vae:
+#         tr.vae_learning['lr_scheduler'].step()
+#     tr.lr_scheduler.step()
     
-lrs = pd.DataFrame(lrs)
-lrs['epoch'] = range(lrs.shape[0])
+# lrs = pd.DataFrame(lrs)
+# lrs['epoch'] = range(lrs.shape[0])
 
-cols = ['mod', 'cat_disc', 'pert_disc', 'vae']
-ncols = len(cols)
-fig, ax = plt.subplots(ncols = ncols, figsize = (5.1*ncols, 5))
+# cols = ['mod', 'cat_disc', 'pert_disc', 'vae']
+# ncols = len(cols)
+# fig, ax = plt.subplots(ncols = ncols, figsize = (5.1*ncols, 5))
 
-for (i, col) in enumerate(cols):
-    sns.lineplot(data = lrs, x = 'epoch', y = col, ax = ax[i])
-fig.tight_layout()
-("")
+# for (i, col) in enumerate(cols):
+#     sns.lineplot(data = lrs, x = 'epoch', y = col, ax = ax[i])
+# fig.tight_layout()
+# ;
 
 
 # In[ ]:
 
 
-if 'cat_discriminator' not in tr.__dict__.keys():
-    tr.cat_discriminator = tr.discriminator
+# if 'cat_discriminator' not in tr.__dict__.keys():
+#     tr.cat_discriminator = tr.discriminator
 
-fig, ax = plt.subplots(ncols = 2, figsize = (13,5))
-sns.lineplot(tr.cat_discriminator['params']['discriminator_penalty_weight'], ax = ax[0])
-ax[0].set_title('Categorical Discriminator')
+# fig, ax = plt.subplots(ncols = 2, figsize = (13,5))
+# sns.lineplot(tr.cat_discriminator['params']['discriminator_penalty_weight'], ax = ax[0])
+# ax[0].set_title('Categorical Discriminator')
 
-if 'pert_discriminator' in tr.__dict__.keys():
-    sns.lineplot(tr.pert_discriminator['params']['discriminator_penalty_weight'], ax = ax[1])
-ax[1].set_title('Perturbation Discriminator')
+# if 'pert_discriminator' in tr.__dict__.keys():
+#     sns.lineplot(tr.pert_discriminator['params']['discriminator_penalty_weight'], ax = ax[1])
+# ax[1].set_title('Perturbation Discriminator')
 
-for i in range(2):
-    ax[i].set_xlabel('Epochs')
-    ax[i].set_ylabel('Discriminator Penalty Weight')
+# for i in range(2):
+#     ax[i].set_xlabel('Epochs')
+#     ax[i].set_ylabel('Discriminator Penalty Weight')
     
-fig.tight_layout();
+# fig.tight_layout();
 
 
 # In[57]:
@@ -1037,7 +1049,8 @@ trainer = TR[mod_type](mod = mod,
                    prediction_loss_fn = prediction_loss_fn, 
                        per_condition_loss = per_condition_loss,
                        n_adversarial_start = n_adversarial_start, 
-                       n_discriminator_train = n_discriminator_train,
+                       n_cat_discriminator_train = n_discriminator_train,
+                    n_pert_discriminator_train = n_discriminator_train,
                        gradient_ascent = gradient_ascent,
                   cat_discriminator_params = cat_discriminator_params,
                        pert_discriminator_params = pert_discriminator_params,

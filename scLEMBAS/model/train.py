@@ -250,7 +250,9 @@ class TrainBase:
 #                 # for running through model
 #                 self._X_val = self.mod.df_to_tensor(self.X_val)
 #                 self._y_val = self.mod.df_to_tensor(self.y_val)
-        self._initialize_tracking()     
+        self._initialize_tracking()    
+    
+        self._zero = torch.tensor(0, device = self.mod.device, dtype = self.mod.dtype)
     
     def _initialize_tracking(self):  
         self._stats_cols = ['epoch', 'batch_index',
@@ -1078,7 +1080,8 @@ class TrainSC(TrainBase):
         self._stats_cols.extend(['cat_' + cat_type + '_discriminator_grad_l2_norm' for cat_type in list(self.mod.signaling_network.cat_embeddings.keys())])
         self._stats_cols.extend(['pert_adverserial_loss','pert_discriminator_loss_total',
                             'pert_discriminator_loss_prediction', 'pert_discriminator_param_reg_loss' ,
-                            'pert_discriminator_grad_l2_norm'
+                            'pert_discriminator_grad_l2_norm', 
+                                 'rnn_iter_t',
                             ])      
 
         self.stats = {}
@@ -1620,8 +1623,8 @@ class TrainSC(TrainBase):
             self.pert_discriminator['_cur_lr'] = self.pert_discriminator['optimizer'].param_groups[0]['lr']
             self.vae_learning['_cur_lr'] = self.vae_learning['optimizer'].param_groups[0]['lr']
 
-            cur_catdisc_lambda = self.cat_discriminator['params']['discriminator_penalty_weight'][e] if self._run_adv else torch.tensor(0.0, device=self.mod.device, dtype = self.mod.dtype)
-            cur_pertdisc_lambda = self.pert_discriminator['params']['discriminator_penalty_weight'][e] if self._run_adv else torch.tensor(0.0, device=self.mod.device, dtype = self.mod.dtype)
+            cur_catdisc_lambda = self.cat_discriminator['params']['discriminator_penalty_weight'][e] if self._run_adv else self._zero.clone()
+            cur_pertdisc_lambda = self.pert_discriminator['params']['discriminator_penalty_weight'][e] if self._run_adv else self._zero.clone()
 
             # self._run_adv = (
             #     (e >= self.n_adversarial_start)
@@ -1659,27 +1662,25 @@ class TrainSC(TrainBase):
                 X_full = X_full + (noise_scale_factor * network_noise) # randomly add noise to signaling network input, makes model more robust                Y_full, bias_terms = self.mod.signaling_network(X_full = X_full, 
 
                 if self._run_adv:
-                    Y_full, bias_terms = self.mod.signaling_network(X_full = X_full, 
+                    Y_full, bias_terms, rnn_iter_t = self.mod.signaling_network(X_full = X_full, 
                                                                     covariates_idx = covariates_idx_, 
                                                                     expr = expr_) # train signaling network weights
                     bias_global, bias_mu, bias_log_sigma_squared = bias_terms
                 else:
-                    Y_full, _ = self.mod.signaling_network.forward_novar(X_full = X_full, 
+                    Y_full, _, rnn_iter_t = self.mod.signaling_network.forward_novar(X_full = X_full, 
                                                                     covariates_idx = covariates_idx_, 
                                                                     expr = expr_) # train signaling network weights
-
+                
                 Y_hat = self.mod.output_layer(Y_full)
 
                 ######################## Categorical DISCRIMINATOR ########################
-                cat_discriminator_loss  = torch.tensor(0, device = self.mod.device, dtype = self.mod.dtype)
-                pert_discriminator_loss = torch.tensor(0, device = self.mod.device, dtype = self.mod.dtype)
                 if self._run_adv:
                     for discriminator in self.cat_discriminator['discriminators'].values():
                             unfreeze_model(model = discriminator)
                     for nd in range(self.n_cat_discriminator_train):
                         self.cat_discriminator['optimizer'].zero_grad()
                         # discriminator prediction and loss
-                        cat_discriminator_loss_accuracy = torch.tensor(0.0, device = self.mod.device, dtype = self.mod.dtype)
+                        cat_discriminator_loss_accuracy = self._zero.clone()
                         for cat_group_idx, (cat, discriminator) in enumerate(self.cat_discriminator['discriminators'].items()):
                             bias_global_prediction = discriminator(bias_global.detach()) # predicted logits
                             # if don't use retain_graph = True, then use bias_global.detach() here
@@ -1691,7 +1692,7 @@ class TrainSC(TrainBase):
                             cat_discriminator_loss_accuracy += discriminator.loss_fn(bias_global_prediction, target)   
 
                         # discriminator regularization
-                        cat_discriminator_reg = torch.tensor(0.0, device = self.mod.device, dtype = self.mod.dtype)
+                        cat_discriminator_reg = self._zero.clone()
                         for discriminator in self.cat_discriminator['discriminators'].values():
                             cat_discriminator_reg += discriminator.L2_reg(self.cat_discriminator['params']['discriminator_lambda_L2'])
                         cat_discriminator_loss = cat_discriminator_loss_accuracy + cat_discriminator_reg
@@ -1743,6 +1744,16 @@ class TrainSC(TrainBase):
                             pert_grad_l2 = self.get_global_l2_norm(self.pert_discriminator['discriminator']) # tracking
                         self.pert_discriminator['optimizer'].step()
                     freeze_model(model = self.pert_discriminator['discriminator'])
+                else:
+                    cat_discriminator_loss  = self._zero.clone()
+                    cat_discriminator_loss_accuracy = self._zero.clone()
+                    cat_discriminator_reg = self._zero.clone()
+                    cat_grad_l2s = np.array([0.0]*len(self.cat_discriminator['discriminators']))
+
+                    pert_discriminator_loss = self._zero.clone()
+                    pert_discriminator_loss_accuracy = self._zero.clone()
+                    pert_discriminator_reg = self._zero.clone()
+                    pert_grad_l2 = 0.0
 
 
                 ######################## LEMBAS and generator ########################
@@ -1785,7 +1796,7 @@ class TrainSC(TrainBase):
 
                 # for adj matrix 
                 if self.hyper_params['adj_scaling_KL'] == 0:
-                    kl_divergence_adj = torch.tensor(0.0, device=self.mod.device, dtype=self.mod.dtype)
+                    kl_divergence_adj = self._zero.clone()
                 else:
                     unmasked_weights = self.mod.signaling_network.weights[~self.mod.signaling_network.mask]
                     kl_divergence_adj = self.hyper_params['adj_scaling_KL'] *kl_divergence_normal(empirical_values = unmasked_weights, 
@@ -1793,7 +1804,7 @@ class TrainSC(TrainBase):
                                                                 sigma=self.hyper_params['adj_prior_sigma'], 
                                                                 eps=1e-8)
 
-                kl_divergence_gb = torch.tensor(0.0, device=self.mod.device, dtype=self.mod.dtype)
+                kl_divergence_gb = self._zero.clone()
                 if self._run_adv:
                     # for global bias
                     kl_divergence_gb = self.mod.signaling_network.vae.KL_divergence(z_mu = bias_mu, 
@@ -1803,7 +1814,7 @@ class TrainSC(TrainBase):
                                                                                 prior_sigma = self.vae_learning['params']['prior_sigma'])
                 tot_pred_loss = prediction_loss + sign_reg + param_reg + stability_loss + uniform_reg + kl_divergence_gb + kl_divergence_adj
 
-                pert_adverserial_loss, cat_adverserial_loss = torch.tensor(0.0, device = self.mod.device, dtype = self.mod.dtype), torch.tensor(0.0, device = self.mod.device, dtype = self.mod.dtype)
+                pert_adverserial_loss, cat_adverserial_loss = self._zero.clone(), self._zero.clone()
                 # adverserial portion -- same as discriminator, but recalculating on trained model
                 if self._run_adv:
                     # categorical adversary
@@ -1884,11 +1895,11 @@ class TrainSC(TrainBase):
                                     np.array([v.detach().item() for v in sn_param_reg.values()]),
                                     np.array([v.detach().item() for v in output_param_reg.values()]),
                                     np.array([vae_reg.detach().item(), vae_grad_l2, kl_divergence_gb.detach().item(),
-                                            cur_catdisc_lambda*cat_adverserial_loss.detach().item(), cat_discriminator_loss.detach().item(), 
+                                            (cur_catdisc_lambda*cat_adverserial_loss).detach().item(), cat_discriminator_loss.detach().item(), 
                                             cat_discriminator_loss_accuracy.detach().item(), cat_discriminator_reg.detach().item()]),
                                     cat_grad_l2s,
-                                    np.array([cur_pertdisc_lambda*pert_adverserial_loss.detach().item(), pert_discriminator_loss.detach().item(), 
-                                            pert_discriminator_loss_accuracy.detach().item(), pert_discriminator_reg.detach().item(), pert_grad_l2
+                                    np.array([(cur_pertdisc_lambda*pert_adverserial_loss).detach().item(), pert_discriminator_loss.detach().item(), 
+                                            pert_discriminator_loss_accuracy.detach().item(), pert_discriminator_reg.detach().item(), pert_grad_l2, rnn_iter_t
                                             ])
                                     ])
 
