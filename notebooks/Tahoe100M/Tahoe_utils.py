@@ -32,10 +32,7 @@ from scLEMBAS import preprocess as pp
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-def ss_explained_var(Y, Y_pred):
-    ss_res = np.sum((Y - Y_pred) ** 2)
-    ss_tot = np.sum((Y - np.mean(Y, axis=0)) ** 2)
-    return 1 - ss_res / ss_tot
+
 
 
 def prepare_input_matrix(adata, 
@@ -130,11 +127,11 @@ def pls_da(adata,
 #         
 
         Y_pred = pls_model.predict(X)
-        explained_var_y = ss_explained_var(Y, Y_pred) #1 - np.sum((Y - Y_pred) ** 2) / np.sum((Y - Y.mean(axis=0)) ** 2)
+        explained_var_y = pp.ss_explained_var(Y, Y_pred) #1 - np.sum((Y - Y_pred) ** 2) / np.sum((Y - Y.mean(axis=0)) ** 2)
         
         
 #         X_pred = pls_model.x_scores_ @ pls_model.x_loadings_.T
-#         explained_var_x = ss_explained_var(X, X_pred)
+#         explained_var_x = pp.ss_explained_var(X, X_pred)
 #         explained_var_x = np.var(pls_model.x_scores_, axis=0) / np.var(X, axis=0).sum()
 #         cum_explained_x = np.cumsum(explained_var_x)[-1]
 

@@ -16,7 +16,11 @@ from scipy.spatial.distance import pdist, squareform
 from scipy.spatial.distance import euclidean
 import statsmodels.stats.multitest as smm
 from cliffs_delta import cliffs_delta
+
 from sklearn.metrics import normalized_mutual_info_score
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.linear_model import LinearRegression 
+from sklearn.ensemble import RandomForestRegressor
 
 import torch
 from geomloss import SamplesLoss
@@ -1191,3 +1195,69 @@ def discriminator_weight_curve(n_epochs: int,
     discriminator_penalty_weight = dpw.tolist()
     
     return discriminator_penalty_weight
+
+
+def ss_explained_var(Y, Y_pred):
+    ss_res = np.sum((Y - Y_pred) ** 2)
+    ss_tot = np.sum((Y - np.mean(Y)) ** 2)
+    return 1 - ss_res / ss_tot
+
+def pc_association(adata, 
+                   covariates: List[str], 
+                  model_type: Literal['linear', 'nonlinear'], 
+                  n_cores: int, 
+                  seed: int = 888):
+    """Gets the linear association between a set of PCs stored in the AnnData object
+    and covariates in the `adata.obs`, returning the R^2. 
+
+    Parameters
+    ----------
+    adata : _type_
+        anndata object
+    covariates : List[str]
+        categorical covariates asssociated to test for
+    model_type : Literal['linear', 'nonlinear']
+        uses LinearRegression if linear and RandomForest if nonlinear
+    """
+    n_pcs = adata.uns['pca']['pca_rank'] if 'pca_rank' in adata.uns['pca'] else adata.obsm["X_pca"].shape[1]
+    
+    pcs = adata.obsm['X_pca'][:, :n_pcs]
+    
+    if model_type == 'linear':
+        model_general = LinearRegression()
+    elif model_type == 'nonlinear':
+        model_general = RandomForestRegressor(random_state=seed,
+                n_jobs=n_cores,                 
+                verbose=False )
+    
+    res = []
+    for cov_ in covariates:
+        print(cov_)
+        cov = adata.obs[cov_]
+        
+        if pd.api.types.is_numeric_dtype(cov):
+            X_cov = cov.values.reshape(-1, 1)
+        else:
+            enc = OneHotEncoder(drop="first", sparse_output=False)
+            X_cov = enc.fit_transform(cov.astype(str).values.reshape(-1, 1))
+        
+        r2_scores = []
+        for pc_idx in trange(pcs.shape[1]):
+            y = pcs[:, pc_idx]
+            model = model_general.fit(X_cov, y)
+            y_pred = model.predict(X_cov)
+            r2 = ss_explained_var(y, y_pred)
+#             model = model_general.fit(X_cov, y)            
+#             r2 = model.score(X_cov, y)
+            r2_scores.append({"PC": pc_idx + 1, "R2": r2})
+
+        r2_df = pd.DataFrame(r2_scores)
+        r2_df['covariate'] = cov_
+        res.append(r2_df)
+        
+    r2_df = pd.concat(res, axis=0, ignore_index=True)
+    r2_df = r2_df.pivot(index='PC', columns='covariate', values='R2').reset_index()
+    r2_df.columns.name = None
+    r2_df['model_type'] = model_type
+    
+    return r2_df
