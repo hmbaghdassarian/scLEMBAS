@@ -83,13 +83,16 @@ parser.add_argument("--gradient_ascent", type=str_to_bool)
 parser.add_argument("--n_adversarial_start", type=int)
 parser.add_argument("--n_discriminator_train", type=int)
 
-parser.add_argument("--lr_decay", type=float)
 parser.add_argument("--vae_lambda_l2", type=float)
 
 parser.add_argument("--min_cat_adv_penalty", type=float)
 parser.add_argument("--min_pert_adv_penalty", type=float)
-parser.add_argument("--generator_max_lr", type=float)
 
+parser.add_argument("--main_max_lr", type=float)
+parser.add_argument("--generator_max_lr", type=float)
+parser.add_argument("--cat_max_lr", type=float)
+parser.add_argument("--pert_max_lr", type=float)
+parser.add_argument("--lr_decay", type=float)
 
 ########################################################################
 args = parser.parse_args()
@@ -144,14 +147,18 @@ gradient_ascent = args.gradient_ascent
 n_adversarial_start = args.n_adversarial_start
 n_discriminator_train = args.n_discriminator_train
 
-lr_decay = args.lr_decay
 vae_lambda_l2 = args.vae_lambda_l2
 min_cat_adv_penalty = args.min_cat_adv_penalty
 min_pert_adv_penalty = args.min_pert_adv_penalty
+
+main_max_lr = args.main_max_lr
 generator_max_lr = args.generator_max_lr
+cat_max_lr = args.cat_max_lr
+pert_max_lr = args.pert_max_lr
+lr_decay = args.lr_decay
 
 
-#python test_MAIN_scheduler.py --index 44 --run_type E --bn_weights_lambda_L2 1e-7 --uniform_lambda_L2 1e-7 --cat_max_norm 100 --global_bias_lambda_L2 0 --cat_bias_lambda_L2 0 --vae_scaling_KL 1e-3 --global_bias_lambda_L1 0 --cat_bias_lambda_L1 0 --vae_prior_mu 0 --vae_prior_sigma 1 --adj_scaling_KL 0 --adj_prior_mu 0 --adj_prior_sigma 0.2 --loss_type MSE --per_condition_loss true --cat_bias_orthogonality_scaler 100 --cat_max_penalty_weight 12 --cat_b_adv 2 --pert_max_penalty_weight 8 --pert_b_adv 3.5 --network_noise_scale 0.01 --min_network_noise 0.0025 --include_gradient_noise_vae true --include_gradient_noise_embedding true --constant_gradient_noise true --gradient_noise_scale 1e-9 --lr_period 4 --reset_state false --train_batch 500 --initialize_fc true --generator_dropout_rate 0.7 --discriminator_dropout_rate 0.3 --discriminator_batch_momentum 0 --spectral_norm false --discriminator_lambda_L2 1e-3 --discriminator_bionet_activation false --smooth_labels true --gradient_ascent true --n_adversarial_start 200 --n_discriminator_train 5 --lr_decay 0.9 --vae_lambda_l2 1e-5 --min_cat_adv_penalty 0.1 --min_pert_adv_penalty 0.1
+#python test_run.py --index 2v2 --run_type E --bn_weights_lambda_L2 1e-7 --uniform_lambda_L2 1e-7 --cat_max_norm 100 --global_bias_lambda_L2 0 --cat_bias_lambda_L2 1e-4 --vae_scaling_KL 1e-3 --global_bias_lambda_L1 0 --cat_bias_lambda_L1 0 --vae_prior_mu 0 --vae_prior_sigma 1 --adj_scaling_KL 0 --adj_prior_mu 0 --adj_prior_sigma 0.2 --loss_type MSE --per_condition_loss true --cat_bias_orthogonality_scaler 100 --cat_max_penalty_weight 12 --cat_b_adv 2 --pert_max_penalty_weight 8 --pert_b_adv 3.5 --network_noise_scale 0.01 --min_network_noise 0.0025 --include_gradient_noise_vae true --include_gradient_noise_embedding true --constant_gradient_noise true --gradient_noise_scale 1e-9 --lr_period 4 --reset_state false --train_batch 500 --initialize_fc true --generator_dropout_rate 0.7 --discriminator_dropout_rate 0.3 --discriminator_batch_momentum 0 --spectral_norm false --discriminator_lambda_L2 1e-3 --discriminator_bionet_activation false --smooth_labels true --gradient_ascent true --n_adversarial_start 200 --n_discriminator_train 5 --vae_lambda_l2 1e-5 --min_cat_adv_penalty 0.1 --min_pert_adv_penalty 0.1 --main_max_lr 1e-3 --generator_max_lr 1e-3 --cat_max_lr 1e-3 --pert_max_lr 1e-3 --lr_decay 0.9
 
 
 # 
@@ -216,6 +223,12 @@ generator_max_lr = args.generator_max_lr
 
 # lr_decay = 0.9
 # vae_lambda_l2 = 1e-5
+
+
+# main_max_lr = 1e-3 
+# generator_max_lr = 1e-3 
+# cat_max_lr = 1e-3 
+# pert_max_l =r 1e-3
 
 
 # In[16]:
@@ -849,7 +862,7 @@ regularization_params_default = {'input_lambda_L2': 0, # doesn't matter if setti
 # In[37]:
 
 
-max_lr = 0.001
+# max_lr = 0.001
 
 if max_epochs > n_adversarial_start:
     cat_discriminator_penalty_weight = discriminator_weight_curve(n_epochs = max_epochs - n_adversarial_start,
@@ -871,11 +884,17 @@ else:
 
 
 lr_params = generate_lr_params(n_epochs = max_epochs, 
-                               max_lr = max_lr, lr_scaling_factor = 10, lr_decay = lr_decay, role = 'scl')
+                               max_lr = main_max_lr, lr_scaling_factor = 10, lr_decay = lr_decay, role = 'scl')
+
 cat_discriminator_params = generate_discriminator_params(n_epochs = max_epochs, 
-                                                         max_lr = max_lr, 
+                                                         max_lr = cat_max_lr, 
                                                          discriminator_penalty_weight = cat_discriminator_penalty_weight, 
                                                          lr_scaling_factor = 10, lr_decay = lr_decay)
+pert_discriminator_params = generate_discriminator_params(n_epochs = max_epochs, 
+                                                         max_lr = pert_max_lr, 
+                                                         discriminator_penalty_weight = pert_discriminator_penalty_weight, 
+                                                         lr_scaling_factor = 10, lr_decay = lr_decay)
+
 
 vae_params = {**{'prior_mu': vae_prior_mu,
               'prior_sigma': vae_prior_sigma,
@@ -883,7 +902,7 @@ vae_params = {**{'prior_mu': vae_prior_mu,
               'scaling_KL': vae_scaling_KL, #1e-2
               'optimizer': torch.optim.Adam}, 
                  **generate_lr_params(n_epochs = max_epochs, 
-                                     max_lr = max_lr, 
+                                     max_lr = generator_max_lr, 
                                      lr_scaling_factor = 10, lr_decay = lr_decay, 
                                      role = 'discriminator') # generator
              }
@@ -891,8 +910,7 @@ del vae_params['max_epochs']
 
 
 
-pert_discriminator_params = cat_discriminator_params.copy()
-pert_discriminator_params['discriminator_penalty_weight'] = pert_discriminator_penalty_weight
+
 
 regularization_params = regularization_params_default.copy()
 batch_params = {**batch_params_default,

@@ -26,9 +26,6 @@ import torch
 from geomloss import SamplesLoss
 
 from sklearn.decomposition import PCA
-from kneed import KneeLocator
-import decoupler as dc
-from decoupler.pre import extract
 
 from anndata import AnnData
 import scanpy as sc
@@ -85,7 +82,10 @@ def get_tf_activity(adata, organism: str, grn = 'collectri',
     pvals : DataFrame
         Obtained TF activity p-values. Stored in `adata.obsm['consensus_pvals']`.
     """
-    
+    import decoupler as dc
+    #from decoupler.pre import extract
+
+
     if hvg:
         adata = adata[:, adata.var['highly_variable']].copy()
     else:
@@ -226,6 +226,8 @@ def _compute_elbow(adata, curve='convex', direction='decreasing', **kwargs):
     rank : int
         principle component where the elbow is located in the curve.
     '''
+    from kneed import KneeLocator
+
     variance_ratio = adata.uns['pca']['variance_ratio']
     pcs = np.array(range(len(variance_ratio))) + 1
     kneedle = KneeLocator(x = pcs, y = variance_ratio, curve=curve, direction=direction, **kwargs)
