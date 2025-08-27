@@ -380,11 +380,18 @@ class TrainBase:
     @staticmethod
     def get_global_l2_norm(mod: torch.nn.Module) -> float:
         """Returns the global L2 norm of gradients for all parameters in a model. For tracking purposes only."""
-        grad_norm_sq = 0.0
-        for param in mod.parameters():
-            if param.grad is not None:
-                grad_norm_sq += param.grad.detach().norm(2).item() ** 2
-        return grad_norm_sq ** 0.5
+#         grad_norm_sq = 0.0
+#         for param in mod.parameters():
+#             if param.grad is not None:
+#                 grad_norm_sq += param.grad.detach().norm(2).item() ** 2
+#         return grad_norm_sq ** 0.5
+        sq = None
+        for p in mod.parameters():
+            if p.grad is not None:
+                g = p.grad.detach()
+                s = g.pow(2).sum()
+                sq = s if sq is None else sq + s
+        return float(sq.sqrt()) if sq is not None else 0.0
 
     def print_stats(self, e):
         """Prints various stats of the progress of training the model.
@@ -1700,6 +1707,9 @@ class TrainSC(TrainBase):
                         # discriminator optimization
                         # NOTE: discriminator is optimized prior to adverserial training (and loss re-calculated)
                         cat_discriminator_loss.backward() # if bias global is not detached, need to set retain_graph = True here
+                        for discriminator in self.cat_discriminator['discriminators'].values():
+                            nn.utils.clip_grad_norm_(discriminator.parameters(), max_norm=100.0)
+                        
                         if nd == self.n_cat_discriminator_train - 1: # tracking only
                             cat_grad_l2s = np.array([self.get_global_l2_norm(mod_discriminator) for mod_discriminator in self.cat_discriminator['discriminators'].values()])
                         self.cat_discriminator['optimizer'].step()
@@ -1740,8 +1750,10 @@ class TrainSC(TrainBase):
 
                         # discriminator optimization
                         pert_discriminator_loss.backward()
+                        nn.utils.clip_grad_norm_(self.pert_discriminator['discriminator'].parameters(), max_norm=100.0)
                         if nd == self.n_pert_discriminator_train - 1: # tracking only
                             pert_grad_l2 = self.get_global_l2_norm(self.pert_discriminator['discriminator']) # tracking
+                        
                         self.pert_discriminator['optimizer'].step()
                     freeze_model(model = self.pert_discriminator['discriminator'])
                 else:
@@ -1864,6 +1876,9 @@ class TrainSC(TrainBase):
 
                 # model gradient
                 tot_pred_loss.backward()
+                if self._run_adv:
+                    nn.utils.clip_grad_norm_(self.mod.signaling_network.vae.parameters(), max_norm=100.0)
+                
 
                 # tracking
                 vae_grad_l2 = 0
@@ -2019,6 +2034,10 @@ class TrainSC(TrainBase):
 
         self.stats['gradient_noise'] = pd.DataFrame(data = self.stats['gradient_noise'], 
                                                     columns = self._noise_cols)
+        
+        
+        if self.stats['train']['vae_grad_l2_norm'].max() > 10*self.stats['train']['vae_grad_l2_norm'].median():
+            warnings.warn('Likely had exploding gradients for generator')
 
 
         if verbose:

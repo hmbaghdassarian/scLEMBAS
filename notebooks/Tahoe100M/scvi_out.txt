@@ -1,0 +1,4 @@
+Variance explained by PC1 of aggregated cell cycle metrics: 70.677%
+Load scVI model
+[34mINFO    [0m File [35m/nobackup/users/hmbaghda/scLEMBAS/analysis/processed/Tahoe100M_scvi_mod.scvi/[0m[95mmodel.pt[0m already downloaded       
+Get counts

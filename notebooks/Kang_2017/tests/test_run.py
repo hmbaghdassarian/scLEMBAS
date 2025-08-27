@@ -70,7 +70,9 @@ parser.add_argument("--reset_state", type=str_to_bool, default='true', help="cat
 parser.add_argument("--train_batch", type=int)
 parser.add_argument("--initialize_fc", type=str_to_bool)
 parser.add_argument("--generator_dropout_rate", type=float)
-parser.add_argument("--discriminator_dropout_rate", type=float)
+parser.add_argument("--cat_discriminator_dropout_rate", type=float)
+parser.add_argument("--pert_discriminator_dropout_rate", type=float)
+
 
 
 parser.add_argument("--discriminator_batch_momentum", type=float)
@@ -137,7 +139,8 @@ reset_state = args.reset_state
 train_batch = args.train_batch
 initialize_fc = args.initialize_fc
 generator_dropout_rate = args.generator_dropout_rate
-discriminator_dropout_rate = args.discriminator_dropout_rate
+cat_discriminator_dropout_rate = args.cat_discriminator_dropout_rate
+pert_discriminator_dropout_rate = args.pert_discriminator_dropout_rate
 discriminator_batch_momentum = None if args.discriminator_batch_momentum == 0 else args.discriminator_batch_momentum
 spectral_norm = args.spectral_norm
 discriminator_lambda_L2 = 0 if spectral_norm else args.discriminator_lambda_L2
@@ -763,6 +766,7 @@ def generate_lr_params(n_epochs, max_lr, lr_scaling_factor=10, lr_decay=0.75, ro
 
 
 def generate_discriminator_params(n_epochs, max_lr, discriminator_penalty_weight, 
+                                  discriminator_dropout_rate,
                                   lr_scaling_factor = 10, lr_decay = lr_decay):
     general_params = generate_lr_params(n_epochs, #n_epochs - n_adversarial_start, 
                                         max_lr, 
@@ -888,10 +892,12 @@ lr_params = generate_lr_params(n_epochs = max_epochs,
 
 cat_discriminator_params = generate_discriminator_params(n_epochs = max_epochs, 
                                                          max_lr = cat_max_lr, 
+                                                         discriminator_dropout_rate = cat_discriminator_dropout_rate,
                                                          discriminator_penalty_weight = cat_discriminator_penalty_weight, 
                                                          lr_scaling_factor = 10, lr_decay = lr_decay)
 pert_discriminator_params = generate_discriminator_params(n_epochs = max_epochs, 
                                                          max_lr = pert_max_lr, 
+                                                          discriminator_dropout_rate = pert_discriminator_dropout_rate,
                                                          discriminator_penalty_weight = pert_discriminator_penalty_weight, 
                                                          lr_scaling_factor = 10, lr_decay = lr_decay)
 
