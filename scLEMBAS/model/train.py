@@ -22,6 +22,7 @@ from .model_utilities import update_with_defaults, kl_divergence_normal, freeze_
 from .bionetwork import BioNetSimple, BioNetCat, BioNetSC
 from .model_components import CatDiscriminator
 from .lr_schedulers import WarmupCosineAnnealingWarmRestarts
+from .cat_pert_regularizer import CatPertRegularizer
 
 # configure logger
 if not logging.getLogger().hasHandlers():
@@ -656,8 +657,8 @@ class TrainCat(TrainBase):
     
     HYPER_PARAMS = {**TrainBase.HYPER_PARAMS, 
                     **{'cat_bias_lambda_L2': 0, # since cat max norm has been implemented
-                       'cat_bias_lambda_L1': 0, 
-                       'cat_bias_orthogonality_scaler': 0} 
+                       'cat_bias_lambda_L1': 0, }
+                       #'cat_bias_orthogonality_scaler': 0} 
                    }
     
     def __init__(self,
@@ -934,6 +935,12 @@ class TrainSC(TrainBase):
                        'include_gradient_noise_embedding': True, # add noise to embedding params
                       'constant_gradient_noise': True}
                    }
+    CAT_PERT_PARAMS = {'regularization_scaler': 0.0, 
+                       'method': 'orthogonality', 
+                       'per_label': False, 
+                       'include_adjacency': False, 
+                       'temperature': 0.1
+                      }
     
     def __init__(self,
                  mod, 
@@ -948,6 +955,7 @@ class TrainSC(TrainBase):
                  pert_discriminator_params: Dict = None, 
                  vae_params: Dict = None,
                  hyper_params: Dict[str, Union[int, float]] = None,
+                 cat_pert_params: Dict[str, Union[int, float]] = None,
                  train_split: Optional[Dict[str, Union[float, List[str]]]] = {'train': 0.8, 'test': 0.2, 'validation': None},
                  train_seed: int = None,
                  track_test: bool = False,
@@ -975,6 +983,21 @@ class TrainSC(TrainBase):
         n_pert_discriminator_train : int, optional
             how frequently to train the perturbation discriminator relative to the rest of the model, by default 5
             will train the discriminator n_pert_discriminator_train times every epoch
+        cat_pert_params : see `cat_pert_regularizer` script for details
+            hyperparameters specific to regularizations categorical bias against perturbation information
+            - 'regularization_scaler': constant by which to mulitply the regularization value by
+            - 'method': how to regularize categorical bias against perturbation, by default 'orthogonality'
+                - 'orthogonality': captures linear relationships with a Frobenius norm approach
+                - 'info_nce': captures linear and nonlinear relationships with a contrastive loss approach
+                - 'kl_divergence': penalizes deviation from a uniform similarity distribution between covariates and 
+                perturbation samples (minimally informative representation)
+            - 'per_label': whether to apply regularization per label within a categorical group (True), or globall across all
+            labels at once (False), by default False
+            - include_adjacency : whether to include the activation function and adjacency matrix in the perturbation term 
+            (True) or just use the perturbation directly (False), by default False
+            - temperature : only relevant if method is info_nce or kl_divergence. A scaling factor applied to the similarity 
+            logits before softmax/log-softmax. Lower values sharpen the distribution, increasing emphasis on the 
+            highest similarities.Higher values produce a softer distribution. Default is 0.1.
         cat_discriminator_params : Dict
             key word arguments to pass to `CatDiscriminator`. see TrainSC.cat_discriminator_params for defaults
             as well as:
@@ -1066,6 +1089,16 @@ class TrainSC(TrainBase):
             self.hyper_params['gradient_noise_scale'] = torch.tensor([self.hyper_params['gradient_noise_scale']], 
                                                                      device = self.mod.device, 
                                                                      dtype = self.mod.dtype)
+            
+        self.hyper_params['cat_pert'] = update_with_defaults(self.CAT_PERT_PARAMS, cat_pert_params)
+        self.cat_pert_regularizer = CatPertRegularizer(
+            bionetwork_class = self.mod.signaling_network,
+            regularization_scaler = self.hyper_params['cat_pert']['regularization_scaler'],
+            method = self.hyper_params['cat_pert']['method'],
+            per_label = self.hyper_params['cat_pert']['per_label'],
+            include_adjacency = self.hyper_params['cat_pert']['include_adjacency'], 
+            temperature = self.hyper_params['cat_pert']['temperature'],
+        )
 
     def _initialize_tracking(self): 
         self._stats_cols = ['epoch', 'batch_index', 
@@ -1079,7 +1112,7 @@ class TrainSC(TrainBase):
                             'sn_param_reg_weights_kl_divergence',
                             'sn_param_reg_weights_L2_loss', 
                             'sn_param_reg_global_bias_L2_loss', 'sn_param_reg_cat_bias_L2_loss',
-                            'sn_param_reg_global_bias_L1_loss', 'sn_param_reg_cat_bias_L1_loss', 'sn_param_reg_cat_bias_orthogonality',
+                            'sn_param_reg_global_bias_L1_loss', 'sn_param_reg_cat_bias_L1_loss', 'sn_param_reg_cat_bias_pert',
                             'output_param_reg_weights_loss', 'output_param_reg_bias_loss',
                             'vae_param_reg_loss', 'vae_grad_l2_norm', 'global_bias_kl_divergence',
                             'cat_adverserial_loss','cat_discriminator_loss_total',
@@ -1172,7 +1205,7 @@ class TrainSC(TrainBase):
             if param in torch_type_params and not torch.is_tensor(param_value):
                     self.hyper_params[param] = torch.tensor(param_value, device=self.mod.device, dtype=self.mod.dtype)  
 
-        self.vae_learning['optimizer'] = self.vae_learning['params']['optimizer'](self.mod.signaling_network.parameters(),
+        self.vae_learning['optimizer'] = self.vae_learning['params']['optimizer'](self.mod.signaling_network.vae.parameters(),
                                                                                   lr = self.vae_learning['params']['maximum_learning_rate'],
                                                                                   weight_decay = 0)
         self.vae_learning['lr_scheduler'] = WarmupCosineAnnealingWarmRestarts(optimizer = self.vae_learning['optimizer'], 
@@ -1793,10 +1826,17 @@ class TrainSC(TrainBase):
                                                                         cat_bias_lambda_L1 = self.hyper_params['cat_bias_lambda_L1'])
     #                 from collections import OrderedDict
     #                 sn_cat_bias_orthogonality_reg = OrderedDict({'cat_bias_orthogonality_loss': 0})
-                sn_cat_bias_orthogonality_reg = self.mod.signaling_network.cat_orthogonality_regularization(covariates_idx = covariates_idx_,
-                                                                                                            X_in = X_in_,
-                                                                                                            regularization_scaler = self.hyper_params['cat_bias_orthogonality_scaler'])
-                sn_param_reg = {**sn_param_reg, **sn_bias_l1_reg, **sn_cat_bias_orthogonality_reg}
+#                 sn_cat_bias_orthogonality_reg = self.mod.signaling_network.cat_orthogonality_regularization(covariates_idx = covariates_idx_,
+#                                                                                                             X_in = X_in_,
+#                                                                                                             regularization_scaler = self.hyper_params['cat_bias_orthogonality_scaler'])
+                    
+
+                self.cat_pert_regularizer.update_attributes(
+                    pert_in = X_in_ if not self.cat_pert_regularizer.include_adjacency else X_full,
+                    covariates_idx = covariates_idx_)
+                sn_cat_bias_pert_reg = self.cat_pert_regularizer()
+                    
+                sn_param_reg = {**sn_param_reg, **sn_bias_l1_reg, **sn_cat_bias_pert_reg}
                 param_reg = input_param_reg + sum(sn_param_reg.values()) + sum(output_param_reg.values())
                 vae_reg = torch.tensor(0.0)
                 if self._run_adv:
@@ -2072,4 +2112,4 @@ class TrainSC(TrainBase):
         msg += ', s={:.5f}'.format(temp_df.spectral_radius)
         msg += ', r={:.5f}'.format(temp_df.learning_rate)
         msg += ', v={:.5f}'.format(temp_df.n_moa_violations)
-        print(msg)
+        print(msg)['']
