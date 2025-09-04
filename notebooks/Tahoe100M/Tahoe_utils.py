@@ -15,10 +15,11 @@ import pandas as pd
 import scanpy as sc
 
 from sklearn.model_selection import KFold, StratifiedKFold, cross_val_score
-# from sklearn.metrics import normalized_mutual_info_score
+from sklearn.linear_model import LogisticRegression 
 from sklearn.cross_decomposition import PLSRegression
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.pipeline import make_pipeline
+import scipy
 
 import torch
 from geomloss import SamplesLoss
@@ -33,10 +34,8 @@ from scLEMBAS import preprocess as pp
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 
-
-
-def prepare_input_matrix(adata, 
-                         control_confounders = True, 
+def prepare_input_matrix_plsda(adata, 
+                         control_confounders: List = ['cell_line'], #'plate', 
                         enc_X = None):
     
     """Prepares input for PLSR, and fits one-hot encodings of 
@@ -45,16 +44,27 @@ def prepare_input_matrix(adata,
     *Note, noticed that adding in cell cycle scores doesn't make a difference, but including
     the plate does make a substantial difference in assessment metrics. 
     """
-    X = adata.X
-    if control_confounders:
-#         # covariates
-        cell_line = adata.obs['cell_line'].astype(str).values
-        plate = adata.obs['plate'].astype(str).values
+    
+    if scipy.sparse.issparse(adata.X):
+        X = adata.X.toarray()
+    else:
+        X = adata.X
+        
+    if len(control_confounders) != 0:
+        covariate_arrays = []
+        for cov in control_confounders:
+            if not isinstance(adata.obs[cov].dtype, pd.CategoricalDtype):
+                raise ValueError('All covariates being controlled for need to be categorical in this version')
+            covariate_arrays.append(adata.obs[cov].astype(str).values)
+
+        covariate_matrix = np.stack(covariate_arrays, axis=1)
 
         if enc_X is None:
-            enc_X = OneHotEncoder(sparse_output=False, drop='first')  # drop to avoid collinearity
-            enc_X.fit(np.stack([cell_line, plate], axis=1))
-        covariates = enc_X.transform(np.stack([cell_line, plate], axis=1)) 
+            enc_X = OneHotEncoder(sparse_output=False, drop='first') # drop to avoid collinearity
+            enc_X.fit(covariate_matrix)
+
+        covariates = enc_X.transform(covariate_matrix)
+        X = np.concatenate([X, covariates], axis=1)
 
 #         cell_cycle_scores = np.concatenate([
 #             adata.obs['S_score'].values.reshape(-1, 1),
@@ -65,13 +75,12 @@ def prepare_input_matrix(adata,
 #         cell_cycle_scaled = scaler.fit_transform(cell_cycle_scores)
 
 #         X = np.concatenate([X, covariates, cell_cycle_scaled], axis=1)
-        X = np.concatenate([X, covariates], axis=1)
     return X, enc_X
 
 
 def pls_da(adata, 
            n_components: int, 
-          control_confounders: bool = True, 
+          control_confounders: List = ['cell_line'], #'plate', 
           assess: bool = True, 
            return_components: bool = True,
           seed: int = 888, 
@@ -85,8 +94,8 @@ def pls_da(adata,
         anndata object
     n_components : int
         Number of PLS components to use
-    control_confounders : bool, optional
-        controls for various confounders in the X-block of PLS-DA, by default True
+    control_confounders : List, optional
+        controls for various confounders in the X-block of PLS-DA, by default ['cell_line']
     assess : bool, optional
         gets assessment metrics for PLS fit, by default True
     return_components : bool, optional
@@ -105,7 +114,7 @@ def pls_da(adata,
         enc_Y.fit(y)
     Y = enc_Y.transform(y)
 
-    X, enc_X = prepare_input_matrix(adata = adata,
+    X, enc_X = prepare_input_matrix_plsda(adata = adata,
                                     control_confounders = control_confounders, 
                                    enc_X = enc_X)
 
