@@ -11,16 +11,11 @@ from typing import List, Literal, Optional, Tuple
 import numpy as np
 import pandas as pd
 from scipy.stats import mannwhitneyu, ttest_ind, rankdata
-from scipy import stats
+from scipy import stats, sparse
 from scipy.spatial.distance import pdist, squareform
 from scipy.spatial.distance import euclidean
 import statsmodels.stats.multitest as smm
 from cliffs_delta import cliffs_delta
-
-from sklearn.metrics import normalized_mutual_info_score
-from sklearn.preprocessing import OneHotEncoder
-from sklearn.linear_model import LinearRegression 
-from sklearn.ensemble import RandomForestRegressor
 
 import torch
 from geomloss import SamplesLoss
@@ -29,8 +24,6 @@ from sklearn.decomposition import PCA
 
 from anndata import AnnData
 import scanpy as sc
-
-from ._scanpy_umap import scanpy_umap
 
 default_device = "cuda" if torch.cuda.is_available() else "cpu"
 default_emd_loss_fn = SamplesLoss("sinkhorn", p=2, blur=0.05).to(default_device)
@@ -166,168 +159,6 @@ def tf_to_adata(adata: AnnData, estimate_key: str = 'consensus_estimate'):
         warnings.warn('{} TFs with all NA scores were dropped'.format(n_dropped))
     
     return tf_adata        
-        
-        
-def _pca_simple(adata: AnnData, n_components: int = 50, random_state: int = 888):
-    """Minimal re-implementation of scanpy's PCA with default parameters that returns the pca object.
-
-    Parameters
-    ----------
-    adata : AnnData
-        data matrix in `.X` of shape n_obs × n_vars. Rows correspond to cells and columns to features.
-    n_components : int, optional
-        Number of principal components to compute, by default 50
-    zero_center: 
-    random_state : int, optional
-        Change to use different initial states for the optimization, by default 888
-    """
-    pca_mod = PCA(n_components=n_components, random_state = random_state)
-    X = adata.X
-    pca_mod.fit(X)
-    X_pca = pca_mod.transform(X) # need to separate fit_transform otherwise won't be able to reproducibly run .transform
-    adata.obsm["X_pca"] = X_pca
-    adata.varm["PCs"] = pca_mod.components_.T
-    
-    uns_entry = {
-        "params": {
-            "zero_center": True,
-            "use_highly_variable": False,
-            "mask": None,
-        },
-        "variance": pca_mod.explained_variance_,
-        "variance_ratio": pca_mod.explained_variance_ratio_,
-        "pca_mod": pca_mod
-    }
-    adata.uns["pca"] = uns_entry
-
-def _compute_elbow(adata, curve='convex', direction='decreasing', **kwargs):
-    '''Computes the elbow of a curve. Adapted from cell2cell (https://github.com/earmingol/cell2cell/).
-
-    Parameters
-    ----------
-    adata : AnnData
-        AnnData object with computed pca variance in `.uns['pca']['variance_ratio']`. 
-
-    curve : str, default='convex'
-        If curve='concave', kneed will detect knees. If curve='convex',
-        it will detect elbows.
-
-    direction : str, default='decreasing'
-        The direction parameter describes the line from left to right on the
-        x-axis. If the knee/elbow you are trying to identify is on a positive
-        slope use direction='increasing', if the knee/elbow you are trying to
-        identify is on a negative slope, use direction='decreasing'.
-
-    kwargs : 
-        passed to  `kneed.KneeLocator`.
-
-    Returns
-    -------
-    rank : int
-        principle component where the elbow is located in the curve.
-    '''
-    from kneed import KneeLocator
-
-    variance_ratio = adata.uns['pca']['variance_ratio']
-    pcs = np.array(range(len(variance_ratio))) + 1
-    kneedle = KneeLocator(x = pcs, y = variance_ratio, curve=curve, direction=direction, **kwargs)
-    rank = kneedle.elbow
-    return rank
-
-def embed_tf_activity(tf_adata: AnnData, 
-                      scanpy_pca: bool = False, 
-                      cluster_col_name: str = 'TF_clusters', 
-                     n_components: int = 50, 
-                      pc_rank: str | int = 'automate',
-                     resolution: float | List[float] = 1, 
-                     nmi_label: str = None, 
-                      n_neighbors: int = 15, 
-                      run_pca: bool = True,
-                     run_umap: bool  = True, 
-                     cluster_data: bool = True):
-    """Runs dimensionality reduction and clustering of cells from their TF activity using default scanpy parameters.
-
-    Parameters
-    ----------
-    adata : AnnData
-        AnnData object with TF activity scores stored in `.X`
-    scanpy_pca : bool, optional
-        whether to use scanpy's PCA (True) or sklearn (False), by default False
-        Using scanpy's, sometimes projecting single vectors into PCA space causes issues which can be avoided with sklearn
-    cluster_col_name : str, optional
-        the name of the leiden cluster column in `tf_adata.obs`, by default 'TF_clusters
-    n_components : int, optional
-        Number of principal components to compute, by default 50
-    pc_rank : str | int, optional
-        the number of PCs (<= n_components) to use for downstream analyses. If 'automate', will automatically estimate
-        at the elbow
-    resolution : float | List[float], optional
-        The resolution parameter for leiden clustering. If a list, will iterate through all resolutions, maximizing
-        NMI between the clusters and the nmi_label in `tf_adata.obs`
-    nmi_label : str, optional
-        A column in `tf_adata.obs`. If resolution is a list, will identify the resolution that maximizes the 
-        NMI between leiden clusters and nmi_label
-    n_neighbors : int
-        The number of neighbors to use, passed to `sc.pp.neighbors`, by default 15
-    run_pca : bool, optional
-        Whether to run umap or not, by default True
-    run_umap : bool, optional
-        Whether to run umap or not, by default True
-    cluster_data : bool, optional
-        Wheter to run leiden clustering or not, by default True
-
-    Returns
-    -------
-    tf_adata : AnnData
-        AnnData object with dimensionality reduction and clustering outputs stored in default scanpy locations. 
-        Cluster labels on TF activity space are stores in `adata.obs['TF_clusters']`
-    """
-#     if min(tf_adata.shape) > n_comps:
-#         n_comps = min(tf_adata.shape)
-    if isinstance(resolution, list) and nmi_label not in tf_adata.obs.columns:
-        raise ValueError('The nmi_label should be in the AnnData obs')
-    if not run_pca and 'pca' not in tf_adata.uns:
-        raise ValueError('Need to calculate or run PCA')
-    
-    if run_pca:
-        if scanpy_pca:
-            sc.tl.pca(data = tf_adata, n_comps = n_components)
-        else:
-            _pca_simple(adata = tf_adata, n_components = n_components) 
-
-        if pc_rank == 'automate':
-            pc_rank = _compute_elbow(adata = tf_adata)
-        else:
-            pc_rank = n_components
-        tf_adata.uns["pca"]['pca_rank'] = pc_rank
-
-    # if not np.allclose(tf_adata.obsm['X_pca'], tf_adata.uns['pca']['pca_mod'].transform(tf_adata.X)): 
-    #     raise ValueError('Unexpected disagreement when running PCA.transform')
-    
-    sc.pp.neighbors(adata = tf_adata, 
-                    n_pcs=tf_adata.uns["pca"]['pca_rank'], 
-                    n_neighbors = n_neighbors,
-                    use_rep = 'X_pca')
-    if run_umap:
-        scanpy_umap(adata = tf_adata)
-
-    # cluster
-    if cluster_data:
-        if not isinstance(resolution, list):
-            sc.tl.leiden(adata = tf_adata, resolution = resolution) # cluster
-        else: # identify the leiden resolution that maximizes NMI with a pre-existing metadata label
-            print('Iterate through leiden resolutions')
-            best_res = None
-            best_nmi = -np.inf
-            for res in tqdm(resolution):
-                sc.tl.leiden(adata = tf_adata, resolution = res)
-                nmi_val = normalized_mutual_info_score(tf_adata.obs.leiden, tf_adata.obs[nmi_label])
-                if nmi_val > best_nmi:
-                    best_nmi = nmi_val
-                    best_res = res
-            sc.tl.leiden(adata = tf_adata, resolution = best_res)
-
-        tf_adata.obs.rename(columns = {'leiden': cluster_col_name}, inplace = True)
     
 #     return best_nmi, best_res
     
@@ -1199,67 +1030,5 @@ def discriminator_weight_curve(n_epochs: int,
     return discriminator_penalty_weight
 
 
-def ss_explained_var(Y, Y_pred):
-    ss_res = np.sum((Y - Y_pred) ** 2)
-    ss_tot = np.sum((Y - np.mean(Y)) ** 2)
-    return 1 - ss_res / ss_tot
 
-def pc_association(adata, 
-                   covariates: List[str], 
-                  model_type: Literal['linear', 'nonlinear'], 
-                  n_cores: int, 
-                  seed: int = 888):
-    """Gets the linear association between a set of PCs stored in the AnnData object
-    and covariates in the `adata.obs`, returning the R^2. 
 
-    Parameters
-    ----------
-    adata : _type_
-        anndata object
-    covariates : List[str]
-        categorical covariates asssociated to test for
-    model_type : Literal['linear', 'nonlinear']
-        uses LinearRegression if linear and RandomForest if nonlinear
-    """
-    n_pcs = adata.uns['pca']['pca_rank'] if 'pca_rank' in adata.uns['pca'] else adata.obsm["X_pca"].shape[1]
-    
-    pcs = adata.obsm['X_pca'][:, :n_pcs]
-    
-    if model_type == 'linear':
-        model_general = LinearRegression()
-    elif model_type == 'nonlinear':
-        model_general = RandomForestRegressor(random_state=seed,
-                n_jobs=n_cores,                 
-                verbose=False )
-    
-    res = []
-    for cov_ in covariates:
-        print(cov_)
-        cov = adata.obs[cov_]
-        
-        if pd.api.types.is_numeric_dtype(cov):
-            X_cov = cov.values.reshape(-1, 1)
-        else:
-            enc = OneHotEncoder(drop="first", sparse_output=False)
-            X_cov = enc.fit_transform(cov.astype(str).values.reshape(-1, 1))
-        
-        r2_scores = []
-        for pc_idx in trange(pcs.shape[1]):
-            y = pcs[:, pc_idx]
-            model = model_general.fit(X_cov, y)
-            y_pred = model.predict(X_cov)
-            r2 = ss_explained_var(y, y_pred)
-#             model = model_general.fit(X_cov, y)            
-#             r2 = model.score(X_cov, y)
-            r2_scores.append({"PC": pc_idx + 1, "R2": r2})
-
-        r2_df = pd.DataFrame(r2_scores)
-        r2_df['covariate'] = cov_
-        res.append(r2_df)
-        
-    r2_df = pd.concat(res, axis=0, ignore_index=True)
-    r2_df = r2_df.pivot(index='PC', columns='covariate', values='R2').reset_index()
-    r2_df.columns.name = None
-    r2_df['model_type'] = model_type
-    
-    return r2_df

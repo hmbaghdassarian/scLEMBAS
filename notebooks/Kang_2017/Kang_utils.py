@@ -17,7 +17,7 @@ import sys
 import os
 sclembas = '/home/hmbaghda/Projects/scLEMBAS'
 sys.path.insert(1, os.path.join(sclembas))
-from scLEMBAS.preprocess import embed_tf_activity
+from scLEMBAS.latent_separation import embed_adata, project_to_pca
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -451,16 +451,15 @@ def prepare_for_metrics(tf_adata,
     if calculation_type == 'project': # project the predicted data into the actual data space
         # project new data into PCA space
         pc_rank = tf_adata.uns["pca"]['pca_rank']
-        pca_mod = tf_adata.uns['pca']['pca_mod']
-        tf_adata_.obsm['X_pca'] = pca_mod.transform(tf_adata_.to_df().values)
+        # pca_mod = tf_adata.uns['pca']['pca_mod']
+        tf_adata_.obsm['X_pca'] = project_to_pca(X_new=tf_adata_.X, adata=tf_adata)
         tf_adata_.uns['pca'] = tf_adata.uns['pca'].copy()
         
         # neihgbors/clustering
-        embed_tf_activity(tf_adata = tf_adata_,
-                          scanpy_pca = None,
+        embed_adata(adata = tf_adata_,
                           cluster_col_name = 'new_TF_clusters',
-                          n_components = None,
-                          pc_rank = None,
+                          n_components = np.nan,
+                          pc_rank = np.nan,
                           resolution = resolution,
                           n_neighbors = n_neighbors,
                           nmi_label = None,
@@ -486,8 +485,7 @@ def prepare_for_metrics(tf_adata,
         
 
     elif calculation_type == 'embed': # embed the combined data again
-        embed_tf_activity(tf_adata = tf_adata_,
-                          scanpy_pca = True,
+        embed_adata(adata = tf_adata_,
                           cluster_col_name = 'new_TF_clusters',
                           n_components = 50,
                           pc_rank = 'automate',

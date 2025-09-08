@@ -1,6 +1,36 @@
 #!/usr/bin/env python
 # coding: utf-8
 
+# In[3]:
+
+
+cmd = 'python test_run.py --index {} --run_type E --bn_weights_lambda_L2 1e-7 --uniform_lambda_L2 1e-7 --cat_max_norm 100 --global_bias_lambda_L2 0 --cat_bias_lambda_L2 1e-4 --vae_scaling_KL 1e-3 --global_bias_lambda_L1 0 --cat_bias_lambda_L1 0 --vae_prior_mu 0 --vae_prior_sigma 1 --adj_scaling_KL 0 --adj_prior_mu 0 --adj_prior_sigma 0.2 --loss_type MSE --per_condition_loss true --cat_max_penalty_weight 12 --cat_b_adv 2 --pert_max_penalty_weight 8 --pert_b_adv 3.5 --network_noise_scale 0.01 --min_network_noise 0.0025 --include_gradient_noise_vae true --include_gradient_noise_embedding true --constant_gradient_noise true --gradient_noise_scale 1e-9 --lr_period 4 --reset_state false --train_batch 500 --initialize_fc true --generator_dropout_rate 0.7 --cat_discriminator_dropout_rate 0.1 --pert_discriminator_dropout_rate 0.1 --discriminator_batch_momentum 0 --spectral_norm false --discriminator_lambda_L2 1e-3 --discriminator_bionet_activation false --smooth_labels true --gradient_ascent true --n_adversarial_start 200 --n_discriminator_train 5 --vae_lambda_l2 1e-5 --min_cat_adv_penalty 0.1 --min_pert_adv_penalty 0.1 --main_max_lr 2e-3 --generator_max_lr 5e-4 --cat_max_lr 1e-3 --pert_max_lr 1e-3 --lr_decay 0.9 --cat_bias_orthogonality_scaler 100 --cp_method {} --cp_include_adjacency {} --cp_per_label {}'
+
+
+counter = 30
+for method in ['orthogonality', 'kl_divergence', 'info_nce']:
+    for include_adjacency in ['false', 'true']:
+        for per_label in ['false', 'true']:
+            if counter > 30:
+#                 print(cmd.format(counter, method, include_adjacency, per_label))
+                print()
+                print('Index: {} | method {} | adj: {} | per_label: {}'.format(counter, method, include_adjacency, per_label))
+            counter += 1
+
+
+
+# In[ ]:
+
+
+
+
+
+# In[ ]:
+
+
+
+
+
 # In[1]:
 
 
@@ -48,6 +78,9 @@ parser.add_argument("--loss_type", type=str, default='EMD', help="loss function"
 parser.add_argument("--per_condition_loss", type=str_to_bool, default='true', help="loss function")
 
 parser.add_argument("--cat_bias_orthogonality_scaler", type=float, default=0, help="Tot bias regularization")
+parser.add_argument("--cp_method", type=str)
+parser.add_argument("--cp_include_adjacency", type=str_to_bool)
+parser.add_argument("--cp_per_label", type=str_to_bool)
 
 # adversarial
 parser.add_argument("--cat_max_penalty_weight", type=float, default=1.5, help="cat disc penalty weight b param")
@@ -119,8 +152,6 @@ adj_prior_sigma = args.adj_prior_sigma
 loss_type = args.loss_type
 per_condition_loss = args.per_condition_loss
 
-cat_bias_orthogonality_scaler = args.cat_bias_orthogonality_scaler
-
 cat_b_adv = args.cat_b_adv
 cat_max_penalty_weight = args.cat_max_penalty_weight
 pert_b_adv = args.pert_b_adv
@@ -160,8 +191,12 @@ cat_max_lr = args.cat_max_lr
 pert_max_lr = args.pert_max_lr
 lr_decay = args.lr_decay
 
+cat_bias_orthogonality_scaler = args.cat_bias_orthogonality_scaler
+cp_method = args.cp_method
+cp_include_adjacency = args.cp_include_adjacency
+cp_per_label = args.cp_per_label
 
-#python test_run.py --index 2v2 --run_type E --bn_weights_lambda_L2 1e-7 --uniform_lambda_L2 1e-7 --cat_max_norm 100 --global_bias_lambda_L2 0 --cat_bias_lambda_L2 1e-4 --vae_scaling_KL 1e-3 --global_bias_lambda_L1 0 --cat_bias_lambda_L1 0 --vae_prior_mu 0 --vae_prior_sigma 1 --adj_scaling_KL 0 --adj_prior_mu 0 --adj_prior_sigma 0.2 --loss_type MSE --per_condition_loss true --cat_bias_orthogonality_scaler 100 --cat_max_penalty_weight 12 --cat_b_adv 2 --pert_max_penalty_weight 8 --pert_b_adv 3.5 --network_noise_scale 0.01 --min_network_noise 0.0025 --include_gradient_noise_vae true --include_gradient_noise_embedding true --constant_gradient_noise true --gradient_noise_scale 1e-9 --lr_period 4 --reset_state false --train_batch 500 --initialize_fc true --generator_dropout_rate 0.7 --discriminator_dropout_rate 0.3 --discriminator_batch_momentum 0 --spectral_norm false --discriminator_lambda_L2 1e-3 --discriminator_bionet_activation false --smooth_labels true --gradient_ascent true --n_adversarial_start 200 --n_discriminator_train 5 --vae_lambda_l2 1e-5 --min_cat_adv_penalty 0.1 --min_pert_adv_penalty 0.1 --main_max_lr 1e-3 --generator_max_lr 1e-3 --cat_max_lr 1e-3 --pert_max_lr 1e-3 --lr_decay 0.9
+#python test_run.py --index 52 --run_type E --bn_weights_lambda_L2 1e-7 --uniform_lambda_L2 1e-7 --cat_max_norm 100 --global_bias_lambda_L2 0 --cat_bias_lambda_L2 1e-4 --vae_scaling_KL 1e-3 --global_bias_lambda_L1 0 --cat_bias_lambda_L1 0 --vae_prior_mu 0 --vae_prior_sigma 1 --adj_scaling_KL 0 --adj_prior_mu 0 --adj_prior_sigma 0.2 --loss_type MSE --per_condition_loss true --cat_max_penalty_weight 12 --cat_b_adv 2 --pert_max_penalty_weight 8 --pert_b_adv 3.5 --network_noise_scale 0.01 --min_network_noise 0.0025 --include_gradient_noise_vae true --include_gradient_noise_embedding true --constant_gradient_noise true --gradient_noise_scale 1e-9 --lr_period 4 --reset_state false --train_batch 500 --initialize_fc true --generator_dropout_rate 0.7 --cat_discriminator_dropout_rate 0.1 --pert_discriminator_dropout_rate 0.1 --discriminator_batch_momentum 0 --spectral_norm false --discriminator_lambda_L2 1e-3 --discriminator_bionet_activation false --smooth_labels true --gradient_ascent true --n_adversarial_start 200 --n_discriminator_train 5 --vae_lambda_l2 1e-5 --min_cat_adv_penalty 0.1 --min_pert_adv_penalty 0.1 --main_max_lr 2e-3 --generator_max_lr 5e-4 --cat_max_lr 1e-3 --pert_max_lr 1e-3 --lr_decay 0.9 --cat_bias_orthogonality_scaler 100 --cp_method orthogonality --cp_include_adjacency false --cp_per_label false
 
 
 # 
@@ -169,20 +204,14 @@ lr_decay = args.lr_decay
 # In[15]:
 
 
-# fn = 'dev'#'trash'
-# run_type = 'E'
-# fn += run_type
-# # seed = 3
-
-# #loo = False
-
-# # defaults
+# index = "20v3"
+# run_type = "E"
 # bn_weights_lambda_L2 = 1e-7
 # uniform_lambda_L2 = 1e-7
 # cat_max_norm = 100
 # global_bias_lambda_L2 = 0
-# cat_bias_lambda_L2 = 0
-# vae_scaling_KL = 1e-2
+# cat_bias_lambda_L2 = 1e-4
+# vae_scaling_KL = 1e-3
 # global_bias_lambda_L1 = 0
 # cat_bias_lambda_L1 = 0
 # vae_prior_mu = 0
@@ -190,48 +219,45 @@ lr_decay = args.lr_decay
 # adj_scaling_KL = 0
 # adj_prior_mu = 0
 # adj_prior_sigma = 0.2
-
-# loss_type = 'MSE'
+# loss_type = "MSE"
 # per_condition_loss = True
-
-# cat_bias_orthogonality_scaler = 0
-# cat_b_adv = 2
 # cat_max_penalty_weight = 12
-# pert_b_adv = 3.5
+# cat_b_adv = 2
 # pert_max_penalty_weight = 8
-
-# network_noise_scale=0.01 
-# min_network_noise=0.0025
-# include_gradient_noise_vae=True 
-# include_gradient_noise_embedding=True
-# constant_gradient_noise=True 
-# gradient_noise_scale=1e-9
+# pert_b_adv = 3.5
+# network_noise_scale = 0.01
+# min_network_noise = 0.0025
+# include_gradient_noise_vae = True
+# include_gradient_noise_embedding = True
+# constant_gradient_noise = True
+# gradient_noise_scale = 1e-9
 # lr_period = 4
-
-# reset_state = True
-
+# reset_state = False
 # train_batch = 500
 # initialize_fc = True
 # generator_dropout_rate = 0.7
-# discriminator_dropout_rate = 0.3
+# cat_discriminator_dropout_rate = 0.1
+# pert_discriminator_dropout_rate = 0.1
+# discriminator_batch_momentum = 0
 # spectral_norm = False
-# discriminator_batch_momentum = None #if spectral_norm else 0.01
-# discriminator_lambda_L2 = 0 if spectral_norm else 1e-3
+# discriminator_lambda_L2 = 1e-3
 # discriminator_bionet_activation = False
 # smooth_labels = True
 # gradient_ascent = True
-
 # n_adversarial_start = 200
 # n_discriminator_train = 5
-
-# lr_decay = 0.9
 # vae_lambda_l2 = 1e-5
-
-
-# main_max_lr = 1e-3 
-# generator_max_lr = 1e-3 
-# cat_max_lr = 1e-3 
-# pert_max_l =r 1e-3
+# min_cat_adv_penalty = 0.1
+# min_pert_adv_penalty = 0.1
+# main_max_lr = 2e-3
+# generator_max_lr = 5e-4
+# cat_max_lr = 1e-3
+# pert_max_lr = 1e-3
+# lr_decay = 0.9
+# cat_bias_orthogonality_scaler = 100
+# cp_method = "orthogonality"
+# cp_include_adjacency = False
+# cp_per_label = False
 
 
 # In[16]:
@@ -858,6 +884,25 @@ regularization_params_default = {'input_lambda_L2': 0, # doesn't matter if setti
                                  'cat_bias_orthogonality_scaler': cat_bias_orthogonality_scaler
                                 }
 
+
+
+
+if cp_method == 'orthogonality':
+    cps = cat_bias_orthogonality_scaler
+elif cp_method == 'kl_divergence':
+    if cp_include_adjacency:
+        cps = cat_bias_orthogonality_scaler*2
+    else:
+        cps = cat_bias_orthogonality_scaler/10
+elif cp_method == 'info_nce':
+    cps = cat_bias_orthogonality_scaler/150
+cat_pert_params = {'regularization_scaler': cps, 
+                       'method': cp_method, 
+                       'per_label': cp_per_label, 
+                       'include_adjacency': cp_include_adjacency, 
+                       'temperature': 0.1
+                      }
+
 # if mod_type.endswith('_regularizer'):
 #     regularization_params_default['bn_weights_lambda_l2'] = 1e-12 # decrease adj matrix regularization
 #     regularization_params_default['global_bias_lambda_L2'] = 1e-5 # increase global bias regularization
@@ -1071,6 +1116,7 @@ trainer = TR[mod_type](mod = mod,
                        pert_discriminator_params = pert_discriminator_params,
                        vae_params = vae_params,
                    hyper_params = training_params,
+                       cat_pert_params = cat_pert_params, 
                    train_split = {'train': train_cells, 'test': test_cells, 'validation': None}, 
                    train_seed = seed, 
                    track_test = True,

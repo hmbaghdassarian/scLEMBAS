@@ -1,16 +1,23 @@
-"""Set of functions quantifying how latent space captures expression shifts of cells."""
+"""Set of functions for latent space expression shifts of cells."""
 
 from typing import Literal, List
 import math
+import warnings
 
-from tqdm import trange
+from tqdm import trange, tqdm
 
 import numpy as np
 import pandas as pd
 import scanpy as sc
+from anndata import AnnData
 
 import matplotlib.pyplot as plt
 import seaborn as sns
+
+from kneed import KneeLocator
+
+
+import umap
 
 from sklearn.model_selection import StratifiedKFold, cross_val_score
 from sklearn.linear_model import LogisticRegression, LinearRegression
@@ -18,12 +25,300 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.cross_decomposition import PLSRegression
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.pipeline import make_pipeline
+from sklearn.metrics import normalized_mutual_info_score
 
 import scipy
+from scipy import sparse
 
 # from . import preprocess as pp
-from scLEMBAS import preprocess as pp
+from ._scanpy_umap import scanpy_umap    
 
+############################ PCA ############################
+
+# def _pca_simple(adata: AnnData, n_components: int = 50, random_state: int = 888):
+#     """Minimal re-implementation of scanpy's PCA with default parameters that returns the pca object.
+
+#     Parameters
+#     ----------
+#     adata : AnnData
+#         data matrix in `.X` of shape n_obs × n_vars. Rows correspond to cells and columns to features.
+#     n_components : int, optional
+#         Number of principal components to compute, by default 50
+#     zero_center: 
+#     random_state : int, optional
+#         Change to use different initial states for the optimization, by default 888
+#     """
+#     pca_mod = PCA(n_components=n_components, random_state = random_state)
+#     X = adata.X
+#     pca_mod.fit(X)
+#     X_pca = pca_mod.transform(X) # need to separate fit_transform otherwise won't be able to reproducibly run .transform
+#     adata.obsm["X_pca"] = X_pca
+#     adata.varm["PCs"] = pca_mod.components_.T
+    
+#     uns_entry = {
+#         "params": {
+#             "zero_center": True,
+#             "use_highly_variable": False,
+#             "mask": None,
+#         },
+#         "variance": pca_mod.explained_variance_,
+#         "variance_ratio": pca_mod.explained_variance_ratio_,
+#         "pca_mod": pca_mod
+#     }
+#     adata.uns["pca"] = uns_entry
+
+def _compute_elbow(adata, curve='concave', direction='increasing', **kwargs):
+    '''Computes the elbow of a curve. Adapted from cell2cell (https://github.com/earmingol/cell2cell/).
+
+    Parameters
+    ----------
+    adata : AnnData
+        AnnData object with computed pca variance in `.uns['pca']['variance_ratio']`. 
+
+    curve : str, default='convex'
+        If curve='concave', kneed will detect knees. If curve='convex',
+        it will detect elbows.
+
+    direction : str, default='decreasing'
+        The direction parameter describes the line from left to right on the
+        x-axis. If the knee/elbow you are trying to identify is on a positive
+        slope use direction='increasing', if the knee/elbow you are trying to
+        identify is on a negative slope, use direction='decreasing'.
+
+    kwargs : 
+        passed to  `kneed.KneeLocator`.
+
+    Returns
+    -------
+    rank : int
+        principle component where the elbow is located in the curve.
+    '''
+    # scanpy algs are not always monotonic, so use cumulative var instead
+    cumulative_variance_ratio = np.cumsum(adata.uns['pca']['variance_ratio']) #adata.uns['pca']['variance_ratio']
+    pcs = np.array(range(len(cumulative_variance_ratio))) + 1
+    kneedle = KneeLocator(x = pcs, y = cumulative_variance_ratio, curve=curve, direction=direction, **kwargs)
+    rank = kneedle.elbow
+    return rank
+
+import numpy as np
+import scipy.sparse as sparse
+
+def project_to_pca(X_new, adata):
+    """
+    Project new data into the PCA space computed by scanpy.
+    
+    Robustly handles both full-dimensionality and HVG-subset input data.
+    
+    Parameters
+    ----------
+    X_new : array-like, shape (n_samples, n_features)
+        New data to project. Can be either:
+        - Full dimensionality (same as original adata)
+        - HVG subset (if PCA was computed with use_highly_variable=True)
+    adata : AnnData
+        AnnData object containing the PCA results from sc.pp.pca()
+        
+    Returns
+    -------
+    X_pca : np.ndarray, shape (n_samples, n_components)
+        New data projected into PCA space
+    """
+    
+    # Check if PCA has been run
+    if 'pca' not in adata.uns:
+        raise ValueError("PCA has not been run on this AnnData object. Run sc.pp.pca() first.")
+    
+    # Get PCA parameters
+    pca_params = adata.uns['pca']['params']
+    zero_center = pca_params.get('zero_center', True)
+    use_highly_variable = pca_params.get('use_highly_variable', False)
+    
+    # Convert sparse to dense if needed
+    if sparse.issparse(X_new):
+        X_new_dense = X_new.toarray()
+    else:
+        X_new_dense = X_new.copy()
+    
+    # Get the loadings (always full dimensionality with zero-padding)
+    loadings = adata.varm['PCs']
+    
+    # Handle highly variable genes
+    if use_highly_variable and 'highly_variable' in adata.var.columns:
+        hv_mask = adata.var['highly_variable'].values
+        n_hvg = hv_mask.sum()
+        n_total = len(hv_mask)
+
+        # Determine input data type based on shape
+        if X_new_dense.shape[1] == n_total:
+            X_working = X_new_dense[:, hv_mask]
+            loadings_working = loadings[hv_mask, :]
+        elif X_new_dense.shape[1] == n_hvg:
+            X_working = X_new_dense
+            loadings_working = loadings[hv_mask, :]
+        else:
+            raise ValueError(
+                f"Input dimensionality mismatch. Got {X_new_dense.shape[1]} features, "
+                f"expected either {n_total} (full) or {n_hvg} (HVG subset)"
+            )
+    else:
+        X_working = X_new_dense
+        loadings_working = loadings
+    
+    # Handle zero centering
+    if zero_center:
+        # Get original data for computing means
+        X_original = adata.X
+        if sparse.issparse(X_original):
+            X_original = X_original.toarray()
+        
+        # If we're working with HVGs, subset original data too
+        if use_highly_variable and 'highly_variable' in adata.var.columns:
+            X_original_for_mean = X_original[:, hv_mask]
+        else:
+            X_original_for_mean = X_original
+        
+        # Calculate mean and center
+        mean_original = np.mean(X_original_for_mean, axis=0)
+        X_centered = X_working - mean_original
+        
+        # Project
+        X_pca = X_centered @ loadings_working
+        
+    else:
+        # Direct projection without centering
+        X_pca = X_working @ loadings_working
+    
+    return X_pca.astype(np.float32)
+
+def embed_adata(adata: AnnData, 
+                      cluster_col_name: str = 'TF_clusters', 
+                     n_components: int = 50, 
+                      pc_rank: str | int = 'automate',
+                pc_projection_tol: float | None = 5e-4,
+                      scale: bool = False, 
+                     resolution: float | List[float] = 1, 
+                     nmi_label: str = None, 
+                      n_neighbors: int = 15, 
+                      run_pca: bool = True,
+                     run_umap: bool  = True, 
+                     cluster_data: bool = True, 
+                seed: int = 888, 
+                      pcakwrgs = {}, 
+                      umapkwrgs = {}
+                     ):
+    """Runs PCA/UMAP dimensionality reduction and clustering of cells from their TF activity using scanpy.
+
+    Parameters
+    ----------
+    adata : AnnData
+        AnnData object with matrix to be embedded in `.X`
+    cluster_col_name : str, optional
+        the name of the leiden cluster column in `adata.obs`, by default 'TF_clusters'
+    n_components : int, optional
+        Number of principal components to compute, by default 50
+    pc_rank : str | int, optional
+        the number of PCs (<= n_components) to use for downstream analyses. If 'automate', will automatically estimate
+        at the elbow
+    pc_projection_tol : str | int, optional
+        if not None, will check that the projection matches scanpy's `adata.obsm['X_pca']` output by atol = pc_projection_tol
+    scale : bool, optional
+        whether to scale the data (True) prior to PCA, by default False
+        not currently implemented (will always not scale)
+        **Note, default behavorior of scanpy pca is to center but not scale data, as discussed here: https://github.com/scverse/scanpy/issues/2164.
+    resolution : float | List[float], optional
+        The resolution parameter for leiden clustering. If a list, will iterate through all resolutions, maximizing
+        NMI between the clusters and the nmi_label in `adata.obs`
+    nmi_label : str, optional
+        A column in `adata.obs`. If resolution is a list, will identify the resolution that maximizes the 
+        NMI between leiden clusters and nmi_label
+    n_neighbors : int
+        The number of neighbors to use, passed to `sc.pp.neighbors`, by default 15
+    run_pca : bool, optional
+        Whether to run umap or not, by default True
+    run_umap : bool, optional
+        Whether to run umap or not, by default True
+    cluster_data : bool, optional
+        Wheter to run leiden clustering or not, by default True
+    **pcakwrgs : 
+        keyword arguments for sc.pp.pca
+    **umapkwrgs
+        keyword arguments for sc.pp.umap
+
+    Returns
+    -------
+    adata : AnnData
+        AnnData object with dimensionality reduction and clustering outputs stored in default scanpy locations. 
+        Cluster labels on TF activity space are stores in `adata.obs['TF_clusters']`
+    """
+#     if min(adata.shape) > n_comps:
+#         n_comps = min(adata.shape)
+    if isinstance(resolution, list) and nmi_label not in adata.obs.columns:
+        raise ValueError('The nmi_label should be in the AnnData obs')
+    if not run_pca and 'pca' not in adata.uns:
+        raise ValueError('Need to calculate or run PCA')
+    
+    if run_pca:
+#         if scanpy_pca:
+#             sc.tl.pca(data = adata, n_comps = n_components)
+#         else:
+#             _pca_simple(adata = adata, n_components = n_components) 
+        if scale:
+            raise ValueError('Internal: this functionality needs to be checked, particularly w.r.t project_to_pca')
+            zero_center = pcakwrgs.get('zero_center', True)
+            if zero_center:
+                warnings.warn(
+                    "Both scaling and zero_center=True specified. Scaling already zero-centers data. "
+                    "Consider setting zero_center=False to avoid redundant centering."
+                )
+            sc.pp.scale(adata)
+
+        
+        sc.tl.pca(data = adata, n_comps = n_components, **pcakwrgs)
+
+        projection_check = np.allclose(project_to_pca(adata.X, adata), adata.obsm['X_pca'], atol = pc_projection_tol)
+#         proj = project_to_pca(adata.X, adata)
+#         projection_check = np.all(np.abs((proj - adata.obsm['X_pca']) / adata.obsm['X_pca']) <= pc_projection_rtol)
+        if not projection_check:
+            warnings.warn('Cannot reproduce scanpy pca projection')
+#             raise ValueError('Cannot reproduce scanpy pca projection')
+#         del proj
+
+        if pc_rank == 'automate':
+            pc_rank = _compute_elbow(adata = adata)
+        else:
+            pc_rank = n_components
+        adata.uns["pca"]['pca_rank'] = pc_rank
+
+    # if not np.allclose(adata.obsm['X_pca'], adata.uns['pca']['pca_mod'].transform(adata.X)): 
+    #     raise ValueError('Unexpected disagreement when running PCA.transform')
+    
+    sc.pp.neighbors(adata = adata, 
+                    n_pcs=adata.uns["pca"]['pca_rank'], 
+                    n_neighbors = n_neighbors,
+                    use_rep = 'X_pca')
+    if run_umap:
+        scanpy_umap(adata = adata, **umapkwrgs)
+
+    # cluster
+    if cluster_data:
+        if not isinstance(resolution, list):
+            sc.tl.leiden(adata = adata, resolution = resolution) # cluster
+        else: # identify the leiden resolution that maximizes NMI with a pre-existing metadata label
+            print('Iterate through leiden resolutions')
+            best_res = None
+            best_nmi = -np.inf
+            for res in tqdm(resolution):
+                sc.tl.leiden(adata = adata, resolution = res)
+                nmi_val = normalized_mutual_info_score(adata.obs.leiden, adata.obs[nmi_label])
+                if nmi_val > best_nmi:
+                    best_nmi = nmi_val
+                    best_res = res
+            sc.tl.leiden(adata = adata, resolution = best_res)
+
+        adata.obs.rename(columns = {'leiden': cluster_col_name}, inplace = True)
+
+
+############################ PLS ############################ 
 def prepare_input_matrix_plsda(adata,
                          control_confounders: List = [], #['cell_line, 'plate'],
                         enc_X = None):
@@ -136,11 +431,11 @@ def pls_da(adata,
 #
 
         Y_pred = pls_model.predict(X)
-        explained_var_y = pp.ss_explained_var(Y, Y_pred) #1 - np.sum((Y - Y_pred) ** 2) / np.sum((Y - Y.mean(axis=0)) ** 2)
+        explained_var_y = ss_explained_var(Y, Y_pred) #1 - np.sum((Y - Y_pred) ** 2) / np.sum((Y - Y.mean(axis=0)) ** 2)
 
 
 #         X_pred = pls_model.x_scores_ @ pls_model.x_loadings_.T
-#         explained_var_x = pp.ss_explained_var(X, X_pred)
+#         explained_var_x = ss_explained_var(X, X_pred)
 #         explained_var_x = np.var(pls_model.x_scores_, axis=0) / np.var(X, axis=0).sum()
 #         cum_explained_x = np.cumsum(explained_var_x)[-1]
 
@@ -224,6 +519,7 @@ def pls_elbow(
 
     return assessment_df, n_components, *selected_res
 
+############################ PIPELINES ############################ 
 def pls_da_pipeline(
     adata,
     pert_ids: list | str,
@@ -399,16 +695,15 @@ def pc_pipeline(
     n_components: int = None,
     pert_col = 'drug',
     cat_col = 'cell_line',
-    use_hvgs: bool = False, 
     get_hvgs: bool = False, 
-    scanpy_pca: bool = True, 
     run_umap: bool = True,
     covariate_associations: list = ['cell_line', 'drug', 'plate', 'phase', 'S_score', 'G2M_score', 'pcnt_mito'],
     file_prefix: str | None = None,
     verbose: bool = False,
     n_cores: int = -1,
     seed: int = 888,
-    **hvgkwargs
+    hvgkwrgs = {},
+    embkwrgs = {}
 ):
     """Full PCA pipeline to quantify variance in adata.X. Pipeline will:
         1) identify the # of components that optimizes PC fit
@@ -432,12 +727,9 @@ def pc_pipeline(
         perturbation column in `adata.obs`, by default 'drug'
     cat_col : str, optional
         categorical column in `adata.obs`, by default 'cell_line'
-    use_hvgs: bool, optional
-        whether to run PCA on HVGs (True) or all genes (False), by default False
-        False for TF activity, which already has limited features
     get_hvgs: bool, optional
         whether to calculate HVGs on the anndata subset (True) or use those in the passed object (False)
-        only relevant if `use_hvgs` is True 
+        only relevant if `use_highly_variable` = True in embkwrgs (which is the default in PCA)
     scanpy_pca: bool, optional
         whether to use the scanpy PCA (whcih won't store the PCA model) (True) or a similar re-implementation (False), be default True
         scanpy version is probably faster
@@ -454,8 +746,10 @@ def pc_pipeline(
         number of cores to parallelize latent space associations on
     seed : int, optional
         random state, by default 888
-    **hvgkwargs: 
-        key word arguments to pass to `sc.pp.highly_variable_genes` 
+    hvgkwrgs: 
+        key word arguments to pass to sc.pp.highly_variable_genes
+    embkwrgs: 
+        key word arguments to pass to `embed_adata` 
     """
     if type(cat_ids) == str:
         cat_ids = [cat_ids]
@@ -464,30 +758,22 @@ def pc_pipeline(
 
     mask = (adata.obs[cat_col].isin(cat_ids)) & ((adata.obs[pert_col].isin(pert_ids)))
     adata_sub = adata[mask].copy()
-
-    # TODO: there is a way to generalize this to the pp.embed_tf_activity that doesn't involve subsetting
-    if use_hvgs:
-        if not get_hvgs and 'highly_variable' not in adata_sub.var: 
-            msg = 'There are no HVGs in the input adata, please either '
-            msg += 'calculate them before passing input, set `use_hvgs` to False, or set `get_hvgs` to True'
-            raise ValueError(msg)
-        else:
-            # as in other parts of scLEMBAS code
-            sc.pp.highly_variable_genes(adata_sub, **hvgkwargs)
-        hvgs = adata_sub.var_names[adata_sub.var['highly_variable']]
-        adata_sub = adata_sub[:, hvgs]
-    elif 'highly_variable' in adata_sub.var: # avoids default scanpy behavior
-        del adata_sub.var['highly_variable']
+    
+    # reaclculate HVGs on the adata_sub?
+    use_highly_variable = True  # default scanpy behavior
+    if 'pcakwrgs' in embkwrgs:
+        use_highly_variable = embkwrgs['pcakwrgs'].get('use_highly_variable', True)
+    if get_hvgs and use_highly_variable:
+        sc.pp.highly_variable_genes(adata_sub, **hvgkwrgs)
     
     print("Run dimensionality reductions") if verbose else None
-    pp.embed_tf_activity(
-        tf_adata = adata_sub,
-        scanpy_pca = scanpy_pca, # faster, will not be using model fit 
+    embed_adata(
+        adata = adata_sub,
         n_components = 50 if n_components is None else n_components,
         pc_rank = 'automate' if n_components is None else n_components,
         run_pca = True,
         run_umap = run_umap,
-        cluster_data = False
+        **embkwrgs
     )
 
     print("Calculate covariate - PC associations") if verbose else None
@@ -518,6 +804,12 @@ def pc_pipeline(
 
     return adata_sub, r2_df
 
+
+############################ VISUALIZATION AND QUANTIFICATION ############################
+def ss_explained_var(Y, Y_pred):
+    ss_res = np.sum((Y - Y_pred) ** 2)
+    ss_tot = np.sum((Y - np.mean(Y)) ** 2)
+    return 1 - ss_res / ss_tot
 
 def latent_association(
     adata,
@@ -572,7 +864,7 @@ def latent_association(
             y = lvs[:, lv_idx]
             model = model_general.fit(X_cov, y)
             y_pred = model.predict(X_cov)
-            r2 = pp.ss_explained_var(y, y_pred)
+            r2 = ss_explained_var(y, y_pred)
 #             model = model_general.fit(X_cov, y)            
 #             r2 = model.score(X_cov, y)
             r2_scores.append({_label_name: lv_idx + 1, "R2": r2})
@@ -592,6 +884,7 @@ def visualize_latent_space(
     adata, 
     latent_label: Literal['pca', 'pls', 'umap', 'umap_pls'], 
     covariates: list, 
+    panel_titles: list = None,
     components: list = [1,2], 
     n_frac: float = 0.2, 
     frac_col: str | None = None, 
@@ -611,8 +904,11 @@ def visualize_latent_space(
         which latent space to visualize
     covariates : list
         which covariates to visualize
-    components : list, optional
+    panel_titles : list, optional
+        mapping of covariates to titles in the figure panels (corresponding index)
+    components : list | dict, optional
         which components to display on the 2 axes, by default [1,2]
+        if a dictionary, will map each covariate to that component
     n_frac : float, optional
         subset to this fraction of the data for quicker visualization, by default 0.2
     frac_col : str | None, optional
@@ -627,8 +923,17 @@ def visualize_latent_space(
         save to this file name, by default None
     """
         
+    if panel_titles is None or len(panel_titles) == 0:
+        panel_titles = covariates
+    
     _label_name = latent_label.upper() if latent_label != 'pca' else 'PC'
-    components = [_label_name + '{}'.format(component) for component in components]
+    if type(components) == list:
+        components = [_label_name + '{}'.format(component) for component in components]
+        components = {covariate: components for covariate in covariates}
+    else:
+        for component, plot_components in components.items():
+            components[component] = [_label_name + '{}'.format(plot_component) for plot_component in plot_components]
+
     
     viz_df = pd.DataFrame(adata.obsm['X_' + latent_label])
     viz_df.columns = [_label_name + '{}'.format(i+1) for i in range(viz_df.shape[1])]
@@ -656,21 +961,23 @@ def visualize_latent_space(
         np.random.seed(seed)
         sampled_indices=np.random.permutation(sampled_indices)
 
-        viz_df = proj_df.loc[sampled_indices, :].copy()
+        viz_df = viz_df.loc[sampled_indices, :].copy()
         
     max_cols = 3
     n_cols = min(max_cols, len(covariates))
     n_rows = math.ceil(len(covariates) / max_cols)
 
     fig, axes = plt.subplots(ncols=n_cols, nrows=n_rows, figsize=(5.1*n_cols, 5.1*n_rows))
-    ax = axes.flatten()
+    ax = axes if isinstance(axes, np.ndarray) else np.array([axes])
+    ax = ax.flatten()
     for (i, covariate) in enumerate(covariates):
-        sns.scatterplot(data = viz_df, x = components[0], y = components[1], hue = covariate, 
+        plot_component = components[covariate]
+        sns.scatterplot(data = viz_df, x = plot_component[0], y = plot_component[1], hue = covariate, 
                s = 10, ax = ax[i])
         
         if not legend:
             ax[i].legend_.remove()
-        ax[i].set_title(covariate.capitalize())
+        ax[i].set_title(panel_titles[i])
         
     if fig_title is not None:
         fig.suptitle(fig_title)
@@ -681,7 +988,6 @@ def visualize_latent_space(
         
 def visualize_latent_association(
     r2_df,
-    top_components_cov: str | None = None,
     fig_title: str | None = None, 
     file_name: str | None = None,
 ):
@@ -713,24 +1019,24 @@ def visualize_latent_association(
     fig.tight_layout()
     if file_name is not None:
         plt.savefig(file_name, dpi=300, bbox_inches="tight")
-    
-    top_components = None
-    if top_components_cov is not None:
-        # r2_df[['PC', 'drug', 'model_type']].sort_values(by = ['model_type', 'drug'], ascending = False)
-        top_components = r2_df[[latent_label, top_components_cov, 'model_type']].copy()
-        top_components = top_components[top_components.model_type == 'linear']
-        top_components = top_components.sort_values(by = top_components_cov, ascending=False).iloc[:2, :].reset_index(drop = True)
 
-        print('The two {} components that best univariately separate by {} are components {} and {} explaining {:.2f}% and {:.2f}% of variance, respectively'.format(
-            latent_label,
-            top_components_cov,
-            top_components[latent_label][0],
-            top_components[latent_label][1], 
-            top_components.drug[0]*100, 
-            top_components.drug[1]*100,
-        ))
-        
-        top_components = ['{}'.format(i) for i in top_components[latent_label]]
+def get_top_components(r2_df, top_components_cov):
+    """Identify top 2 components explaining a covariate."""
+    latent_label = r2_df.columns[0]
+    top_components = r2_df[[latent_label, top_components_cov, 'model_type']].copy()
+    top_components = top_components[top_components.model_type == 'linear']
+    top_components = top_components.sort_values(by = top_components_cov, ascending=False).iloc[:2, :].reset_index(drop = True)
+
+    print('The two {} components that best univariately separate by {} are components {} and {} explaining {:.2f}% and {:.2f}% of variance, respectively'.format(
+        latent_label,
+        top_components_cov,
+        top_components[latent_label][0],
+        top_components[latent_label][1], 
+        top_components[top_components_cov][0]*100, 
+        top_components[top_components_cov][1]*100,
+    ))
+
+    top_components = ['{}'.format(i) for i in top_components[latent_label]]
     return top_components
 
 

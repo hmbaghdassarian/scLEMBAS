@@ -2,18 +2,22 @@
 Helper functions for building the model.
 """
 from typing import Literal
+from collections import OrderedDict
 
 import torch
 from torch import nn
 
 import scLEMBAS.utilities as utils
 
+
+
 class CatPertRegularizer:
     """Regularizes the categorical bias against the perturbation information in the model using various methods"""
     def __init__(self, 
-                 X_in, 
-                 covariates_idx, 
+#                  X_in, 
+#                  covariates_idx, 
                  bionetwork_class,
+#                  batch_size: int, 
                  regularization_scaler = 1,
                  method: Literal['orthogonality', 'info_nce', 'kl_divergence'] = 'orthogonality', 
                  per_label: bool = False, 
@@ -22,12 +26,6 @@ class CatPertRegularizer:
         """
         Parameters
         ----------
-        X_in : torch.Tensor
-            the ligand concentration inputs. Shape is (samples x ligands). Same input as to `ProjectInput.forward`
-        covariates_idx : torch.Tensor
-            rows correspond to samples as in X_full. Each column represents one categorical covariate group. Values
-            in the columns represent the index mapping of the category label. Basically a rowsubset of `self.covariates_idx`.
-            Same input as forward pass
         regularization_scaler: Union[float, int]
             scaling value by which to multiply the regularization term
         method : Literal['orthogonality', 'info_nce', 'kl_divergence'], optional
@@ -44,38 +42,36 @@ class CatPertRegularizer:
             before softmax/log-softmax. Lower values sharpen the distribution, increasing emphasis on the highest similarities. 
             Higher values produce a softer distribution. Default is 0.1.
         """
-
-        self.device = X_in.device
-        self.dtype = X_in.dtype
+        
+        self.include_adjacency = include_adjacency
+        self.temperature = temperature
+#         self.batch_size = batch_size
+        self.method = method
 
         # attributes of bionetwork modle
         self.from_bionetwork(bionetwork_class)
 
-        self.temperature = temperature
-
-        self.include_adjacency = include_adjacency
-        if not self.include_adjacency:
-            self.pert_repr = X_in
-        else:
-            self.pert_repr = self.activation(self.weights @ X_in.T, self.bionet_params['leak'])
-        self.covariates_idx = covariates_idx
-
         self.regularization_scaler = regularization_scaler
 
         if method in ['info_nce', 'kl_divergence']:
-            self._init_bilinear_weights()
+            self._bilinear_initialized = False
 
         _method_suffix = 'per_label' if per_label else 'global'
         if self.regularization_scaler == 0:
             self.regularizer = self.zero_regularizer
         else:
-            self.regularizer = self.__dict__[method + '_' + _method_suffix]
+            self.regularizer = getattr(self, self.method + '_' + _method_suffix)
 
     def __call__(self):
         return self.regularizer()
 
     def from_bionetwork(self, bionetwork_class):
         """Retain some needed attributes from the bionetwork class"""
+        
+        self.device = bionetwork_class.device
+        self.dtype = bionetwork_class.dtype
+        self.seed = bionetwork_class.seed
+        
         self.cat_embeddings = bionetwork_class.cat_embeddings
         self._cat_group_idx = bionetwork_class._cat_group_idx
         self.cat_unmasked_indices = bionetwork_class.cat_unmasked_indices
@@ -83,8 +79,31 @@ class CatPertRegularizer:
         if self.include_adjacency:
             self.weights = bionetwork_class.weights
             self.activation = bionetwork_class.activation
+            self.bionet_params = bionetwork_class.bionet_params
 
         self.seed = bionetwork_class.seed
+        
+    def update_attributes(self, pert_in: torch.Tensor, covariates_idx: torch.Tensor):
+        """
+        Parameters
+        ----------
+        pert_in : torch.Tensor
+            the ligand concentration inputs. 
+            Shape is (samples x ligands) if not including adjacency. Same `X_in` input as to `ProjectInput.forward`
+            Shape is (samples x nodes) if including adjacnecy. Same `X_full` output to `ProjectInput.forward`.
+        covariates_idx : torch.Tensor
+            rows correspond to samples as in X_full. Each column represents one categorical covariate group. Values
+            in the columns represent the index mapping of the category label. Basically a rowsubset of `self.covariates_idx`.
+            Same input as forward pass
+        """
+        self.covariates_idx = covariates_idx
+        if not self.include_adjacency:
+            self.pert_repr = pert_in
+        else:
+            self.pert_repr = self.activation(self.weights @ pert_in.T, self.bionet_params['leak']).T
+
+        if self.method in ['info_nce', 'kl_divergence'] and not self._bilinear_initialized:
+            self._init_bilinear_weights()
 
     def _init_bilinear_weights(self):
         """Initialize the random weights matrix for bilinear similarity in infoNCE"""
@@ -99,6 +118,18 @@ class CatPertRegularizer:
             W = torch.randn(emb_dim, pert_dim, device=self.device)
             W = torch.nn.functional.normalize(W, dim=0)
             setattr(self, f"W_bilinear_group{cat_group}", W)
+        self._bilinear_initialized = True
+            
+#     def _adjust_bilinear_weights(self, n_obs: int):
+#         # slice bilinear weights to current batch size
+#         for cat_group_idx in range(len(self._cat_group_idx)):
+#             cat_group = self._cat_group_idx[cat_group_idx]
+#             W_full = getattr(self, f"W_init_bilinear_group{cat_group}")
+#             emb_dim, max_size = W_full.shape
+#             if n_obs > max_size:
+#                 raise ValueError(f"Batch size {n_obs} exceeds initialized max_size {max_size}. Reinit with larger batch_size.")
+#             W = W_full[:, :n_obs]
+#             setattr(self, f"W_bilinear_group{cat_group}", W)
 
     def zero_regularizer(self):
         return OrderedDict({'cat_bias_pert_loss': torch.tensor(0.0, device = self.device, dtype = self.dtype)})
@@ -430,5 +461,7 @@ class CatPertRegularizer:
             return OrderedDict({'cat_bias_pert_loss': self.regularization_scaler * total_loss})
         else:
             return OrderedDict({'cat_bias_pert_loss': torch.tensor(0.0, device = self.device, dtype = self.dtype)})
+
+        
 
         
