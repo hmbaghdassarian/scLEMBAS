@@ -593,6 +593,7 @@ def pls_da_pipeline(
     adata_sub = adata[mask].copy()
 
     if scale:
+        raise ValueError('Internal: This has to be appropriately implemented to allow for prediction projections')
         sc.pp.scale(adata_sub)
 
     # elbow selection

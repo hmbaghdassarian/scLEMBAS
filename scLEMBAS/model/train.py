@@ -2112,4 +2112,4 @@ class TrainSC(TrainBase):
         msg += ', s={:.5f}'.format(temp_df.spectral_radius)
         msg += ', r={:.5f}'.format(temp_df.learning_rate)
         msg += ', v={:.5f}'.format(temp_df.n_moa_violations)
-        print(msg)['']
+        print(msg)
