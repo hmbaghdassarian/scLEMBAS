@@ -99,6 +99,8 @@ parser.add_argument("--cat_max_lr", type=float)
 parser.add_argument("--pert_max_lr", type=float)
 parser.add_argument("--lr_decay", type=float)
 
+parser.add_argument("--spectral_loss_factor", type=float)
+
 ########################################################################
 args = parser.parse_args()
 fn = str(args.index)
@@ -166,18 +168,20 @@ cp_method = args.cp_method
 cp_include_adjacency = args.cp_include_adjacency
 cp_per_label = args.cp_per_label
 
-#python test_run.py --index 52 --run_type E --bn_weights_lambda_L2 1e-7 --uniform_lambda_L2 1e-7 --cat_max_norm 100 --global_bias_lambda_L2 0 --cat_bias_lambda_L2 1e-4 --vae_scaling_KL 1e-3 --global_bias_lambda_L1 0 --cat_bias_lambda_L1 0 --vae_prior_mu 0 --vae_prior_sigma 1 --adj_scaling_KL 0 --adj_prior_mu 0 --adj_prior_sigma 0.2 --loss_type MSE --per_condition_loss true --cat_max_penalty_weight 12 --cat_b_adv 2 --pert_max_penalty_weight 8 --pert_b_adv 3.5 --network_noise_scale 0.01 --min_network_noise 0.0025 --include_gradient_noise_vae true --include_gradient_noise_embedding true --constant_gradient_noise true --gradient_noise_scale 1e-9 --lr_period 4 --reset_state false --train_batch 500 --initialize_fc true --generator_dropout_rate 0.7 --cat_discriminator_dropout_rate 0.1 --pert_discriminator_dropout_rate 0.1 --discriminator_batch_momentum 0 --spectral_norm false --discriminator_lambda_L2 1e-3 --discriminator_bionet_activation false --smooth_labels true --gradient_ascent true --n_adversarial_start 200 --n_discriminator_train 5 --vae_lambda_l2 1e-5 --min_cat_adv_penalty 0.1 --min_pert_adv_penalty 0.1 --main_max_lr 2e-3 --generator_max_lr 5e-4 --cat_max_lr 1e-3 --pert_max_lr 1e-3 --lr_decay 0.9 --cat_bias_orthogonality_scaler 100 --cp_method orthogonality --cp_include_adjacency false --cp_per_label false
+spectral_loss_factor = args.spectral_loss_factor
+
+
+#python test_run.py --index 52 --run_type E --bn_weights_lambda_L2 1e-7 --cat_max_norm 100 --global_bias_lambda_L2 0 --cat_bias_lambda_L2 1e-4 --vae_scaling_KL 1e-3 --global_bias_lambda_L1 0 --cat_bias_lambda_L1 0 --vae_prior_mu 0 --vae_prior_sigma 1 --adj_scaling_KL 0 --adj_prior_mu 0 --adj_prior_sigma 0.2 --loss_type MSE --per_condition_loss true --cat_max_penalty_weight 12 --cat_b_adv 2 --pert_max_penalty_weight 8 --pert_b_adv 3.5 --network_noise_scale 0.01 --min_network_noise 0.0025 --include_gradient_noise_vae true --include_gradient_noise_embedding true --constant_gradient_noise true --gradient_noise_scale 1e-9 --lr_period 4 --reset_state false --train_batch 500 --initialize_fc true --generator_dropout_rate 0.7 --cat_discriminator_dropout_rate 0.1 --pert_discriminator_dropout_rate 0.1 --discriminator_batch_momentum 0 --spectral_norm false --discriminator_lambda_L2 1e-3 --discriminator_bionet_activation false --smooth_labels true --gradient_ascent true --n_adversarial_start 200 --n_discriminator_train 5 --vae_lambda_l2 1e-5 --min_cat_adv_penalty 0.1 --min_pert_adv_penalty 0.1 --main_max_lr 2e-3 --generator_max_lr 5e-4 --cat_max_lr 1e-3 --pert_max_lr 1e-3 --lr_decay 0.9 --cat_bias_orthogonality_scaler 100 --cp_method orthogonality --cp_include_adjacency false --cp_per_label false --spectral_loss_factor 1e-06 --uniform_lambda_L2 1e-7
 
 
 # 
 
-# In[15]:
+# In[2]:
 
 
-# index = "20v3"
+# index = 52
 # run_type = "E"
 # bn_weights_lambda_L2 = 1e-7
-# uniform_lambda_L2 = 1e-7
 # cat_max_norm = 100
 # global_bias_lambda_L2 = 0
 # cat_bias_lambda_L2 = 1e-4
@@ -228,9 +232,11 @@ cp_per_label = args.cp_per_label
 # cp_method = "orthogonality"
 # cp_include_adjacency = False
 # cp_per_label = False
+# spectral_loss_factor = 1e-06 
+# uniform_lambda_L2 = 1e-07
 
 
-# In[16]:
+# In[3]:
 
 
 run_types = {'A': (1, True),
@@ -242,7 +248,7 @@ run_types = {'A': (1, True),
 seed, loo = run_types[run_type]
 
 
-# In[7]:
+# In[4]:
 
 
 visualize = False
@@ -266,7 +272,7 @@ else:
     prediction_loss_fn = SamplesLoss("sinkhorn", p=2, blur=0.05).to(device)
 
 
-# In[4]:
+# In[5]:
 
 
 n_fraction = 0.2
@@ -298,7 +304,7 @@ train_frac, test_frac = 0.8, 0.2
 #     fn += '_loo'
 
 
-# In[2]:
+# In[6]:
 
 
 import warnings
@@ -337,7 +343,7 @@ import seaborn as sns
 from sklearn.model_selection import train_test_split
 
 
-# In[3]:
+# In[7]:
 
 
 import sys
@@ -380,7 +386,7 @@ from Kang_utils import (rev_stim, stim_map, rev_stim_map, adata_dimviz_bias, cle
                         get_prediction, adata_dimviz_prediction, prepare_for_metrics, get_loss)
 
 
-# In[4]:
+# In[8]:
 
 
 n_cores = 30
@@ -394,7 +400,7 @@ data_path = '/nobackup/users/hmbaghda/scLEMBAS/analysis'
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 
-# In[10]:
+# In[9]:
 
 
 adata = sc.read_h5ad(os.path.join(data_path, 'processed', 'kang_expr_scored.h5ad'))
@@ -417,7 +423,7 @@ pert_col = 'stim'
 cat_col = 'seurat_annotations'
 
 
-# In[8]:
+# In[10]:
 
 
 if drop_low_counts:
@@ -428,7 +434,7 @@ if drop_low_counts:
 
 # # 1. Create a novel train-test split:
 
-# In[12]:
+# In[11]:
 
 
 def ood_split(tf_adata, 
@@ -544,9 +550,10 @@ def ood_split(tf_adata,
         return train_cells, test_cells, train_cond, test_cond
     else:
         return None, None, None, None
+    
 
 
-# In[13]:
+# In[12]:
 
 
 contingency_table = pd.crosstab(tf_adata.obs['stim'], tf_adata.obs['seurat_annotations'], 
@@ -555,7 +562,7 @@ contingency_table = contingency_table.T.sort_values(by = 'Total').T
 bins = pd.qcut(contingency_table.T.Total, q = 4, labels = False)
 
 
-# In[17]:
+# In[23]:
 
 
 if not loo:
@@ -593,14 +600,14 @@ else:
     train_cells = tf_adata.obs[tf_adata.obs.condition.isin(train_cond)].index.tolist()
 
 
-# In[18]:
+# In[24]:
 
 
 condition_proportions = tf_adata.obs['condition'].value_counts()
 condition_proportions.loc[train_cond].sort_values(ascending = True)
 
 
-# In[19]:
+# In[25]:
 
 
 condition_proportions.loc[test_cond].sort_values(ascending = True)
@@ -845,7 +852,8 @@ regularization_params_default = {'input_lambda_L2': 0, # doesn't matter if setti
                          'uniform_lambda_L2': uniform_lambda_L2,#, 1e-7,
                          'uniform_min': 0,
                          'uniform_max': 1, 
-                         'spectral_loss_factor': 1e-6,
+                         'spectral_loss_factor': spectral_loss_factor,
+                                 'track_spectral_radius': False, # doesn't track if spectral_loss_factor = 0, reducing computation time
                                'global_bias_lambda_L1': global_bias_lambda_L1, 
                                 'cat_bias_lambda_L1': cat_bias_lambda_L1,
                                 'adj_scaling_KL': adj_scaling_KL, 

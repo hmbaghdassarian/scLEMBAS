@@ -357,17 +357,21 @@ class SignalingModel(torch.nn.Module):
         loss : torch.Tensor
             the regularization term
         """
-        if not target_max:
-            target_max = 1/self.projection_amplitude_out
+        if lambda_L2 == 0:
+            return torch.tensor(0.0, device=self.device, dtype=self.dtype)
+        else:
+            if not target_max:
+                target_max = 1/self.projection_amplitude_out
+            
+            sorted_Y_full, _ = torch.sort(Y_full, axis=0) # sorts each column (signaling network node) in ascending order
+            target_distribution = torch.linspace(target_min, target_max, Y_full.shape[0], dtype=Y_full.dtype, device=Y_full.device).reshape(-1, 1)
+            
+            dist_loss = torch.sum(torch.square(sorted_Y_full - target_distribution)) # difference in distribution
+            below_loss = torch.sum(Y_full.lt(target_min) * torch.square(Y_full-target_min)) # those that are below the minimum value
+            above_loss = torch.sum(Y_full.gt(target_max) * torch.square(Y_full-target_max)) # those that are above the maximum value
+            loss = lambda_L2*(dist_loss + below_loss + above_loss)
+            return loss            
         
-        sorted_Y_full, _ = torch.sort(Y_full, axis=0) # sorts each column (signaling network node) in ascending order
-        target_distribution = torch.linspace(target_min, target_max, Y_full.shape[0], dtype=Y_full.dtype, device=Y_full.device).reshape(-1, 1)
-        
-        dist_loss = torch.sum(torch.square(sorted_Y_full - target_distribution)) # difference in distribution
-        below_loss = torch.sum(Y_full.lt(target_min) * torch.square(Y_full-target_min)) # those that are below the minimum value
-        above_loss = torch.sum(Y_full.gt(target_max) * torch.square(Y_full-target_max)) # those that are above the maximum value
-        loss = lambda_L2*(dist_loss + below_loss + above_loss)
-        return loss
 
     def add_gradient_noise(self, noise_level: Union[float, int]):
         """Adds noise to backwards pass gradient calculations. Use during training to make model more robust. 

@@ -1,0 +1,91 @@
+"""Distance-based metrics"""
+
+from typing import Literal
+
+import sklearn
+import pandas as pd
+
+import scanpy as sc
+
+def rank_score(
+    tf_adata_actual, 
+    tf_adata_predicted, 
+    pert_col: str, 
+    distance_metric: str = 'manhattan', 
+#     method: Literal['perturbench', 'virtual_cell_challenge'] = 'virtual_cell_challenge',
+    **kwargs
+):
+    """Average perturbation rank score for a set of predicted perturbations, as described in Perturbench (https://arxiv.org/html/2408.10609v3)
+    
+    The rank metric falls between [0,1]. 1 indicates a perfect score, and 0.5 is the expected score of a random prediction. 
+    
+    Note, Perturbench normalizes to the number of *predicted* perturbations, so we do not include all perturbations in the dataset
+    set (as contained in tf_adata_actual), but rather limit to those in the tf_adata_predicted 
+    (e.g., likely only include test data rather than train + test): "For a given observed perturbation, 
+    how close the model prediction is to the observation, compared to predictions made for other perturbations."
+
+    Parameters
+    ----------
+    tf_adata_actual : _type_
+        AnnData object containing actual data
+    tf_adata_predicted : _type_
+        AnnData object containing actual data
+    pert_col : _type_
+        column in `tf_adata_predicted.obs` containing perturbation information
+    distance_metric : str, optional
+        how to calculate the distance between psuedobulked perturbations, by default 'manhattan' (as in virtual cel challenge)
+        options include any metric included in available to sklearn.metrics.pairwise_distances
+    method : str, optional
+        DEPRECATED: only difference is whether individual rank denominator is subtracted by 1
+        whether to use the scoring based on the description in PerturBench (https://arxiv.org/html/2408.10609v3)
+        or Virtual Cell Challenge (https://virtualcellchallenge.org/evaluation). Should be very similar.
+    **kwargs
+        key word arguments to pass to `sklearn.metrics.pairwise_distances`
+        
+        
+    Returns
+    ----------
+    rank_score_average : float
+        The rank score averaged across modelled perturbations
+    rank_scores : dict
+        A dictionary mapping the rank score of each modelled perturbation
+    """
+
+    # filter to only test perturbations 
+    # PerturBench normalizes only to predicted perturbations:
+    pred_pert_mask = tf_adata_actual.obs[pert_col].isin(tf_adata_predicted.obs[pert_col])
+    tf_adata_actual = tf_adata_actual[pred_pert_mask, :].copy()
+    
+    n_pert_predicted = tf_adata_predicted.obs[pert_col].nunique()
+    if tf_adata_actual.obs[pert_col].nunique() != n_pert_predicted:
+        raise ValueError('Not all perturbations present in actual data')
+
+    psuedobulked_perts_actual = sc.get.aggregate(tf_adata_actual, by = pert_col, axis = 0, func = 'mean')
+    psuedobulked_perts_predicted = sc.get.aggregate(tf_adata_predicted, by = pert_col, axis = 0, func = 'mean')
+
+    n_pert_predicted = psuedobulked_perts_predicted.n_obs
+
+    # get pairwise distances as in virtual cell challenge
+    distances = sklearn.metrics.pairwise_distances(
+        psuedobulked_perts_actual.layers['mean'],
+        psuedobulked_perts_predicted.layers['mean'],
+        metric=distance_metric, 
+        **kwargs
+    )
+
+    distances = pd.DataFrame(distances, 
+                 index = psuedobulked_perts_actual.obs_names, 
+                 columns = psuedobulked_perts_predicted.obs_names)
+
+    rank_scores = {}
+    for pred_pert in distances.columns:
+        corresponding_distance = distances.loc[pred_pert, pred_pert] # distance to actual true perturbation
+        all_distances = distances.loc[:, pred_pert].sort_values(ascending = True)
+        rank = (all_distances <= corresponding_distance).sum() - 1 # subtracting rank by 1 allows for zero values
+        rank_scores[pred_pert] = 1 - (rank/n_pert_predicted) # Perturbench subtracts 1 from n_pert_prediced, VCC does not
+            
+    rank_score_average = sum(rank_scores.values())/len(rank_scores)
+        
+    
+    return rank_score_average, rank_scores
+

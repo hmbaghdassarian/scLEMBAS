@@ -246,7 +246,11 @@ class BioNetBase(nn.Module):
         loss = L1_reg(lambda_L1 , self.weights * sign_mismatch)
         return loss
 
-    def get_SS_loss(self, Y_full: torch.Tensor, spectral_loss_factor: float, subset_n: int = 5, **kwargs):
+    def get_SS_loss(self, Y_full: torch.Tensor, spectral_loss_factor: float, 
+                    subset_n: int = 5,
+                    track_spectral_radius: bool = False,
+                    
+                    **kwargs):
         """_summary_
     
         Parameters
@@ -259,29 +263,34 @@ class BioNetBase(nn.Module):
         subset_n : int, optional
             _description_, by default 5
             default was 10 when using `_depr_get_SS_deviation`
+        track_spectral_radius: bool = False
+            whether to track the spectral radius when spectral_loss_factor is set to 0 (if spectral_loss_factor is not 0, will track regardless)
     
         Returns
         -------
         _type_
             _description_
         """
-        spectral_loss_factor = torch.tensor(spectral_loss_factor, dtype=Y_full.dtype, device=Y_full.device)
-        exp_factor = torch.tensor(self.bionet_params['exp_factor'], dtype=Y_full.dtype, device=Y_full.device)
-    
-        if self.seed:
-            np.random.seed(self.seed + self._ss_seed_counter)
-        selected_values = np.random.permutation(Y_full.shape[0])[:subset_n]
-    
-        SS_deviation, aprox_spectral_radius = self._get_SS_deviation(Y_full[selected_values,:], **kwargs)        
-        spectral_radius_factor = torch.exp(exp_factor*(aprox_spectral_radius-self.bionet_params['spectral_target']))
+        if spectral_loss_factor == 0 and not track_spectral_radius:
+            return torch.tensor(0.0, device=self.device, dtype=self.dtype), -1
+        else:
+            spectral_loss_factor = torch.tensor(spectral_loss_factor, dtype=Y_full.dtype, device=Y_full.device)
+            exp_factor = torch.tensor(self.bionet_params['exp_factor'], dtype=Y_full.dtype, device=Y_full.device)
         
-        loss = spectral_radius_factor * SS_deviation/torch.sum(SS_deviation.detach())
-        loss = spectral_loss_factor * torch.sum(loss)
-        aprox_spectral_radius = torch.mean(aprox_spectral_radius).item()
-    
-        self._ss_seed_counter += 1 # new seed each time this (and _get_SS_deviation) is called
-    
-        return loss, aprox_spectral_radius
+            if self.seed:
+                np.random.seed(self.seed + self._ss_seed_counter)
+            selected_values = np.random.permutation(Y_full.shape[0])[:subset_n]
+        
+            SS_deviation, aprox_spectral_radius = self._get_SS_deviation(Y_full[selected_values,:], **kwargs)        
+            spectral_radius_factor = torch.exp(exp_factor*(aprox_spectral_radius-self.bionet_params['spectral_target']))
+            
+            loss = spectral_radius_factor * SS_deviation/torch.sum(SS_deviation.detach())
+            loss = spectral_loss_factor * torch.sum(loss)
+            aprox_spectral_radius = torch.mean(aprox_spectral_radius).item()
+        
+            self._ss_seed_counter += 1 # new seed each time this (and _get_SS_deviation) is called
+        
+            return loss, aprox_spectral_radius
     
     def _get_SS_deviation(self, Y_full_sub, n_probes: int = 5, power_steps: int = 5):
         """Quicker version of spectral radius implemented by Olof Nordenstorm."""

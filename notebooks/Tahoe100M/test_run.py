@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[19]:
+# In[1]:
 
 
 import argparse
@@ -36,6 +36,7 @@ parser.add_argument("--n_pert_discriminator_train", type = int, required = True)
 parser.add_argument("--n_adversarial_start", type = int, required = True)
 
 parser.add_argument("--cat_dropout", type=float, required=True)
+parser.add_argument("--pert_dropout", type=float, required=True)
 
 parser.add_argument("--generator_dropout_rate", type=float, required=True)
 parser.add_argument("--n_layers_vae", type=int, required=True)
@@ -50,6 +51,8 @@ parser.add_argument("--cat_max_penalty_weight", type=float, required=True)
 parser.add_argument("--cat_bias_orthogonality_scaler", type=float, required=True)
 parser.add_argument("--cat_bias_lambda_L2", type=float, required=True)
 
+parser.add_argument("--spectral_loss_factor", type=float, required=True)
+parser.add_argument("--uniform_lambda_L2", type=float, required=True)
 
 ########################################################################
 args = parser.parse_args()
@@ -71,6 +74,7 @@ cat_max_lr = args.cat_max_lr
 pert_max_lr = args.pert_max_lr
 
 cat_dropout = args.cat_dropout
+pert_dropout = args.pert_dropout
 
 generator_dropout_rate = args.generator_dropout_rate
 n_layers_vae = args.n_layers_vae
@@ -80,40 +84,39 @@ cat_max_penalty_weight = args.cat_max_penalty_weight
 cat_bias_orthogonality_scaler = args.cat_bias_orthogonality_scaler
 cat_bias_lambda_L2 = args.cat_bias_lambda_L2 
 
+spectral_loss_factor = args.spectral_loss_factor
+uniform_lambda_L2 = args.uniform_lambda_L2
 
-# python test_run.py --index 1 --subset_size 0.05 --noadv false --max_epochs 600 --KL_scaling 5e-5 --n_cat_discriminator_train 5 --n_pert_discriminator_train 5 --cat_dropout 0.3 --n_adversarial_start 0 --gen_max_lr 1e-4 --cat_max_lr 1e-2 --pert_max_lr 1e-2 --cat_max_penalty_weight 11 --generator_dropout_rate 0.7 --n_layers_vae 1 --cat_bias_orthogonality_scaler 100 --cat_bias_lambda_L2 1e-4
+# python test_run.py --index 6 --subset_size 0.15 --noadv false --max_epochs 600 --KL_scaling 5e-5 --n_cat_discriminator_train 5 --n_pert_discriminator_train 5 --cat_dropout 0.1 --pert_dropout 0.1 --n_adversarial_start 200 --main_max_lr 2e-3 --gen_max_lr 5e-4 --cat_max_lr 1e-3 --pert_max_lr 1e-3 --cat_max_penalty_weight 11 --generator_dropout_rate 0.7 --n_layers_vae 3 --cat_bias_orthogonality_scaler 100 --cat_bias_lambda_L2 1e-4 --spectral_loss_factor 0 --uniform_lambda_L2 0
 
 
-# In[20]:
+# In[3]:
 
 
-# fn = 'dev'
-# subset_size = 0.05
-# no_adv = False
-# max_epochs = 600 #5
-
-# vae_scaling_KL = 1e-3
-
+# index = '6'
+# subset_size = 0.15
+# noadv = False
+# max_epochs = 600
+# vae_scaling_KL = 5e-5
 # n_cat_discriminator_train = 5
 # n_pert_discriminator_train = 5
 # cat_dropout = 0.1
-# n_adversarial_start = 200 #0 
-
+# pert_dropout = 0.1
+# n_adversarial_start = 200
 # main_max_lr = 2e-3
 # gen_max_lr = 5e-4
 # cat_max_lr = 1e-3
 # pert_max_lr = 1e-3
-
-# generator_dropout_rate = 0.7 
-# n_layers_vae  = 1
-
 # cat_max_penalty_weight = 11
-
+# generator_dropout_rate = 0.7
+# n_layers_vae = 3
 # cat_bias_orthogonality_scaler = 100
-# cat_bias_lambda_L2 = 1e-4, # allow for generalization (not collapsing on perturbation)
+# cat_bias_lambda_L2 = 1e-4
+# spectral_loss_factor = 0
+# uniform_lambda_L2 = 0
 
 
-# In[21]:
+# In[5]:
 
 
 import os
@@ -143,13 +146,13 @@ from scLEMBAS.model.scl import SignalingModel
 import Tahoe_utils as Tu
 
 
-# In[22]:
+# In[6]:
 
 
 subset = True
 
 
-# In[23]:
+# In[7]:
 
 
 n_cores = 30
@@ -169,7 +172,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Load data:
 
-# In[24]:
+# In[8]:
 
 
 sn_ppis = pd.read_csv(os.path.join(data_path, 'processed', author + '_sn_ppis.csv'), 
@@ -200,7 +203,7 @@ if len(set(tf_adata.obs.cell_line)) != len(tf_adata.obs.cell_line.cat.categories
 
 # # Train/test split:
 
-# In[25]:
+# In[9]:
 
 
 train_split, test_split = Tu.Tahoe100M_split(tf_adata,
@@ -225,13 +228,13 @@ drug_counts = pd.DataFrame({
 }).sort_values(by = 'train', ascending = True)
 
 
-# In[26]:
+# In[10]:
 
 
 cell_line_counts
 
 
-# In[27]:
+# In[11]:
 
 
 drug_counts
@@ -239,7 +242,7 @@ drug_counts
 
 # Get the PLS models for test prediction projections -- we assume at most the # of components needed to describe the subset is that of the full dataset, so we set that as the number of components, rather than doing the automated elbow selection.
 
-# In[1]:
+# In[12]:
 
 
 from scLEMBAS import latent_separation as ls
@@ -329,7 +332,7 @@ tf_adata[train_cells, :].obs[pert_col].value_counts().unique()
 
 # # Hyper-parameters:
 
-# In[10]:
+# In[17]:
 
 
 def generate_lr_params(n_epochs, 
@@ -388,7 +391,7 @@ def generate_lr_params(n_epochs,
     }
 
 
-# In[11]:
+# In[18]:
 
 
 projection_amplitude_in = 10
@@ -402,7 +405,8 @@ bionet_params = {'target_steps': 100,
 
 spectral_radius_params = {'n_probes_spectral': 5, 
                           'power_steps_spectral': 5, 
-                          'subset_n_spectral': 5}
+                          'subset_n_spectral': 5, 
+                         'track_spectral_radius': True}
 target_spectral_radius = 0.9
 
 noise_params = {
@@ -416,7 +420,7 @@ noise_params = {
 }
 
 
-# In[12]:
+# In[19]:
 
 
 loss_scaler = 100
@@ -460,7 +464,7 @@ lr_params = generate_lr_params(n_epochs = max_epochs,
 # initialize_fc = True # DEPRECATED
 
 
-# In[13]:
+# In[20]:
 
 
 bionet_params['cat_max_norm'] = 100
@@ -469,7 +473,7 @@ regularization_params = {
     
     'bn_weights_lambda_L2': 1e-7,
     'moa_lambda_L1': 1e2,
-    'uniform_lambda_L2': 1e-7, 
+    'uniform_lambda_L2': uniform_lambda_L2, #0, #1e-7, 
     'uniform_min': -1/projection_amplitude_out,
     'uniform_max': 1/projection_amplitude_out,
     'adj_scaling_KL': 0,  # using uniform/bn_weights already
@@ -479,7 +483,7 @@ regularization_params = {
     'output_weights_lambda_L2': 1e-7,
     'output_bias_lambda_L2': 1e-7,
     
-    'spectral_loss_factor': 1e-6,
+    'spectral_loss_factor': spectral_loss_factor,
     
     
     'global_bias_lambda_L2': 0, # using KL divergence instead
@@ -497,7 +501,7 @@ cat_pert_params = {'regularization_scaler': cat_bias_orthogonality_scaler,
                       }
 
 
-# In[14]:
+# In[21]:
 
 
 training_params = {
@@ -513,7 +517,7 @@ training_params['prediction_loss_fn_scaler'] = loss_scaler
 
 # VAE:
 
-# In[15]:
+# In[22]:
 
 
 # building
@@ -559,7 +563,7 @@ del vae_params['max_epochs']
 
 # Discriminator:
 
-# In[16]:
+# In[23]:
 
 
 discriminator_params = {
@@ -579,7 +583,7 @@ discriminator_params = {
 }
 
 
-# In[17]:
+# In[24]:
 
 
 # architecture -- pert >> cat bc harder classification problem
@@ -618,7 +622,7 @@ cat_discriminator_params['epsilon_smooth'] = 1/tf_adata.obs.cell_line.nunique()
 pert_discriminator_params['epsilon_smooth'] = 1/tf_adata.obs.drug.nunique()
 
 
-# In[18]:
+# In[25]:
 
 
 # adverserial penalty curve
@@ -686,7 +690,7 @@ else:
 # pert_discriminator_params['discriminator_penalty_weight'] = pert_discriminator_penalty_weight
 
 
-# In[19]:
+# In[26]:
 
 
 # discriminator LRs
@@ -724,7 +728,7 @@ pert_discriminator_params = {**pert_discriminator_params, **discriminator_lr_par
 
 # Visualize hyperparameters:
 
-# In[20]:
+# In[27]:
 
 
 fig, ax = plt.subplots(ncols = 2, figsize = (13,5))
@@ -743,7 +747,7 @@ fig.tight_layout();
 
 # # Build model and trainer
 
-# In[21]:
+# In[28]:
 
 
 # input stimulation
@@ -751,7 +755,7 @@ X_in = pd.get_dummies(tf_adata.obs.drug).astype(int)
 X_in.drop(columns = 'DMSO_TF', inplace = True) # all 0s
 
 
-# In[22]:
+# In[29]:
 
 
 # lr_mod = SignalingModel(
@@ -825,7 +829,7 @@ X_in.drop(columns = 'DMSO_TF', inplace = True) # all 0s
 # del lr_trainer
 
 
-# In[23]:
+# In[30]:
 
 
 mod = SignalingModel(
@@ -845,7 +849,7 @@ mod.input_layer.weights.requires_grad = False # don't learn scaling factors for 
 mod.signaling_network.prescale_weights(target_radius = target_spectral_radius) # spectral radius
 
 
-# In[25]:
+# In[29]:
 
 
 if not no_adv:

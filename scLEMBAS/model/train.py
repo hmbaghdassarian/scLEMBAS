@@ -98,7 +98,8 @@ class TrainBase:
                             'uniform_lambda_L2': 1e-4, 'uniform_min': 0, 'uniform_max': (1/1.2), 'spectral_loss_factor': 1e-5, 
                             'adj_scaling_KL': 0, 'adj_prior_mu': 0, 'adj_prior_sigma': 0.2
                             }
-    SPECTRAL_RADIUS_PARAMS = {'n_probes_spectral': 5, 'power_steps_spectral': 5, 'subset_n_spectral': 5}
+    SPECTRAL_RADIUS_PARAMS = {'n_probes_spectral': 5, 'power_steps_spectral': 5, 'subset_n_spectral': 5, 
+                             'track_spectral_radius': False}
     HYPER_PARAMS = {**LR_PARAMS, 
                     **BATCH_PARAMS, 
                     **NOISE_PARAMS, 
@@ -1808,22 +1809,35 @@ class TrainSC(TrainBase):
                 # lembas regularization
                 sign_reg = self.mod.signaling_network.sign_regularization(lambda_L1 = self.hyper_params['moa_lambda_L1']) # incorrect MoA
         #             ligand_reg = self.mod.ligand_regularization(lambda_L2 = self.hyper_params['ligand_lambda_L2']) # ligand biases
-                stability_loss, spectral_radius = self.mod.signaling_network.get_SS_loss(Y_full = Y_full.detach(), spectral_loss_factor = self.hyper_params['spectral_loss_factor'],
-                                                                                    subset_n = self.hyper_params['subset_n_spectral'], n_probes = self.hyper_params['n_probes_spectral'], 
-                                                                                    power_steps = self.hyper_params['power_steps_spectral'])
-                uniform_reg = self.mod.uniform_regularization(lambda_L2 = self.hyper_params['uniform_lambda_L2']*cur_lr, Y_full = Y_full, 
-                                                        target_min = 0, target_max = self.hyper_params['uniform_max']) # uniform distribution
+                stability_loss, spectral_radius = self.mod.signaling_network.get_SS_loss(
+                    Y_full = Y_full.detach(), 
+                    spectral_loss_factor = self.hyper_params['spectral_loss_factor'],
+                    subset_n = self.hyper_params['subset_n_spectral'], 
+                    n_probes = self.hyper_params['n_probes_spectral'],
+                    power_steps = self.hyper_params['power_steps_spectral'],
+                    track_spectral_radius = self.hyper_params['track_spectral_radius'] # if False and spectral_loss_factor is 0, won't track (reduces computation time) 
+                )
 
-                input_param_reg, sn_param_reg, output_param_reg = self.mod.L2_reg(input_lambda_L2=self.hyper_params['input_lambda_L2'],
-                                            bn_weights_lambda_L2=self.hyper_params['bn_weights_lambda_L2'], 
-                                            global_bias_lambda_L2=self.hyper_params['global_bias_lambda_L2'], 
-                                            bias_global = torch.tensor(0) if not self._run_adv else bias_global,
-                                            cat_bias_lambda_L2=self.hyper_params['cat_bias_lambda_L2'],
-                                            output_weights_lambda_L2=self.hyper_params['output_weights_lambda_L2'],
-                                            output_bias_lambda_L2=self.hyper_params['output_bias_lambda_L2'])
-                sn_bias_l1_reg = self.mod.signaling_network.L1_reg_bias(bias_global = torch.tensor(0) if not self._run_adv else bias_global, 
-                                                                        global_bias_lambda_L1 = self.hyper_params['global_bias_lambda_L1'], 
-                                                                        cat_bias_lambda_L1 = self.hyper_params['cat_bias_lambda_L1'])
+                uniform_reg = self.mod.uniform_regularization( # uniform distribution
+                    lambda_L2 = self.hyper_params['uniform_lambda_L2']*cur_lr, 
+                    Y_full = Y_full,
+                    target_min = 0, 
+                    target_max = self.hyper_params['uniform_max']
+                ) 
+
+                input_param_reg, sn_param_reg, output_param_reg = self.mod.L2_reg(
+                    input_lambda_L2=self.hyper_params['input_lambda_L2'],
+                    bn_weights_lambda_L2=self.hyper_params['bn_weights_lambda_L2'],
+                    global_bias_lambda_L2=self.hyper_params['global_bias_lambda_L2'],
+                    bias_global = torch.tensor(0) if not self._run_adv else bias_global,
+                    cat_bias_lambda_L2=self.hyper_params['cat_bias_lambda_L2'],
+                    output_weights_lambda_L2=self.hyper_params['output_weights_lambda_L2'],
+                    output_bias_lambda_L2=self.hyper_params['output_bias_lambda_L2'])
+                sn_bias_l1_reg = self.mod.signaling_network.L1_reg_bias(
+                    bias_global = torch.tensor(0) if not self._run_adv else bias_global,
+                    global_bias_lambda_L1 = self.hyper_params['global_bias_lambda_L1'],
+                    cat_bias_lambda_L1 = self.hyper_params['cat_bias_lambda_L1']
+                )
     #                 from collections import OrderedDict
     #                 sn_cat_bias_orthogonality_reg = OrderedDict({'cat_bias_orthogonality_loss': 0})
 #                 sn_cat_bias_orthogonality_reg = self.mod.signaling_network.cat_orthogonality_regularization(covariates_idx = covariates_idx_,
