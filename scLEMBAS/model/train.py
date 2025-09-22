@@ -934,7 +934,9 @@ class TrainSC(TrainBase):
                      **{'prediction_loss_fn_scaler': 1}, # regularizer/multipler for prediction loss output
                     **{'include_gradient_noise_vae': True, #add noise to vae params
                        'include_gradient_noise_embedding': True, # add noise to embedding params
-                      'constant_gradient_noise': True}
+                      'constant_gradient_noise': True},
+                    **{'contrastive_loss_scaler': 0} # contrastive loss of perturbation distances
+
                    }
     CAT_PERT_PARAMS = {'regularization_scaler': 0.0, 
                        'method': 'orthogonality', 
@@ -984,6 +986,14 @@ class TrainSC(TrainBase):
         n_pert_discriminator_train : int, optional
             how frequently to train the perturbation discriminator relative to the rest of the model, by default 5
             will train the discriminator n_pert_discriminator_train times every epoch
+        hyper_params : see TrainCat for details, additional keys below
+            - 'prediction_loss_fn_scaler': multiplier for the reconstruction loss (enables keeping reconstruction on same magnitude even if changing loss function)
+            - 'global_bias_lambda_L1': L1 regularization for VAE generator output
+            - 'global_bias_lambda_L2': L2 regularization for VAE generator output
+            - 'include_gradient_noise_vae': whether VAE gradients should receive noise
+            - 'include_gradient_noise_embedding': whether categorical embedding gradients should receive noise
+            - 'constant_gradient_noise': whether noise injection is constant 'gradient_noise_scale' or a function of LR
+            - 'contrastive_loss_scaler': multiplier for calculating a contrastive loss beween each perturbation and control, encourages separation of perturbations
         cat_pert_params : see `cat_pert_regularizer` script for details
             hyperparameters specific to regularizations categorical bias against perturbation information
             - 'regularization_scaler': constant by which to mulitply the regularization value by
@@ -1085,6 +1095,7 @@ class TrainSC(TrainBase):
         self.initialize_pert_discriminator(pert_discriminator_params) 
 
         self.initialize_vae(vae_params)
+        self.format_hyperparams()
         
         if self.hyper_params['constant_gradient_noise']:
             self.hyper_params['gradient_noise_scale'] = torch.tensor([self.hyper_params['gradient_noise_scale']], 
@@ -1109,6 +1120,7 @@ class TrainSC(TrainBase):
                             'n_moa_violations',
                             'train_loss_total', 'train_loss_prediction',
                             'sign_reg_loss', 'stability_reg_loss', 'uniform_reg_loss',
+                            'contrastive_loss',
                             'input_param_reg_loss', 
                             'sn_param_reg_weights_kl_divergence',
                             'sn_param_reg_weights_L2_loss', 
@@ -1155,6 +1167,28 @@ class TrainSC(TrainBase):
                 self.stats['test'] = np.copy(self.stats['train_eval'])
             if self.track_validation:
                 self.stats['validation'] = np.copy(self.stats['train_eval'])
+                
+    def format_hyperparams(self):
+        """Appropriate formatting of various hyperparameters"""
+        bg_mu = self.vae_learning['params']['prior_mu']
+        bg_sigma = self.vae_learning['params']['prior_sigma']
+        standard_kl = (bg_mu == 0) and (bg_sigma == 1)
+        if not standard_kl and self.vae_learning['params']['scaling_KL'] != 0:
+            if not torch.is_tensor(bg_mu):
+                self.vae_learning['params']['prior_mu'] = torch.tensor(bg_mu, device = self.mod.device, dtype = self.mod.dtype)
+            if not torch.is_tensor(bg_sigma):
+                self.vae_learning['params']['prior_sigma'] = torch.tensor(bg_sigma, device = self.mod.device, dtype = self.mod.dtype)
+
+
+        adj_mu = self.hyper_params['adj_prior_mu']
+        adj_sigma = self.hyper_params['adj_prior_sigma']
+        standard_kl = (adj_mu == 0) and (adj_sigma == 1)
+        if not standard_kl and self.hyper_params['adj_scaling_KL'] != 0:
+            if not torch.is_tensor(adj_mu):
+                self.hyper_params['adj_prior_mu'] = torch.tensor(adj_mu, device = self.mod.device, dtype = self.mod.dtype)
+            if not torch.is_tensor(adj_sigma):
+                self.hyper_params['adj_prior_sigma'] = torch.tensor(adj_sigma, device = self.mod.device, dtype = self.mod.dtype)
+    
 
     def add_gradient_noise(self, cur_lr, e, batch):
         """Adds noise to gradients as a function of the LR and parameter gradient norm."""
@@ -1201,10 +1235,10 @@ class TrainSC(TrainBase):
         else:
             self.vae_learning['params']['reset_optimizer_epoch'] = self.hyper_params['max_epochs'] + 1
 
-        torch_type_params = ['lambda_l2', 'scaling_KL', 'prior_mu', 'prior_sigma']
-        for param, param_value in self.vae_learning['params'].items():
-            if param in torch_type_params and not torch.is_tensor(param_value):
-                    self.hyper_params[param] = torch.tensor(param_value, device=self.mod.device, dtype=self.mod.dtype)  
+        # torch_type_params = ['lambda_l2', 'scaling_KL', 'prior_mu', 'prior_sigma']
+        # for param, param_value in self.vae_learning['params'].items():
+        #     if param in torch_type_params and not torch.is_tensor(param_value):
+        #             self.vae_learning['params'][param] = torch.tensor(param_value, device=self.mod.device, dtype=self.mod.dtype)  
 
         self.vae_learning['optimizer'] = self.vae_learning['params']['optimizer'](self.mod.signaling_network.vae.parameters(),
                                                                                   lr = self.vae_learning['params']['maximum_learning_rate'],
@@ -1632,6 +1666,99 @@ class TrainSC(TrainBase):
         if cur_mode_train:
             self.mod.train()
         return eval_sv
+    
+    @staticmethod
+    def contrastive_perturbation_loss(Y_hat, y_out, X_in, covariates_idx, 
+                            lambda_scaler: float, 
+                            underestimate_only: bool = True, 
+                            ):
+        """Regularizes each perturbation to encourage separation from control within the category. 
+
+        1) For each category and predicted perturbation condition, calculates the centroid of the 
+        perturbation (predicted and actual) and the respective control perturbation (actual only).
+        2) Calculates the Euclidean distance between perturbed centroid and the control centroid for 
+        predicted and actual data. 
+        3) Calculates the loss as the square error between the predicted distance and actual distance.
+        4) Takes the mean across conditions. 
+
+        Considerations:
+        - prediction contrast anchors to actual controls rather than predicted controls
+        - only controls are contrasted, not pairwise
+        - centroids are used, rather than individual points
+
+        Parameters
+        ----------
+        Y_hat : _type_
+            the predicted output (samples x features)
+        y_out : _type_
+            the actual output (samples x features)
+        X_in : _type_
+            the one-hot encoded perturbations (samples x features)
+        covariates_idx : _type_
+            the discrete representation of categorical covariate (samples x 1) 
+            * can only currently handle one categorical covariate
+        lambda_scaler : float, 
+            scaling term for the loss
+        underestimate_only : bool, optional
+            whether to regularize distances only if they are underestimates, by default True
+
+        Returns
+        -------
+        regularization_loss
+            the regularization term
+        """
+        if lambda_scaler == 0:
+            return Y_hat.new_tensor(0.0)
+        
+        assert X_in.sum(axis = 1).max() <= 1, 'contrastive loss can currently only handle 1 perturbation per cell'
+        assert covariates_idx.size(1) == 1, "Contrastive regularization is currently only designed for one categorical covariate"
+
+        # flatten covariates
+        cats = covariates_idx.squeeze(1)
+
+        control_mask = (X_in.abs().sum(dim=1) == 0)
+        pert_mask = ~control_mask
+        pert_ids = X_in.argmax(dim=1)  # [N], valid even if row is control (but we’ll mask)
+
+        losses = []
+        # all (cell, pert) combos present in this batch (among perturbed rows)
+        combos = torch.stack([cats[pert_mask], pert_ids[pert_mask]], dim=1).unique(dim=0)
+        for cat, pid in combos:
+            cat_mask = (cats == cat)
+            ctrl_cat_mask = cat_mask & control_mask
+            cp_mask = cat_mask & (pert_ids == pid) & pert_mask # need and pert_mask when using argmax
+
+            n_ctrl = int(ctrl_cat_mask.sum().item())
+            n_pert = int(cp_mask.sum().item())
+
+            if n_ctrl == 0 or n_pert == 0:
+                continue
+
+        #     # control centroids (pred and true, kept separate)
+        #     pred_ctrl_centroid = Y_hat[ctrl_cat_mask].mean(dim=0, keepdim=True)
+        #     if detach_ctrl_grad:
+        #         pred_ctrl_centroid = pred_ctrl_centroid.detach()
+            actual_ctrl_centroid = y_out[ctrl_cat_mask].mean(dim=0, keepdim=True)
+
+            # per (cat, pert) centroids
+            pred_pert_centroid = Y_hat[cp_mask].mean(dim=0, keepdim=True)
+            actual_pert_centroid = y_out[cp_mask].mean(dim=0, keepdim=True)
+
+            # distances: pred vs pred_ctrl, target vs true_ctrl
+            pred_dist = torch.norm(pred_pert_centroid - actual_ctrl_centroid, p=2)
+            target_dist = torch.norm(actual_pert_centroid - actual_ctrl_centroid, p=2)
+
+            if not underestimate_only or (underestimate_only and target_dist > pred_dist):
+                loss = torch.square(target_dist - pred_dist) # squared deviation with asymmetric weighting
+                losses.append(loss)
+            else:
+                continue
+
+        
+        if len(losses) != 0:
+            return lambda_scaler * torch.stack(losses).mean()
+        else:
+            return Y_hat.new_tensor(0.0)
 
     def train_model(self, verbose: bool = True):
         """Train the model
@@ -1825,6 +1952,15 @@ class TrainSC(TrainBase):
                     target_max = self.hyper_params['uniform_max']
                 ) 
 
+                contrastive_loss = self.contrastive_perturbation_loss(
+                    Y_hat = Y_hat, 
+                    y_out = y_out_, 
+                    X_in = X_in_, 
+                    covariates_idx = covariates_idx_,
+                    lambda_scaler = self.hyper_params['contrastive_loss_scaler'],
+                    underestimate_only = True
+                    )
+
                 input_param_reg, sn_param_reg, output_param_reg = self.mod.L2_reg(
                     input_lambda_L2=self.hyper_params['input_lambda_L2'],
                     bn_weights_lambda_L2=self.hyper_params['bn_weights_lambda_L2'],
@@ -1878,7 +2014,7 @@ class TrainSC(TrainBase):
                                                                                 scaling_factor = self.vae_learning['params']['scaling_KL'], 
                                                                                 prior_mu = self.vae_learning['params']['prior_mu'], 
                                                                                 prior_sigma = self.vae_learning['params']['prior_sigma'])
-                tot_pred_loss = prediction_loss + sign_reg + param_reg + stability_loss + uniform_reg + kl_divergence_gb + kl_divergence_adj
+                tot_pred_loss = prediction_loss + sign_reg + param_reg + stability_loss + uniform_reg + contrastive_loss + kl_divergence_gb + kl_divergence_adj
 
                 pert_adverserial_loss, cat_adverserial_loss = self._zero.clone(), self._zero.clone()
                 # adverserial portion -- same as discriminator, but recalculating on trained model
@@ -1959,6 +2095,7 @@ class TrainSC(TrainBase):
                     self.mod.signaling_network.count_sign_mismatch(), 
                     tot_pred_loss.detach().item(), prediction_loss.detach().item(), #train_pearson_r, 
                     sign_reg.detach().item(), stability_loss.detach().item(), uniform_reg.detach().item(), 
+                    contrastive_loss.detach().item(),
                     input_param_reg.detach().item(), kl_divergence_adj.detach().item()])
                 sv = np.concatenate([sv,
                                     np.array([v.detach().item() for v in sn_param_reg.values()]),

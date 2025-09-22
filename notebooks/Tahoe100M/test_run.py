@@ -25,6 +25,7 @@ def int_or_str(val):
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--index", type=int_or_str, required=True, help="Filename index")
+parser.add_argument("--retrain", type=str_to_bool, required = False, default = True)
 parser.add_argument("--subset_size", type=float, required=True)
 parser.add_argument("--noadv", type=str_to_bool, required=True)
 
@@ -54,10 +55,14 @@ parser.add_argument("--cat_bias_lambda_L2", type=float, required=True)
 parser.add_argument("--spectral_loss_factor", type=float, required=True)
 parser.add_argument("--uniform_lambda_L2", type=float, required=True)
 
+parser.add_argument("--contrastive_loss_scaler", type=float, required=True)
+
+
 ########################################################################
 args = parser.parse_args()
 fn = str(args.index)
 
+retrain = args.retrain
 subset_size = args.subset_size
 no_adv = args.noadv
 vae_scaling_KL = args.KL_scaling
@@ -87,7 +92,9 @@ cat_bias_lambda_L2 = args.cat_bias_lambda_L2
 spectral_loss_factor = args.spectral_loss_factor
 uniform_lambda_L2 = args.uniform_lambda_L2
 
-# python test_run.py --index 6 --subset_size 0.15 --noadv false --max_epochs 600 --KL_scaling 5e-5 --n_cat_discriminator_train 5 --n_pert_discriminator_train 5 --cat_dropout 0.1 --pert_dropout 0.1 --n_adversarial_start 200 --main_max_lr 2e-3 --gen_max_lr 5e-4 --cat_max_lr 1e-3 --pert_max_lr 1e-3 --cat_max_penalty_weight 11 --generator_dropout_rate 0.7 --n_layers_vae 3 --cat_bias_orthogonality_scaler 100 --cat_bias_lambda_L2 1e-4 --spectral_loss_factor 0 --uniform_lambda_L2 0
+contrastive_loss_scaler = args.contrastive_loss_scaler
+
+# python test_run.py --index 6 --subset_size 0.15 --noadv false --max_epochs 600 --KL_scaling 5e-5 --n_cat_discriminator_train 5 --n_pert_discriminator_train 5 --cat_dropout 0.1 --pert_dropout 0.1 --n_adversarial_start 200 --main_max_lr 2e-3 --gen_max_lr 5e-4 --cat_max_lr 1e-3 --pert_max_lr 1e-3 --cat_max_penalty_weight 11 --generator_dropout_rate 0.7 --n_layers_vae 3 --cat_bias_orthogonality_scaler 100 --cat_bias_lambda_L2 1e-4 --spectral_loss_factor 0 --uniform_lambda_L2 0 --contrastive_loss_scaler 0
 
 
 # In[3]:
@@ -114,6 +121,7 @@ uniform_lambda_L2 = args.uniform_lambda_L2
 # cat_bias_lambda_L2 = 1e-4
 # spectral_loss_factor = 0
 # uniform_lambda_L2 = 0
+# contrastive_loss_scaler = 0
 
 
 # In[5]:
@@ -490,7 +498,8 @@ regularization_params = {
     'global_bias_lambda_L1': 0, # using KL divergence instead
     'cat_bias_lambda_L2': cat_bias_lambda_L2, # 1e-4, # allow for generalization (not collapsing on perturbation)
     'cat_bias_lambda_L1': 0, # using cat max norm
-#     'cat_bias_orthogonality_scaler': cat_bias_orthogonality_scaler
+    
+    'contrastive_loss_scaler': contrastive_loss_scaler, # contrastive loss
 }
 
 cat_pert_params = {'regularization_scaler': cat_bias_orthogonality_scaler, 
@@ -875,7 +884,7 @@ if not no_adv:
         n_eval_bootstrap = np.nan
     )
     
-    if not os.path.isfile(os.path.join(data_path, 'trash', fn + author +  '_trainer.pickle')):
+    if retrain or not os.path.isfile(os.path.join(data_path, 'trash', fn + author +  '_trainer.pickle')):
         mod = trainer.train_model(verbose = True)
         io.write_pickled_object(trainer, os.path.join(data_path, 'trash', fn + author +  '_trainer.pickle'))
 
@@ -908,7 +917,7 @@ else:
         n_eval_bootstrap = np.nan
     )
     
-    if not os.path.isfile(os.path.join(data_path, 'trash', fn + author +  '_trainer.pickle')):
+    if retrain or not os.path.isfile(os.path.join(data_path, 'trash', fn + author +  '_trainer.pickle')):
         mod_noadv = trainer_noadv.train_model(verbose = True)
         io.write_pickled_object(trainer_noadv, os.path.join(data_path, 'trash', fn + author +  '_trainer.pickle'))    
 
