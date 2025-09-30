@@ -6,6 +6,8 @@ import time
 from tqdm import trange
 import warnings
 import logging
+import inspect
+
 
 import numpy as np
 import pandas as pd
@@ -23,6 +25,7 @@ from .bionetwork import BioNetSimple, BioNetCat, BioNetSC
 from .model_components import CatDiscriminator
 from .lr_schedulers import WarmupCosineAnnealingWarmRestarts
 from .cat_pert_regularizer import CatPertRegularizer
+from . import contrastive_loss as cl
 
 # configure logger
 if not logging.getLogger().hasHandlers():
@@ -907,7 +910,13 @@ class TrainCat(TrainBase):
             mins, secs = divmod(time.time() - start_time, 60)
             print("Training ran in: {:.0f} min {:.2f} sec".format(mins, secs))
 
-        return self.mod    
+        return self.mod  
+
+
+# cl_type_map = {
+#     'bulk_actual': cl.bulk_actual, 
+#     'sc_actual': cl.sc_actual,
+#                }  
 
 class TrainSC(TrainBase):
     """Training the signaling model for single-cell data."""
@@ -945,6 +954,13 @@ class TrainSC(TrainBase):
                        'temperature': 0.1
                       }
     
+    CONTRASTIVE_LOSS_PARAMS = {
+        'type': 'bulk_actual', 
+        'lambda_scaler': 0.0, 
+        'underestimate_only': True, # only relative for _bulk
+        'min_percentile': 0.3 # only for _sc
+    }
+    
     def __init__(self,
                  mod, 
                  prediction_optimizer: torch.optim, 
@@ -954,10 +970,11 @@ class TrainSC(TrainBase):
                  n_pert_discriminator_train: int = 5, # train generator as frequently as discriminator
                  per_condition_loss: bool = False,
                  gradient_ascent: bool = False, 
+                 hyper_params: Dict[str, Union[int, float]] = None,
+                 contrastive_loss_params: Dict = None,
                  cat_discriminator_params: Dict = None,
                  pert_discriminator_params: Dict = None, 
                  vae_params: Dict = None,
-                 hyper_params: Dict[str, Union[int, float]] = None,
                  cat_pert_params: Dict[str, Union[int, float]] = None,
                  train_split: Optional[Dict[str, Union[float, List[str]]]] = {'train': 0.8, 'test': 0.2, 'validation': None},
                  train_seed: int = None,
@@ -993,7 +1010,13 @@ class TrainSC(TrainBase):
             - 'include_gradient_noise_vae': whether VAE gradients should receive noise
             - 'include_gradient_noise_embedding': whether categorical embedding gradients should receive noise
             - 'constant_gradient_noise': whether noise injection is constant 'gradient_noise_scale' or a function of LR
-            - 'contrastive_loss_scaler': multiplier for calculating a contrastive loss beween each perturbation and control, encourages separation of perturbations
+        contrastive_loss_params : parameters for contastive loss. See `contrastive_loss` script for details
+            - 'type': string mapping the specific contrastive loss regularization to use
+                - 'bulk_actual': regularizes useing perturbation centroids
+                - 'sc_actual': regularizes using individual perturbation points
+            - 'lambda_scaler': multiplier for calculating a contrastive loss beween each perturbation and control, encourages separation of perturbations
+            - 'underestimate_only': bool, whether to regularize distances less than actual (only relevant for 'bulk')
+            - 'min_percentile': float, what percentile of actual individual distances to regularize at (only relevant for 'sc')
         cat_pert_params : see `cat_pert_regularizer` script for details
             hyperparameters specific to regularizations categorical bias against perturbation information
             - 'regularization_scaler': constant by which to mulitply the regularization value by
@@ -1096,12 +1119,12 @@ class TrainSC(TrainBase):
 
         self.initialize_vae(vae_params)
         self.format_hyperparams()
-        
-        if self.hyper_params['constant_gradient_noise']:
-            self.hyper_params['gradient_noise_scale'] = torch.tensor([self.hyper_params['gradient_noise_scale']], 
-                                                                     device = self.mod.device, 
-                                                                     dtype = self.mod.dtype)
-            
+
+        self.contrastive_loss_params = update_with_defaults(self.CONTRASTIVE_LOSS_PARAMS, contrastive_loss_params)
+        self.call_contrastive_loss = getattr(cl, self.contrastive_loss_params['type']) # set the function
+        cl_keys = inspect.signature(self.call_contrastive_loss).parameters.keys()
+        self._contrastive_kwargs = {k: v for k,v in self.contrastive_loss_params.items() if k in cl_keys}
+
         self.hyper_params['cat_pert'] = update_with_defaults(self.CAT_PERT_PARAMS, cat_pert_params)
         self.cat_pert_regularizer = CatPertRegularizer(
             bionetwork_class = self.mod.signaling_network,
@@ -1111,6 +1134,7 @@ class TrainSC(TrainBase):
             include_adjacency = self.hyper_params['cat_pert']['include_adjacency'], 
             temperature = self.hyper_params['cat_pert']['temperature'],
         )
+
 
     def _initialize_tracking(self): 
         self._stats_cols = ['epoch', 'batch_index', 
@@ -1188,7 +1212,11 @@ class TrainSC(TrainBase):
                 self.hyper_params['adj_prior_mu'] = torch.tensor(adj_mu, device = self.mod.device, dtype = self.mod.dtype)
             if not torch.is_tensor(adj_sigma):
                 self.hyper_params['adj_prior_sigma'] = torch.tensor(adj_sigma, device = self.mod.device, dtype = self.mod.dtype)
-    
+
+        if self.hyper_params['constant_gradient_noise']:
+            self.hyper_params['gradient_noise_scale'] = torch.tensor([self.hyper_params['gradient_noise_scale']], 
+                                                                     device = self.mod.device, 
+                                                                     dtype = self.mod.dtype)
 
     def add_gradient_noise(self, cur_lr, e, batch):
         """Adds noise to gradients as a function of the LR and parameter gradient norm."""
@@ -1667,98 +1695,7 @@ class TrainSC(TrainBase):
             self.mod.train()
         return eval_sv
     
-    @staticmethod
-    def contrastive_perturbation_loss(Y_hat, y_out, X_in, covariates_idx, 
-                            lambda_scaler: float, 
-                            underestimate_only: bool = True, 
-                            ):
-        """Regularizes each perturbation to encourage separation from control within the category. 
 
-        1) For each category and predicted perturbation condition, calculates the centroid of the 
-        perturbation (predicted and actual) and the respective control perturbation (actual only).
-        2) Calculates the Euclidean distance between perturbed centroid and the control centroid for 
-        predicted and actual data. 
-        3) Calculates the loss as the square error between the predicted distance and actual distance.
-        4) Takes the mean across conditions. 
-
-        Considerations:
-        - prediction contrast anchors to actual controls rather than predicted controls
-        - only controls are contrasted, not pairwise
-        - centroids are used, rather than individual points
-
-        Parameters
-        ----------
-        Y_hat : _type_
-            the predicted output (samples x features)
-        y_out : _type_
-            the actual output (samples x features)
-        X_in : _type_
-            the one-hot encoded perturbations (samples x features)
-        covariates_idx : _type_
-            the discrete representation of categorical covariate (samples x 1) 
-            * can only currently handle one categorical covariate
-        lambda_scaler : float, 
-            scaling term for the loss
-        underestimate_only : bool, optional
-            whether to regularize distances only if they are underestimates, by default True
-
-        Returns
-        -------
-        regularization_loss
-            the regularization term
-        """
-        if lambda_scaler == 0:
-            return Y_hat.new_tensor(0.0)
-        
-        assert X_in.sum(axis = 1).max() <= 1, 'contrastive loss can currently only handle 1 perturbation per cell'
-        assert covariates_idx.size(1) == 1, "Contrastive regularization is currently only designed for one categorical covariate"
-
-        # flatten covariates
-        cats = covariates_idx.squeeze(1)
-
-        control_mask = (X_in.abs().sum(dim=1) == 0)
-        pert_mask = ~control_mask
-        pert_ids = X_in.argmax(dim=1)  # [N], valid even if row is control (but we’ll mask)
-
-        losses = []
-        # all (cell, pert) combos present in this batch (among perturbed rows)
-        combos = torch.stack([cats[pert_mask], pert_ids[pert_mask]], dim=1).unique(dim=0)
-        for cat, pid in combos:
-            cat_mask = (cats == cat)
-            ctrl_cat_mask = cat_mask & control_mask
-            cp_mask = cat_mask & (pert_ids == pid) & pert_mask # need and pert_mask when using argmax
-
-            n_ctrl = int(ctrl_cat_mask.sum().item())
-            n_pert = int(cp_mask.sum().item())
-
-            if n_ctrl == 0 or n_pert == 0:
-                continue
-
-        #     # control centroids (pred and true, kept separate)
-        #     pred_ctrl_centroid = Y_hat[ctrl_cat_mask].mean(dim=0, keepdim=True)
-        #     if detach_ctrl_grad:
-        #         pred_ctrl_centroid = pred_ctrl_centroid.detach()
-            actual_ctrl_centroid = y_out[ctrl_cat_mask].mean(dim=0, keepdim=True)
-
-            # per (cat, pert) centroids
-            pred_pert_centroid = Y_hat[cp_mask].mean(dim=0, keepdim=True)
-            actual_pert_centroid = y_out[cp_mask].mean(dim=0, keepdim=True)
-
-            # distances: pred vs pred_ctrl, target vs true_ctrl
-            pred_dist = torch.norm(pred_pert_centroid - actual_ctrl_centroid, p=2)
-            target_dist = torch.norm(actual_pert_centroid - actual_ctrl_centroid, p=2)
-
-            if not underestimate_only or (underestimate_only and target_dist > pred_dist):
-                loss = torch.square(target_dist - pred_dist) # squared deviation with asymmetric weighting
-                losses.append(loss)
-            else:
-                continue
-
-        
-        if len(losses) != 0:
-            return lambda_scaler * torch.stack(losses).mean()
-        else:
-            return Y_hat.new_tensor(0.0)
 
     def train_model(self, verbose: bool = True):
         """Train the model
@@ -1952,13 +1889,12 @@ class TrainSC(TrainBase):
                     target_max = self.hyper_params['uniform_max']
                 ) 
 
-                contrastive_loss = self.contrastive_perturbation_loss(
+                contrastive_reg = self.call_contrastive_loss(
                     Y_hat = Y_hat, 
                     y_out = y_out_, 
                     X_in = X_in_, 
                     covariates_idx = covariates_idx_,
-                    lambda_scaler = self.hyper_params['contrastive_loss_scaler'],
-                    underestimate_only = True
+                    **self._contrastive_kwargs
                     )
 
                 input_param_reg, sn_param_reg, output_param_reg = self.mod.L2_reg(
@@ -2014,7 +1950,7 @@ class TrainSC(TrainBase):
                                                                                 scaling_factor = self.vae_learning['params']['scaling_KL'], 
                                                                                 prior_mu = self.vae_learning['params']['prior_mu'], 
                                                                                 prior_sigma = self.vae_learning['params']['prior_sigma'])
-                tot_pred_loss = prediction_loss + sign_reg + param_reg + stability_loss + uniform_reg + contrastive_loss + kl_divergence_gb + kl_divergence_adj
+                tot_pred_loss = prediction_loss + sign_reg + param_reg + stability_loss + uniform_reg + contrastive_reg + kl_divergence_gb + kl_divergence_adj
 
                 pert_adverserial_loss, cat_adverserial_loss = self._zero.clone(), self._zero.clone()
                 # adverserial portion -- same as discriminator, but recalculating on trained model
@@ -2095,7 +2031,7 @@ class TrainSC(TrainBase):
                     self.mod.signaling_network.count_sign_mismatch(), 
                     tot_pred_loss.detach().item(), prediction_loss.detach().item(), #train_pearson_r, 
                     sign_reg.detach().item(), stability_loss.detach().item(), uniform_reg.detach().item(), 
-                    contrastive_loss.detach().item(),
+                    contrastive_reg.detach().item(),
                     input_param_reg.detach().item(), kl_divergence_adj.detach().item()])
                 sv = np.concatenate([sv,
                                     np.array([v.detach().item() for v in sn_param_reg.values()]),

@@ -41,6 +41,7 @@ parser.add_argument("--pert_dropout", type=float, required=True)
 
 parser.add_argument("--generator_dropout_rate", type=float, required=True)
 parser.add_argument("--n_layers_vae", type=int, required=True)
+parser.add_argument("--pert_n_layers", type = int, default = 4)
 
 parser.add_argument("--main_max_lr", type=float, required=True)
 parser.add_argument("--gen_max_lr", type=float, required=True)
@@ -49,13 +50,17 @@ parser.add_argument("--pert_max_lr", type=float, required=True)
 
 
 parser.add_argument("--cat_max_penalty_weight", type=float, required=True)
-parser.add_argument("--cat_bias_orthogonality_scaler", type=float, required=True)
+parser.add_argument("--cat_bias_pert_scaler", type=float, required=True)
+parser.add_argument("--cat_pert_method", type=str, default = 'orthogonality')
+parser.add_argument("--cat_pert_pert_label", type=str_to_bool, default=False)
 parser.add_argument("--cat_bias_lambda_L2", type=float, required=True)
 
 parser.add_argument("--spectral_loss_factor", type=float, required=True)
 parser.add_argument("--uniform_lambda_L2", type=float, required=True)
 
 parser.add_argument("--contrastive_loss_scaler", type=float, required=True)
+parser.add_argument("--contrastive_loss_type", type = str, required=True)
+parser.add_argument("--contrastive_percentile", type = float, required=True)
 
 
 ########################################################################
@@ -83,45 +88,64 @@ pert_dropout = args.pert_dropout
 
 generator_dropout_rate = args.generator_dropout_rate
 n_layers_vae = args.n_layers_vae
+pert_n_layers = args.pert_n_layers
 
 
 cat_max_penalty_weight = args.cat_max_penalty_weight
-cat_bias_orthogonality_scaler = args.cat_bias_orthogonality_scaler
+cat_bias_pert_scaler = args.cat_bias_pert_scaler
+cat_pert_method = args.cat_pert_method
+cat_pert_pert_label = args.cat_pert_pert_label
 cat_bias_lambda_L2 = args.cat_bias_lambda_L2 
 
 spectral_loss_factor = args.spectral_loss_factor
 uniform_lambda_L2 = args.uniform_lambda_L2
 
 contrastive_loss_scaler = args.contrastive_loss_scaler
+contrastive_loss_type = args.contrastive_loss_type
+contrastive_percentile = args.contrastive_percentile
 
-# python test_run.py --index 6 --subset_size 0.15 --noadv false --max_epochs 600 --KL_scaling 5e-5 --n_cat_discriminator_train 5 --n_pert_discriminator_train 5 --cat_dropout 0.1 --pert_dropout 0.1 --n_adversarial_start 200 --main_max_lr 2e-3 --gen_max_lr 5e-4 --cat_max_lr 1e-3 --pert_max_lr 1e-3 --cat_max_penalty_weight 11 --generator_dropout_rate 0.7 --n_layers_vae 3 --cat_bias_orthogonality_scaler 100 --cat_bias_lambda_L2 1e-4 --spectral_loss_factor 0 --uniform_lambda_L2 0 --contrastive_loss_scaler 0
+#python test_run.py --index 46 --retrain true --subset_size 0.15 --noadv false --max_epochs 600 --KL_scaling 5e-3 --n_cat_discriminator_train 5 --n_pert_discriminator_train 5 --cat_dropout 0.1 --pert_dropout 0.1 --n_adversarial_start 200 --main_max_lr 2e-3 --gen_max_lr 2.75e-4 --cat_max_lr 1e-3 --pert_max_lr 1e-3 --cat_max_penalty_weight 11 --generator_dropout_rate 0.7 --n_layers_vae 3 --pert_n_layers 4 --cat_bias_pert_scaler 0 --cat_pert_method orthogonality --cat_pert_pert_label false --cat_bias_lambda_L2 1e-3 --spectral_loss_factor 0 --uniform_lambda_L2 0 --contrastive_loss_scaler 0 --contrastive_loss_type bulk_actual --contrastive_percentile 0.3
+
+
+# In[4]:
+
+
+# for i in range(2,6):
+#     print('sbatch batch_job{}.slurm'.format(i))
+# print()
 
 
 # In[3]:
 
 
-# index = '6'
+# index = 'dev'
 # subset_size = 0.15
 # noadv = False
-# max_epochs = 600
-# vae_scaling_KL = 5e-5
+# max_epochs = 3
+# vae_scaling_KL = 5e-3
 # n_cat_discriminator_train = 5
 # n_pert_discriminator_train = 5
 # cat_dropout = 0.1
 # pert_dropout = 0.1
 # n_adversarial_start = 200
 # main_max_lr = 2e-3
-# gen_max_lr = 5e-4
+# gen_max_lr = 2.75e-4
 # cat_max_lr = 1e-3
 # pert_max_lr = 1e-3
 # cat_max_penalty_weight = 11
 # generator_dropout_rate = 0.7
 # n_layers_vae = 3
-# cat_bias_orthogonality_scaler = 100
-# cat_bias_lambda_L2 = 1e-4
+# cat_bias_pert_scaler = 0
+# cat_pert_method = 'orthogonality'
+# cat_bias_lambda_L2 = 1e-2
 # spectral_loss_factor = 0
 # uniform_lambda_L2 = 0
-# contrastive_loss_scaler = 0
+# pert_n_layers = 4
+# cat_pert_pert_label = False
+
+# contrastive_loss_scaler = 1
+# contrastive_loss_type = 'bulk_actual'
+# contrastive_percentile = 0.3
 
 
 # In[5]:
@@ -498,13 +522,18 @@ regularization_params = {
     'global_bias_lambda_L1': 0, # using KL divergence instead
     'cat_bias_lambda_L2': cat_bias_lambda_L2, # 1e-4, # allow for generalization (not collapsing on perturbation)
     'cat_bias_lambda_L1': 0, # using cat max norm
-    
-    'contrastive_loss_scaler': contrastive_loss_scaler, # contrastive loss
 }
 
-cat_pert_params = {'regularization_scaler': cat_bias_orthogonality_scaler, 
-                       'method': 'orthogonality', 
-                       'per_label': False, 
+contrastive_loss_params = {
+    'type': contrastive_loss_type, 
+    'lambda_scaler': contrastive_loss_scaler, 
+    'understimate_only': True, # only for _bulk_actual
+    'min_percentile': contrastive_percentile # only for _sc_actual
+}
+
+cat_pert_params = {'regularization_scaler': cat_bias_pert_scaler, 
+                       'method': cat_pert_method, 
+                       'per_label': cat_pert_pert_label, 
                        'include_adjacency': False, 
                        'temperature': 0.1
                       }
@@ -610,7 +639,7 @@ if cat_spectral_norm:
     cat_discriminator_params['discriminator_lambda_L2'] = 0
 
 
-pert_n_layers_disc = 4
+pert_n_layers_disc = pert_n_layers
 pert_disc_n_hidden_nodes = list(np.round(np.linspace(n_nodes, 
                                                      drug_counts.shape[0], 
                                                      pert_n_layers_disc + 2)).astype(int)[1:-1])
@@ -875,6 +904,7 @@ if not no_adv:
         pert_discriminator_params = pert_discriminator_params,
         vae_params = vae_params,
         hyper_params = training_params,
+        contrastive_loss_params = contrastive_loss_params,
         cat_pert_params = cat_pert_params,
         train_split = {'train': train_cells, 'test': test_cells, 'validation': None}, 
         train_seed = mod_seed, 
@@ -908,6 +938,7 @@ else:
         pert_discriminator_params = pdp_noadv,
         vae_params = vae_params,
         hyper_params = training_params,
+        contrastive_loss_params = contrastive_loss_params,
         cat_pert_params = cat_pert_params,
         train_split = {'train': train_cells, 'test': test_cells, 'validation': None}, 
         train_seed = mod_seed, 
