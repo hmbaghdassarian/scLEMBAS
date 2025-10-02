@@ -58,9 +58,11 @@ parser.add_argument("--cat_bias_lambda_L2", type=float, required=True)
 parser.add_argument("--spectral_loss_factor", type=float, required=True)
 parser.add_argument("--uniform_lambda_L2", type=float, required=True)
 
-parser.add_argument("--contrastive_loss_scaler", type=float, required=True)
-parser.add_argument("--contrastive_loss_type", type = str, required=True)
+parser.add_argument("--contrastive_loss_scaler", type=float, nargs="+",required=True)
+parser.add_argument("--contrastive_loss_type", type=str, nargs="+", required=True)
 parser.add_argument("--contrastive_percentile", type = float, required=True)
+parser.add_argument("--contrastive_triplet_margin_frac", type = float, required=True)
+
 
 
 ########################################################################
@@ -103,8 +105,10 @@ uniform_lambda_L2 = args.uniform_lambda_L2
 contrastive_loss_scaler = args.contrastive_loss_scaler
 contrastive_loss_type = args.contrastive_loss_type
 contrastive_percentile = args.contrastive_percentile
+contrastive_triplet_margin_frac = args.contrastive_triplet_margin_frac
 
-#python test_run.py --index 46 --retrain true --subset_size 0.15 --noadv false --max_epochs 600 --KL_scaling 5e-3 --n_cat_discriminator_train 5 --n_pert_discriminator_train 5 --cat_dropout 0.1 --pert_dropout 0.1 --n_adversarial_start 200 --main_max_lr 2e-3 --gen_max_lr 2.75e-4 --cat_max_lr 1e-3 --pert_max_lr 1e-3 --cat_max_penalty_weight 11 --generator_dropout_rate 0.7 --n_layers_vae 3 --pert_n_layers 4 --cat_bias_pert_scaler 0 --cat_pert_method orthogonality --cat_pert_pert_label false --cat_bias_lambda_L2 1e-3 --spectral_loss_factor 0 --uniform_lambda_L2 0 --contrastive_loss_scaler 0 --contrastive_loss_type bulk_actual --contrastive_percentile 0.3
+#python test_run.py --index 46 --retrain true --subset_size 0.15 --noadv false --max_epochs 600 --KL_scaling 5e-3 --n_cat_discriminator_train 5 --n_pert_discriminator_train 5 --cat_dropout 0.1 --pert_dropout 0.1 --n_adversarial_start 200 --main_max_lr 2e-3 --gen_max_lr 2.75e-4 --cat_max_lr 1e-3 --pert_max_lr 1e-3 --cat_max_penalty_weight 11 --generator_dropout_rate 0.7 --n_layers_vae 3 --pert_n_layers 4 --cat_bias_pert_scaler 0 --cat_pert_method orthogonality --cat_pert_pert_label false --cat_bias_lambda_L2 1e-3 --spectral_loss_factor 0 --uniform_lambda_L2 0 --contrastive_loss_scaler 0 --contrastive_loss_type bulk_actual --contrastive_percentile 0.3 --contrastive_triplet_margin_frac 0.1
+
 
 
 # In[4]:
@@ -143,9 +147,10 @@ contrastive_percentile = args.contrastive_percentile
 # pert_n_layers = 4
 # cat_pert_pert_label = False
 
-# contrastive_loss_scaler = 1
-# contrastive_loss_type = 'bulk_actual'
+# contrastive_loss_scaler = [1]
+# contrastive_loss_type = ['sc_actual']
 # contrastive_percentile = 0.3
+# contrastive_triplet_margin_frac = 0.1
 
 
 # In[5]:
@@ -524,11 +529,13 @@ regularization_params = {
     'cat_bias_lambda_L1': 0, # using cat max norm
 }
 
+
 contrastive_loss_params = {
-    'type': contrastive_loss_type, 
-    'lambda_scaler': contrastive_loss_scaler, 
+    'methods': contrastive_loss_type, 
+    'lambda_scalers': contrastive_loss_scaler, 
     'understimate_only': True, # only for _bulk_actual
-    'min_percentile': contrastive_percentile # only for _sc_actual
+    'min_percentile': contrastive_percentile, # only for _sc
+    'triplet_margin_frac': contrastive_triplet_margin_frac, # for sc only 
 }
 
 cat_pert_params = {'regularization_scaler': cat_bias_pert_scaler, 

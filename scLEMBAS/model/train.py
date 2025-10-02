@@ -3,11 +3,12 @@ Train the signaling model.
 """
 from typing import Dict, List, Union, Optional
 import time
-from tqdm import trange
 import warnings
 import logging
 import inspect
+from collections import OrderedDict
 
+from tqdm import trange
 
 import numpy as np
 import pandas as pd
@@ -955,10 +956,11 @@ class TrainSC(TrainBase):
                       }
     
     CONTRASTIVE_LOSS_PARAMS = {
-        'type': 'bulk_actual', 
-        'lambda_scaler': 0.0, 
+        'methods': ['sc_actual'], 
+        'lambda_scalers': [0.0], 
         'underestimate_only': True, # only relative for _bulk
-        'min_percentile': 0.3 # only for _sc
+        'min_percentile': 0.3, # only for _sc
+        'triplet_margin_frac': 0.1, # only for triplets 
     }
     
     def __init__(self,
@@ -1010,13 +1012,14 @@ class TrainSC(TrainBase):
             - 'include_gradient_noise_vae': whether VAE gradients should receive noise
             - 'include_gradient_noise_embedding': whether categorical embedding gradients should receive noise
             - 'constant_gradient_noise': whether noise injection is constant 'gradient_noise_scale' or a function of LR
-        contrastive_loss_params : parameters for contastive loss. See `contrastive_loss` script for details
-            - 'type': string mapping the specific contrastive loss regularization to use
-                - 'bulk_actual': regularizes useing perturbation centroids
-                - 'sc_actual': regularizes using individual perturbation points
-            - 'lambda_scaler': multiplier for calculating a contrastive loss beween each perturbation and control, encourages separation of perturbations
-            - 'underestimate_only': bool, whether to regularize distances less than actual (only relevant for 'bulk')
-            - 'min_percentile': float, what percentile of actual individual distances to regularize at (only relevant for 'sc')
+        contrastive_loss_params : parameters for contastive loss. 
+            - 'methods': list of the specific contrastive loss regularizations to use
+                - 'bulk_*': regularizes useing perturbation centroids
+                - 'sc_*': regularizes using individual perturbation points
+                - '*_actual': regularizes with absolute actual distances as anchor
+                - '*_triplet': regularizes with relative actual distances as anchor
+            - 'lambda_scalers': list of multipliers for calculating a contrastive loss beween each perturbation and control, encourages separation of perturbations
+            - for remaining kwargs, see `contrastive_loss` script for details
         cat_pert_params : see `cat_pert_regularizer` script for details
             hyperparameters specific to regularizations categorical bias against perturbation information
             - 'regularization_scaler': constant by which to mulitply the regularization value by
@@ -1120,10 +1123,8 @@ class TrainSC(TrainBase):
         self.initialize_vae(vae_params)
         self.format_hyperparams()
 
-        self.contrastive_loss_params = update_with_defaults(self.CONTRASTIVE_LOSS_PARAMS, contrastive_loss_params)
-        self.call_contrastive_loss = getattr(cl, self.contrastive_loss_params['type']) # set the function
-        cl_keys = inspect.signature(self.call_contrastive_loss).parameters.keys()
-        self._contrastive_kwargs = {k: v for k,v in self.contrastive_loss_params.items() if k in cl_keys}
+        self.initialize_contrastive_loss(contrastive_loss_params)
+
 
         self.hyper_params['cat_pert'] = update_with_defaults(self.CAT_PERT_PARAMS, cat_pert_params)
         self.cat_pert_regularizer = CatPertRegularizer(
@@ -1144,7 +1145,7 @@ class TrainSC(TrainBase):
                             'n_moa_violations',
                             'train_loss_total', 'train_loss_prediction',
                             'sign_reg_loss', 'stability_reg_loss', 'uniform_reg_loss',
-                            'contrastive_loss',
+                            'contrastive_loss_total',
                             'input_param_reg_loss', 
                             'sn_param_reg_weights_kl_divergence',
                             'sn_param_reg_weights_L2_loss', 
@@ -1217,6 +1218,23 @@ class TrainSC(TrainBase):
             self.hyper_params['gradient_noise_scale'] = torch.tensor([self.hyper_params['gradient_noise_scale']], 
                                                                      device = self.mod.device, 
                                                                      dtype = self.mod.dtype)
+            
+    def initialize_contrastive_loss(self, contrastive_loss_params):
+        self.contrastive_loss_params = update_with_defaults(self.CONTRASTIVE_LOSS_PARAMS, contrastive_loss_params)
+        for k in ['methods', 'lambda_scalers']:
+            if type(self.contrastive_loss_params[k]) != list:
+                self.contrastive_loss_params[k] = [self.contrastive_loss_params[k]]
+        assert len(self.contrastive_loss_params['methods']) == len(self.contrastive_loss_params['lambda_scalers']), 'Contrastive loss needs one lambda scaler per method'
+                
+        for cm in self.contrastive_loss_params['methods']:
+            self._stats_cols.insert(self._stats_cols.index('contrastive_loss_total'), 'contrastive_loss_' + cm)
+        self.stats['train'] = np.empty((0, len(self._stats_cols)))
+        self.call_contrastive_loss = cl.ContrastiveLoss(
+            methods = OrderedDict(zip(self.contrastive_loss_params['methods'], self.contrastive_loss_params['lambda_scalers'])), 
+            underestimate_only = self.contrastive_loss_params['underestimate_only'], 
+            min_percentile = self.contrastive_loss_params['min_percentile'], 
+            triplet_margin_frac = self.contrastive_loss_params['triplet_margin_frac']
+        )
 
     def add_gradient_noise(self, cur_lr, e, batch):
         """Adds noise to gradients as a function of the LR and parameter gradient norm."""
@@ -1889,13 +1907,13 @@ class TrainSC(TrainBase):
                     target_max = self.hyper_params['uniform_max']
                 ) 
 
-                contrastive_reg = self.call_contrastive_loss(
-                    Y_hat = Y_hat, 
-                    y_out = y_out_, 
-                    X_in = X_in_, 
-                    covariates_idx = covariates_idx_,
-                    **self._contrastive_kwargs
-                    )
+                contrastive_loss_tot = self._zero.clone()
+                self.call_contrastive_loss.update(Y_hat = Y_hat, 
+                                                  y_out = y_out_, 
+                                                  X_in = X_in_, 
+                                                  covariates_idx = covariates_idx_)
+                contrastive_losses = self.call_contrastive_loss.get_loss()
+                contrastive_loss_tot += sum(contrastive_losses.values())
 
                 input_param_reg, sn_param_reg, output_param_reg = self.mod.L2_reg(
                     input_lambda_L2=self.hyper_params['input_lambda_L2'],
@@ -1950,7 +1968,7 @@ class TrainSC(TrainBase):
                                                                                 scaling_factor = self.vae_learning['params']['scaling_KL'], 
                                                                                 prior_mu = self.vae_learning['params']['prior_mu'], 
                                                                                 prior_sigma = self.vae_learning['params']['prior_sigma'])
-                tot_pred_loss = prediction_loss + sign_reg + param_reg + stability_loss + uniform_reg + contrastive_reg + kl_divergence_gb + kl_divergence_adj
+                tot_pred_loss = prediction_loss + sign_reg + param_reg + stability_loss + uniform_reg + contrastive_loss_tot + kl_divergence_gb + kl_divergence_adj
 
                 pert_adverserial_loss, cat_adverserial_loss = self._zero.clone(), self._zero.clone()
                 # adverserial portion -- same as discriminator, but recalculating on trained model
@@ -2030,9 +2048,12 @@ class TrainSC(TrainBase):
                             time.time() - start_time, spectral_radius, 
                     self.mod.signaling_network.count_sign_mismatch(), 
                     tot_pred_loss.detach().item(), prediction_loss.detach().item(), #train_pearson_r, 
-                    sign_reg.detach().item(), stability_loss.detach().item(), uniform_reg.detach().item(), 
-                    contrastive_reg.detach().item(),
-                    input_param_reg.detach().item(), kl_divergence_adj.detach().item()])
+                    sign_reg.detach().item(), stability_loss.detach().item(), uniform_reg.detach().item()])
+                sv = np.concatenate([sv, 
+                                     np.array([v.detach().item() for v in contrastive_losses.values()])])
+                sv = np.concatenate([sv, 
+                                     np.array([contrastive_loss_tot.detach().item(), 
+                                               input_param_reg.detach().item(), kl_divergence_adj.detach().item()])])
                 sv = np.concatenate([sv,
                                     np.array([v.detach().item() for v in sn_param_reg.values()]),
                                     np.array([v.detach().item() for v in output_param_reg.values()]),
@@ -2134,9 +2155,10 @@ class TrainSC(TrainBase):
 
         # sanity check
         loss_cols = [
-                'train_loss_prediction', 'sign_reg_loss',
-                'stability_reg_loss', 'uniform_reg_loss', 'input_param_reg_loss',
-                'sn_param_reg_tot_loss', 'output_param_reg_tot_loss', 'vae_param_reg_loss', 'global_bias_kl_divergence']
+                    'train_loss_prediction', 'sign_reg_loss',
+                    'stability_reg_loss', 'uniform_reg_loss', 'input_param_reg_loss',
+                    'sn_param_reg_tot_loss', 'output_param_reg_tot_loss', 'vae_param_reg_loss', 'global_bias_kl_divergence', 
+            'contrastive_loss_total']
 
         reg_tot = self.stats['train'][loss_cols].sum(axis = 1)
         if not np.allclose(reg_tot - self.stats['train']['cat_adverserial_loss'] - self.stats['train']['pert_adverserial_loss'], self.stats['train']['train_loss_total']):
