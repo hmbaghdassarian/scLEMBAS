@@ -118,8 +118,8 @@ class TrainBase:
                  # train_samples: Optional[List[str]] = None, 
                  train_split: Optional[Dict[str, Union[float, List[str]]]] = {'train': 0.8, 'test': 0.2, 'validation': None},
                  train_seed: int = None, 
-                 track_test: bool = False,
-                 track_validation: bool = False
+                 n_track_test: Optional[int] = None,
+                 n_track_validation: Optional[int] = None
                 ):
         """Trains the signaling model
 
@@ -171,10 +171,10 @@ class TrainBase:
         train_seed : int, optional
             seed value, by default mod.seed. By explicitly making this an argument, it allows different train-test splits even 
             with the same mod.seed, e.g., for cross-validation
-        track_test : bool, optional
-            whether to run the predictions on the test model for at each epoch
+        n_track_test : int, optional
+            how frequently (epochs) to run the predictions on the test data; won't track if 0 or None
         track_validation : bool, optional
-            whether to run the predictions on the validation model for at each epoch
+            how frequently (epochs) to run the predictions on the validation data; won't track if 0 or None
         verbose : bool, optional
             whether to print various progress stats across training epochs
         Returns
@@ -182,9 +182,15 @@ class TrainBase:
         split_data_dict : Dict[str, pd.DataFrame]
             key value pairs represent the output of the `TrainBase.split_data` function
         """
-        if track_validation and not train_split['validation']:
+        
+        self.n_track_test = n_track_test if n_track_test is not None else 0
+        self.n_track_validation = n_track_validation if n_track_validation is not None else 0
+        self.track_test = True if self.n_track_test > 0 else False
+        self.track_validation = True if self.n_track_validation > 0 else False
+
+        if self.track_validation and not train_split['validation']:
             raise ValueError('Specified to track validation statistics, but there is no validation data specified')
-        if track_test and not train_split['test']:
+        if self.track_test and not train_split['test']:
             raise ValueError('Specified to track test statistics, but there is no test data specified')
             
         if not mod.signaling_network._prescaled_weights:
@@ -221,8 +227,6 @@ class TrainBase:
                                                               warmup_steps = self.hyper_params['warmup_epochs'],
                                                               last_epoch = -1)
         self.reset_state = self.prediction_optimizer.state.copy()
-        self.track_test = track_test
-        self.track_validation = track_validation
 
  # give user input 
 
@@ -567,33 +571,30 @@ class TrainSimple(TrainBase):
                 
             self.lr_scheduler.step()
             # test/validation
-            if self.track_validation or self.track_test:
+            if self.track_test and e % self.n_track_test == 0:
                 self.mod.eval()
-                with torch.inference_mode(): 
-                    if self.track_validation:
-                        # loss_val_all = []
-                        # pearson_val_all = []
-                        for batch, (X_in_, y_out_, covariates_idx_, expr_val) in enumerate(self.validation_dataloader): 
-                            X_in_val, y_out_val, covariates_idx_val = X_in_val.to(self.mod.device), y_out_val.to(self.mod.device), covariates_idx_val.to(self.mod.device)
-                            self.mod.signaling_network.mask = self.mod.signaling_network.mask.to(X_in_val.device)
-                            y_pred_val, _, _ = self.mod(X_in = X_in_val, covariates_idx = covariates_idx_val, expr = expr_val)
-                            loss_val = self.prediction_loss_fn(y_out_val, y_pred_val).detach().item()
-                            pearson_val = self.get_pearson_correlation(y_out_val,  y_pred_val)
-                            # loss_val_all.append(loss_val)
-                            # pearson_val_all.append(pearson_val)
-                            self.stats['validation'] = np.vstack((self.stats['validation'], np.array([e+1, batch, loss_val,pearson_val])))
-                            del y_pred_val, _
-                    if self.track_test:
-                        # loss_test_all = []
-                        # pearson_test_all = []
-                        for batch, (X_in_test, y_out_test, covariates_idx_test, expr_test) in enumerate(self.test_dataloader):
-                            X_in_test, y_out_test, covariates_idx_test = X_in_test.to(self.mod.device), y_out_test.to(self.mod.device), covariates_idx_test.to(self.mod.device)
-                            y_pred_test, _, _ = self.mod(X_in = X_in_test, covariates_idx = covariates_idx_test, expr = expr_test)
-                            loss_test = self.prediction_loss_fn(y_out_test, y_pred_test).detach().item()
-                            pearson_test = self.get_pearson_correlation(y_out_test, y_pred_test)
-                            loss_test_all.append(loss_test)
-                            pearson_test_all.append(pearson_test)
-                            del y_pred_test, _     
+                with torch.inference_mode():
+                    for batch, (X_in_test, y_out_test, covariates_idx_test, expr_test) in enumerate(self.test_dataloader):
+                        X_in_test, y_out_test, covariates_idx_test = X_in_test.to(self.mod.device), y_out_test.to(self.mod.device), covariates_idx_test.to(self.mod.device)
+                        y_pred_test, _, _ = self.mod(X_in = X_in_test, covariates_idx = covariates_idx_test, expr = expr_test)
+                        loss_test = self.prediction_loss_fn(y_out_test, y_pred_test).detach().item()
+                        pearson_test = self.get_pearson_correlation(y_out_test, y_pred_test)
+                        loss_test_all.append(loss_test)
+                        pearson_test_all.append(pearson_test)
+                        del y_pred_test, _    
+            if self.validation and e % self.n_track_validation == 0:
+                self.mod.eval()
+                with torch.inference_mode():
+                    for batch, (X_in_, y_out_, covariates_idx_, expr_val) in enumerate(self.validation_dataloader): 
+                        X_in_val, y_out_val, covariates_idx_val = X_in_val.to(self.mod.device), y_out_val.to(self.mod.device), covariates_idx_val.to(self.mod.device)
+                        self.mod.signaling_network.mask = self.mod.signaling_network.mask.to(X_in_val.device)
+                        y_pred_val, _, _ = self.mod(X_in = X_in_val, covariates_idx = covariates_idx_val, expr = expr_val)
+                        loss_val = self.prediction_loss_fn(y_out_val, y_pred_val).detach().item()
+                        pearson_val = self.get_pearson_correlation(y_out_val,  y_pred_val)
+                        # loss_val_all.append(loss_val)
+                        # pearson_val_all.append(pearson_val)
+                        self.stats['validation'] = np.vstack((self.stats['validation'], np.array([e+1, batch, loss_val,pearson_val])))
+                        del y_pred_val, _
 
         if self.track_test: 
             stats_df_cols += ['test_loss_prediction', 'test_pearson']
@@ -823,33 +824,32 @@ class TrainCat(TrainBase):
             self.lr_scheduler.step()
 #            cur_lr = lr_scheduler.get_lr()[0]                
             # test/validation
-            if self.track_validation or self.track_test:
+            if self.track_test and e % self.n_track_test == 0:
                 self.mod.eval()
                 with torch.inference_mode(): 
-                    if self.track_validation:
-                        # loss_val_all = []
-                        # pearson_val_all = []
-                        for batch, (X_in_val, y_out_val, covariates_idx_val, expr_val) in enumerate(self.validation_dataloader): 
-                            X_in_val, y_out_val, covariates_idx_val = X_in_val.to(self.mod.device), y_out_val.to(self.mod.device), covariates_idx_val.to(self.mod.device)
-                            self.mod.signaling_network.mask = self.mod.signaling_network.mask.to(X_in_val.device)
-                            y_pred_val, _, _ = self.mod(X_in = X_in_val, covariates_idx = covariates_idx_val, expr = expr_val)
-                            loss_val = self.prediction_loss_fn(y_out_val, y_pred_val).detach().item()
-                            pearson_val = self.get_pearson_correlation(y_out_val,  y_pred_val)
-                            # loss_val_all.append(loss_val)
-                            # pearson_val_all.append(pearson_val)
-                            self.stats['validation'] = np.vstack((self.stats['validation'], np.array([e+1, batch, loss_val,pearson_val])))
-                            del y_pred_val, _
-                    if self.track_test:
-                        # loss_test_all = []
-                        # pearson_test_all = []
-                        for batch, (X_in_test, y_out_test, covariates_idx_test, expr_test) in enumerate(self.test_dataloader):
-                            X_in_test, y_out_test, covariates_idx_test = X_in_test.to(self.mod.device), y_out_test.to(self.mod.device), covariates_idx_test.to(self.mod.device)
-                            y_pred_test, _, _ = self.mod(X_in = X_in_test, covariates_idx = covariates_idx_test, expr = expr_test)
-                            loss_test = self.prediction_loss_fn(y_out_test, y_pred_test).detach().item()
-                            pearson_test = self.get_pearson_correlation(y_out_test, y_pred_test)
-                            loss_test_all.append(loss_test)
-                            pearson_test_all.append(pearson_test)
-                            del y_pred_test, _
+                    for batch, (X_in_test, y_out_test, covariates_idx_test, expr_test) in enumerate(self.test_dataloader):
+                        X_in_test, y_out_test, covariates_idx_test = X_in_test.to(self.mod.device), y_out_test.to(self.mod.device), covariates_idx_test.to(self.mod.device)
+                        y_pred_test, _, _ = self.mod(X_in = X_in_test, covariates_idx = covariates_idx_test, expr = expr_test)
+                        loss_test = self.prediction_loss_fn(y_out_test, y_pred_test).detach().item()
+                        pearson_test = self.get_pearson_correlation(y_out_test, y_pred_test)
+                        loss_test_all.append(loss_test)
+                        pearson_test_all.append(pearson_test)
+                        del y_pred_test, _
+            if self.track_validation and e % self.n_track_validation == 0:
+                self.mod.eval()
+                with torch.inference_mode(): 
+                    for batch, (X_in_val, y_out_val, covariates_idx_val, expr_val) in enumerate(self.validation_dataloader): 
+                        X_in_val, y_out_val, covariates_idx_val = X_in_val.to(self.mod.device), y_out_val.to(self.mod.device), covariates_idx_val.to(self.mod.device)
+                        self.mod.signaling_network.mask = self.mod.signaling_network.mask.to(X_in_val.device)
+                        y_pred_val, _, _ = self.mod(X_in = X_in_val, covariates_idx = covariates_idx_val, expr = expr_val)
+                        loss_val = self.prediction_loss_fn(y_out_val, y_pred_val).detach().item()
+                        pearson_val = self.get_pearson_correlation(y_out_val,  y_pred_val)
+                        # loss_val_all.append(loss_val)
+                        # pearson_val_all.append(pearson_val)
+                        self.stats['validation'] = np.vstack((self.stats['validation'], np.array([e+1, batch, loss_val,pearson_val])))
+                        del y_pred_val, _
+
+
         
             # tracking
             # tracking
@@ -980,8 +980,8 @@ class TrainSC(TrainBase):
                  cat_pert_params: Dict[str, Union[int, float]] = None,
                  train_split: Optional[Dict[str, Union[float, List[str]]]] = {'train': 0.8, 'test': 0.2, 'validation': None},
                  train_seed: int = None,
-                 track_test: bool = False,
-                 track_validation: bool = False, 
+                 n_track_test: Optional[int] = None, 
+                 n_track_validation: Optional[int] = None  ,               
                  n_eval_cells: int = 30, 
                  n_eval_bootstrap: int = 3
                  ):
@@ -1066,8 +1066,8 @@ class TrainSC(TrainBase):
                            hyper_params=hyper_params,
                            train_split=train_split, 
                            train_seed = train_seed,
-                         track_validation = track_validation,
-                         track_test = track_test)
+                         n_track_validation = n_track_validation,
+                         n_track_test = n_track_test)
         
         # X_in and per condition EMD loss check
         if sorted(pd.unique(self.X_train.values.ravel())) != [0,1]:
@@ -1163,7 +1163,7 @@ class TrainSC(TrainBase):
                             ])      
 
         self.stats = {}
-        self.stats['train'] = np.empty((0, len(self._stats_cols)))
+        self.stats['train'] = [] #np.empty((0, len(self._stats_cols)))
         
         self._noise_cols = ['epoch', 'batch_index'] 
         self._noise_cols += [param_name + suffix for param_name, param in self.mod.named_parameters() 
@@ -1178,6 +1178,8 @@ class TrainSC(TrainBase):
 
         self.stats['gradient_noise'] = np.empty((0, len(self._noise_cols)))
 
+
+        self.track_data_types = []
         if self.track_test or self.track_validation:
             if type(self.prediction_loss_fn) == SamplesLoss: #downsampling needed
                 self._stats_cols_eval = ['epoch', 'batch_index', 'loss_full', 'size_full', 
@@ -1187,12 +1189,14 @@ class TrainSC(TrainBase):
                 self._stats_cols_eval = ['epoch', 'batch_index', 'loss_full', 'perturbation_discriminator_loss', 'categorical_discriminator_loss']
                 self._verbose_loss = 'loss_full'
             
-            self.stats['train_eval'] = np.empty((0, len(self._stats_cols_eval)))
+            self.stats['train_eval'] = [] #np.empty((0, len(self._stats_cols_eval)))
             if self.track_test:
-                self.stats['test'] = np.copy(self.stats['train_eval'])
+                self.stats['test'] = [] #np.copy(self.stats['train_eval'])
+                self.track_data_types.append('test')            
             if self.track_validation:
-                self.stats['validation'] = np.copy(self.stats['train_eval'])
-                
+                self.stats['validation'] = [] #np.copy(self.stats['train_eval'])
+                self.track_data_types.append('validation')
+
     def format_hyperparams(self):
         """Appropriate formatting of various hyperparameters"""
         bg_mu = self.vae_learning['params']['prior_mu']
@@ -1228,7 +1232,7 @@ class TrainSC(TrainBase):
                 
         for cm in self.contrastive_loss_params['methods']:
             self._stats_cols.insert(self._stats_cols.index('contrastive_loss_total'), 'contrastive_loss_' + cm)
-        self.stats['train'] = np.empty((0, len(self._stats_cols)))
+        self.stats['train'] = [] #np.empty((0, len(self._stats_cols)))
         self.call_contrastive_loss = cl.ContrastiveLoss(
             methods = OrderedDict(zip(self.contrastive_loss_params['methods'], self.contrastive_loss_params['lambda_scalers'])), 
             underestimate_only = self.contrastive_loss_params['underestimate_only'], 
@@ -1607,8 +1611,9 @@ class TrainSC(TrainBase):
         for cat, disc_train in cur_mode_train['cat_disc'].items():
             if disc_train:
                 self.cat_discriminator['discriminators'][cat].train()
-
-        return np.array([e, batch, eval_loss, pert_loss.item(), cat_loss.item()])
+        
+        # e + 2 bc one ahead of train in terms of backward pass
+        return [e + 2, batch, eval_loss, pert_loss.item(), cat_loss.item()]
 
     def evaluate_emd_loss_all(self, y_out_, X_in_, covariates_idx_, expr_, e, batch):
         """
@@ -1827,7 +1832,7 @@ class TrainSC(TrainBase):
                             nn.utils.clip_grad_norm_(discriminator.parameters(), max_norm=100.0)
                         
                         if nd == self.n_cat_discriminator_train - 1: # tracking only
-                            cat_grad_l2s = np.array([self.get_global_l2_norm(mod_discriminator) for mod_discriminator in self.cat_discriminator['discriminators'].values()])
+                            cat_grad_l2s = [self.get_global_l2_norm(mod_discriminator) for mod_discriminator in self.cat_discriminator['discriminators'].values()]
                         self.cat_discriminator['optimizer'].step()
 
                     # freeze discriminator (to prevent updating discriminator gradients when calling discriminator while 
@@ -1876,7 +1881,7 @@ class TrainSC(TrainBase):
                     cat_discriminator_loss  = self._zero.clone()
                     cat_discriminator_loss_accuracy = self._zero.clone()
                     cat_discriminator_reg = self._zero.clone()
-                    cat_grad_l2s = np.array([0.0]*len(self.cat_discriminator['discriminators']))
+                    cat_grad_l2s = [0.0]*len(self.cat_discriminator['discriminators'])
 
                     pert_discriminator_loss = self._zero.clone()
                     pert_discriminator_loss_accuracy = self._zero.clone()
@@ -2044,35 +2049,78 @@ class TrainSC(TrainBase):
                 # bias global masking can stay in forward pass because it is generated during the forward pass and 
                 # won't be updated in the back pass
 
-                sv = np.array([e + 1, batch, cur_lr, self.cat_discriminator['_cur_lr'], self.pert_discriminator['_cur_lr'], self.vae_learning['_cur_lr'],
-                            time.time() - start_time, spectral_radius, 
-                    self.mod.signaling_network.count_sign_mismatch(), 
-                    tot_pred_loss.detach().item(), prediction_loss.detach().item(), #train_pearson_r, 
-                    sign_reg.detach().item(), stability_loss.detach().item(), uniform_reg.detach().item()])
-                sv = np.concatenate([sv, 
-                                     np.array([v.detach().item() for v in contrastive_losses.values()])])
-                sv = np.concatenate([sv, 
-                                     np.array([contrastive_loss_tot.detach().item(), 
-                                               input_param_reg.detach().item(), kl_divergence_adj.detach().item()])])
-                sv = np.concatenate([sv,
-                                    np.array([v.detach().item() for v in sn_param_reg.values()]),
-                                    np.array([v.detach().item() for v in output_param_reg.values()]),
-                                    np.array([vae_reg.detach().item(), vae_grad_l2, kl_divergence_gb.detach().item(),
-                                            (cur_catdisc_lambda*cat_adverserial_loss).detach().item(), cat_discriminator_loss.detach().item(), 
-                                            cat_discriminator_loss_accuracy.detach().item(), cat_discriminator_reg.detach().item()]),
-                                    cat_grad_l2s,
-                                    np.array([(cur_pertdisc_lambda*pert_adverserial_loss).detach().item(), pert_discriminator_loss.detach().item(), 
-                                            pert_discriminator_loss_accuracy.detach().item(), pert_discriminator_reg.detach().item(), pert_grad_l2, rnn_iter_t
-                                            ])
-                                    ])
-
-
-                self.stats['train'] = np.vstack((self.stats['train'], sv))
+                # sv = np.array([e + 1, batch, cur_lr, self.cat_discriminator['_cur_lr'], self.pert_discriminator['_cur_lr'], self.vae_learning['_cur_lr'],
+                #             time.time() - start_time, spectral_radius, 
+                #     self.mod.signaling_network.count_sign_mismatch(), 
+                #     tot_pred_loss.detach().item(), prediction_loss.detach().item(), #train_pearson_r, 
+                #     sign_reg.detach().item(), stability_loss.detach().item(), uniform_reg.detach().item()])
+                # sv = np.concatenate([sv, 
+                #                      np.array([v.detach().item() for v in contrastive_losses.values()])])
+                # sv = np.concatenate([sv, 
+                #                      np.array([contrastive_loss_tot.detach().item(), 
+                #                                input_param_reg.detach().item(), kl_divergence_adj.detach().item()])])
+                # sv = np.concatenate([sv,
+                #                     np.array([v.detach().item() for v in sn_param_reg.values()]),
+                #                     np.array([v.detach().item() for v in output_param_reg.values()]),
+                #                     np.array([vae_reg.detach().item(), vae_grad_l2, kl_divergence_gb.detach().item(),
+                #                             (cur_catdisc_lambda*cat_adverserial_loss).detach().item(), cat_discriminator_loss.detach().item(), 
+                #                             cat_discriminator_loss_accuracy.detach().item(), cat_discriminator_reg.detach().item()]),
+                #                     cat_grad_l2s,
+                #                     np.array([(cur_pertdisc_lambda*pert_adverserial_loss).detach().item(), pert_discriminator_loss.detach().item(), 
+                #                             pert_discriminator_loss_accuracy.detach().item(), pert_discriminator_reg.detach().item(), pert_grad_l2, rnn_iter_t
+                #                             ])
+                #                     ])
+                
+                sv = [
+                    e + 1, batch, cur_lr,
+                    self.cat_discriminator['_cur_lr'],
+                    self.pert_discriminator['_cur_lr'],
+                    self.vae_learning['_cur_lr'],
+                    time.time() - start_time,
+                    spectral_radius,
+                    self.mod.signaling_network.count_sign_mismatch(),
+                    tot_pred_loss.detach().item(),
+                    prediction_loss.detach().item(),
+                    sign_reg.detach().item(),
+                    stability_loss.detach().item(),
+                    uniform_reg.detach().item(),
+                ]
+                sv += [v.detach().item() for v in contrastive_losses.values()]
+                sv += [
+                    contrastive_loss_tot.detach().item(),
+                    input_param_reg.detach().item(),
+                    kl_divergence_adj.detach().item(),
+                ]
+                sv += [v.detach().item() for v in sn_param_reg.values()]
+                sv += [v.detach().item() for v in output_param_reg.values()]
+                sv += [
+                    vae_reg.detach().item(),
+                    vae_grad_l2,
+                    kl_divergence_gb.detach().item(),
+                    (cur_catdisc_lambda * cat_adverserial_loss).detach().item(),
+                    cat_discriminator_loss.detach().item(),
+                    cat_discriminator_loss_accuracy.detach().item(),
+                    cat_discriminator_reg.detach().item(),
+                ]
+                sv += cat_grad_l2s
+                sv += [
+                    (cur_pertdisc_lambda * pert_adverserial_loss).detach().item(),
+                    pert_discriminator_loss.detach().item(),
+                    pert_discriminator_loss_accuracy.detach().item(),
+                    pert_discriminator_reg.detach().item(),
+                    pert_grad_l2,
+                    rnn_iter_t,
+                ]
+                self.stats['train'].append(sv) # = np.vstack((self.stats['train'], sv))
 
                 # comparable tracking of train data with test data
-                if self.track_test or self.track_validation:
+
+                if (self.track_test or self.track_validation) and (
+                    ((self.n_track_test > 0 and e % self.n_track_test == 0) or 
+                    (self.n_track_validation > 0 and e % self.n_track_validation == 0)) 
+                ):
                     eval_sv = self.evaluate_loss(y_out_, X_in_, covariates_idx_, expr_, e, batch)
-                    self.stats['train_eval'] = np.vstack((self.stats['train_eval'], eval_sv))
+                    self.stats['train_eval'].append(eval_sv) #(self.stats['train_eval'], eval_sv))
 
                 # free up CUDA mem
                 del sign_reg, stability_loss, uniform_reg, param_reg, prediction_loss
@@ -2090,16 +2138,12 @@ class TrainSC(TrainBase):
                 self.vae_learning['lr_scheduler'].step()
 
             # test/validation
-            data_types = []
-            if self.track_test:
-                data_types.append('test')
-            if self.track_validation:
-                data_types.append('validation')
-            for data_type in data_types:
-                for batch, (X_in_, y_out_, covariates_idx_, expr_) in enumerate(self.__dict__[data_type + '_dataloader']):
-                    X_in_, y_out_, covariates_idx_, expr_ = X_in_.to(self.mod.device), y_out_.to(self.mod.device), covariates_idx_.to(self.mod.device), expr_.to(self.mod.device)            
-                    eval_sv = self.evaluate_loss(y_out_, X_in_, covariates_idx_, expr_, e, batch)
-                    self.stats[data_type] = np.vstack((self.stats[data_type], eval_sv))
+            for data_type in self.track_data_types:
+                if (e % self.__dict__['n_track_{}'.format(data_type)] == 0):
+                    for batch, (X_in_, y_out_, covariates_idx_, expr_) in enumerate(self.__dict__[data_type + '_dataloader']):
+                        X_in_, y_out_, covariates_idx_, expr_ = X_in_.to(self.mod.device), y_out_.to(self.mod.device), covariates_idx_.to(self.mod.device), expr_.to(self.mod.device)            
+                        eval_sv = self.evaluate_loss(y_out_, X_in_, covariates_idx_, expr_, e, batch)
+                        self.stats[data_type].append(eval_sv)
 
 
             if e % (self.hyper_params['max_epochs']/100) == 0 or e == self.hyper_params['max_epochs']:

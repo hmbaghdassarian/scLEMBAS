@@ -110,7 +110,7 @@ contrastive_loss_type = args.contrastive_loss_type
 contrastive_percentile = args.contrastive_percentile
 contrastive_triplet_margin_frac = args.contrastive_triplet_margin_frac
 
-#python test_run.py --index 14 --retrain true --subset_size 0.15 --noadv false --max_epochs 600 --KL_scaling 5e-3 --n_cat_discriminator_train 5 --n_pert_discriminator_train 5 --cat_dropout 0.1 --pert_dropout 0.1 --n_adversarial_start 200 --main_max_lr 2e-3 --gen_max_lr 2.75e-4 --cat_max_lr 1e-3 --pert_max_lr 1e-3 --cat_max_penalty_weight 11 --generator_dropout_rate 0.7 --n_layers_vae 3 --pert_n_layers 4 --cat_bias_pert_scaler 0 --cat_pert_method orthogonality --cat_pert_pert_label false --cat_bias_lambda_L2 1e-4 --spectral_loss_factor 0 --uniform_lambda_L2 0 --contrastive_loss_scaler 1 0.2 --contrastive_loss_type sc_actual sc_predicted --contrastive_percentile 0.3 --contrastive_triplet_margin_frac 0.1 --cat_spectral_norm false --pert_spectral_norm false
+#python test_run.py --index 14 --retrain true --subset_size 0.15 --noadv false --max_epochs 600 --KL_scaling 5e-3 --n_cat_discriminator_train 5 --n_pert_discriminator_train 5 --cat_dropout 0.1 --pert_dropout 0.1 --n_adversarial_start 200 --main_max_lr 2e-3 --gen_max_lr 2.75e-4 --cat_max_lr 1e-3 --pert_max_lr 1e-3 --cat_max_penalty_weight 11 --generator_dropout_rate 0.7 --n_layers_vae 3 --pert_n_layers 4 --cat_bias_pert_scaler 0 --cat_pert_method orthogonality --cat_pert_pert_label false --cat_bias_lambda_L2 1e-4 --spectral_loss_factor 0 --uniform_lambda_L2 0 --contrastive_loss_scaler 1 0.2 --contrastive_loss_type sc_actual sc_predicted --contrastive_percentile 0.3 --contrastive_triplet_margin_frac 0.1 --cat_spectral_norm false --pert_spectral_norm true
 
 
 # In[1]:
@@ -657,7 +657,7 @@ pert_disc_n_hidden_nodes = [pert_disc_n_hidden_nodes[0]]*3 + pert_disc_n_hidden_
 
 pert_discriminator_params = discriminator_params.copy()
 pert_discriminator_params['n_hidden_nodes'] = pert_disc_n_hidden_nodes
-pert_discriminator_params['dropout_rate'] = 0.1
+pert_discriminator_params['dropout_rate'] = pert_dropout
 
 pert_discriminator_params['spectral_norm'] = pert_spectral_norm
 if pert_spectral_norm:
@@ -915,8 +915,8 @@ if not no_adv:
         cat_pert_params = cat_pert_params,
         train_split = {'train': train_cells, 'test': test_cells, 'validation': None}, 
         train_seed = mod_seed, 
-        track_test = True,
-        track_validation = False, 
+        n_track_test = 20,
+        n_track_validation = None, 
         n_eval_cells = np.nan, 
         n_eval_bootstrap = np.nan
     )
@@ -949,8 +949,8 @@ else:
         cat_pert_params = cat_pert_params,
         train_split = {'train': train_cells, 'test': test_cells, 'validation': None}, 
         train_seed = mod_seed, 
-        track_test = True,
-        track_validation = False, 
+        n_track_test = 20,
+        n_track_validation = None, 
         n_eval_cells = np.nan, 
         n_eval_bootstrap = np.nan
     )
