@@ -25,134 +25,113 @@ def int_or_str(val):
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--index", type=int_or_str, required=True, help="Filename index")
-parser.add_argument("--retrain", type=str_to_bool, required = False, default = True)
 parser.add_argument("--subset_size", type=float, required=True)
-parser.add_argument("--noadv", type=str_to_bool, required=True)
 
 parser.add_argument("--max_epochs", type=int, required=True)
 
-parser.add_argument("--KL_scaling", type=float, required=True)
-parser.add_argument("--n_cat_discriminator_train", type=int, required=True)
-parser.add_argument("--n_pert_discriminator_train", type = int, required = True)
-parser.add_argument("--cat_spectral_norm", type=str_to_bool, required=True)
 parser.add_argument("--pert_spectral_norm", type = str_to_bool, required = True)
-
-parser.add_argument("--n_adversarial_start", type = int, required = True)
-
-parser.add_argument("--cat_dropout", type=float, required=True)
 parser.add_argument("--pert_dropout", type=float, required=True)
-
-parser.add_argument("--generator_dropout_rate", type=float, required=True)
-parser.add_argument("--n_layers_vae", type=int, required=True)
 parser.add_argument("--pert_n_layers", type = int, default = 4)
-
-parser.add_argument("--main_max_lr", type=float, required=True)
-parser.add_argument("--gen_max_lr", type=float, required=True)
-parser.add_argument("--cat_max_lr", type=float, required=True)
 parser.add_argument("--pert_max_lr", type=float, required=True)
 
+parser.add_argument("--smooth_labels", type = str_to_bool, required = True)
+parser.add_argument("--pert_epsilon_smooth", type = float, required = True)
 
-parser.add_argument("--cat_max_penalty_weight", type=float, required=True)
-parser.add_argument("--cat_bias_pert_scaler", type=float, required=True)
-parser.add_argument("--cat_pert_method", type=str, default = 'orthogonality')
-parser.add_argument("--cat_pert_pert_label", type=str_to_bool, default=False)
-parser.add_argument("--cat_bias_lambda_L2", type=float, required=True)
-
-parser.add_argument("--spectral_loss_factor", type=float, required=True)
-parser.add_argument("--uniform_lambda_L2", type=float, required=True)
-
-parser.add_argument("--contrastive_loss_scaler", type=float, nargs="+",required=True)
-parser.add_argument("--contrastive_loss_type", type=str, nargs="+", required=True)
-parser.add_argument("--contrastive_percentile", type = float, required=True)
-parser.add_argument("--contrastive_triplet_margin_frac", type = float, required=True)
-
-
-
-########################################################################
+# ########################################################################
 args = parser.parse_args()
 fn = str(args.index)
-
-retrain = args.retrain
 subset_size = args.subset_size
-no_adv = args.noadv
-vae_scaling_KL = args.KL_scaling
 max_epochs = args.max_epochs
-n_cat_discriminator_train = args.n_cat_discriminator_train
-n_pert_discriminator_train = args.n_pert_discriminator_train
-n_adversarial_start = args.n_adversarial_start
 pert_spectral_norm = args.pert_spectral_norm
-cat_spectral_norm = args.cat_spectral_norm
-
-main_max_lr = args.main_max_lr
-gen_max_lr = args.gen_max_lr
-cat_max_lr = args.cat_max_lr
-pert_max_lr = args.pert_max_lr
-
-cat_dropout = args.cat_dropout
 pert_dropout = args.pert_dropout
-
-generator_dropout_rate = args.generator_dropout_rate
-n_layers_vae = args.n_layers_vae
 pert_n_layers = args.pert_n_layers
+pert_max_lr = args.pert_max_lr
+smooth_labels = args.smooth_labels
+pert_epsilon_smooth = args.pert_epsilon_smooth
+
+#python test_discriminator.py --index 1 --subset_size 0.15 --max_epochs 600 --pert_spectral_norm true --pert_n_layers 4 --pert_max_lr 1e-3 --smooth_labels True --pert_epsilon_smooth 0.033
 
 
-cat_max_penalty_weight = args.cat_max_penalty_weight
-cat_bias_pert_scaler = args.cat_bias_pert_scaler
-cat_pert_method = args.cat_pert_method
-cat_pert_pert_label = args.cat_pert_pert_label
-cat_bias_lambda_L2 = args.cat_bias_lambda_L2 
-
-spectral_loss_factor = args.spectral_loss_factor
-uniform_lambda_L2 = args.uniform_lambda_L2
-
-contrastive_loss_scaler = args.contrastive_loss_scaler
-contrastive_loss_type = args.contrastive_loss_type
-contrastive_percentile = args.contrastive_percentile
-contrastive_triplet_margin_frac = args.contrastive_triplet_margin_frac
-
-#python test_run.py --index 14 --retrain true --subset_size 0.15 --noadv false --max_epochs 600 --KL_scaling 5e-3 --n_cat_discriminator_train 5 --n_pert_discriminator_train 5 --cat_dropout 0.1 --pert_dropout 0.1 --n_adversarial_start 200 --main_max_lr 2e-3 --gen_max_lr 2.75e-4 --cat_max_lr 1e-3 --pert_max_lr 1e-3 --cat_max_penalty_weight 11 --generator_dropout_rate 0.7 --n_layers_vae 3 --pert_n_layers 4 --cat_bias_pert_scaler 0 --cat_pert_method orthogonality --cat_pert_pert_label false --cat_bias_lambda_L2 1e-4 --spectral_loss_factor 0 --uniform_lambda_L2 0 --contrastive_loss_scaler 1 0.2 --contrastive_loss_type sc_actual sc_predicted --contrastive_percentile 0.3 --contrastive_triplet_margin_frac 0.1 --cat_spectral_norm false --pert_spectral_norm false
+# In[2]:
 
 
-# In[1]:
+import numpy as np
+import math
+subset = True
 
 
-# for i in range(1,7):
-#     print('sbatch batch_job{}.slurm'.format(i))
-# print()
+# In[ ]:
+
+
+# pert_dropout = 0.1
+# pert_n_layers = 4
+# pert_max_lr = 1e-3
+# pert_spectral_norm = True
+# smooth_labels = True
+# pert_epsilon_smooth = 0.033
+
+# # LR params
+# pert_max_lr = 1e-3
+
+# max_epochs = 20
+
+# subset_size = 0.15
 
 
 # In[3]:
 
 
-# index = 'dev'
-# subset_size = 0.15
-# noadv = False
-# max_epochs = 3
-# vae_scaling_KL = 5e-3
-# n_cat_discriminator_train = 5
-# n_pert_discriminator_train = 5
-# cat_dropout = 0.1
-# pert_dropout = 0.1
-# n_adversarial_start = 200
-# main_max_lr = 2e-3
-# gen_max_lr = 2.75e-4
-# cat_max_lr = 1e-3
-# pert_max_lr = 1e-3
-# cat_max_penalty_weight = 11
-# generator_dropout_rate = 0.7
-# n_layers_vae = 3
-# cat_bias_pert_scaler = 0
-# cat_pert_method = 'orthogonality'
-# cat_bias_lambda_L2 = 1e-2
-# spectral_loss_factor = 0
-# uniform_lambda_L2 = 0
-# pert_n_layers = 4
-# cat_pert_pert_label = False
+lr_scaling_factor = 10
+lr_decay = 0.9
+n_restarts = 3
 
-# contrastive_loss_scaler = [1]
-# contrastive_loss_type = ['sc_actual']
-# contrastive_percentile = 0.3
-# contrastive_triplet_margin_frac = 0.1
+batch_params = {
+    'train_batch_size': int(512*8), 
+    'test_batch_size': int(512*8), 
+    'validation_batch_size': np.nan
+}
+
+
+max_batch_scaler = 24
+
+if subset:
+    if subset_size < 0.02:
+        batch_scaler = 2
+    else:
+        batch_scaler = int(8 * round(math.ceil(subset_size / 0.05) * 0.05, 2) / 0.05)
+        batch_scaler = min(batch_scaler, max_batch_scaler)
+
+    batch_params['train_batch_size'] = int(512*batch_scaler)
+    batch_params['test_batch_size'] = int(512*batch_scaler)
+
+
+# In[4]:
+
+
+index = 'dev'
+noadv = False
+vae_scaling_KL = 5e-3
+n_cat_discriminator_train = 5
+cat_dropout = 0.1
+n_adversarial_start = 200
+main_max_lr = 2e-3
+gen_max_lr = 2.75e-4
+cat_max_lr = 1e-3
+cat_max_penalty_weight = 11
+generator_dropout_rate = 0.7
+n_layers_vae = 3
+cat_bias_pert_scaler = 0
+cat_pert_method = 'orthogonality'
+cat_bias_lambda_L2 = 1e-2
+spectral_loss_factor = 0
+uniform_lambda_L2 = 0
+cat_pert_pert_label = False
+n_pert_discriminator_train = 5
+
+contrastive_loss_scaler = [1]
+contrastive_loss_type = ['sc_actual']
+contrastive_percentile = 0.3
+contrastive_triplet_margin_frac = 0.1
 
 
 # In[5]:
@@ -240,128 +219,76 @@ if len(set(tf_adata.obs.cell_line)) != len(tf_adata.obs.cell_line.cat.categories
     raise ValueError('Make sure only present cell lines are in the categorical columns')
 
 
-# # Train/test split:
-
-# In[9]:
-
-
-train_split, test_split = Tu.Tahoe100M_split(tf_adata,
-                                          train_frac = 0.9, 
-                                          min_drug_frac = 0.7, 
-                                          min_cell_line_frac = 0.7, 
-                                          exclude_control = True, 
-                                          max_attempts = 1000, 
-                                          seed = seed)
-
-train_cells = train_split['barcodes']
-test_cells = test_split['barcodes']
-
-cell_line_counts = pd.DataFrame({
-    'train': train_split['cell_line_counts'],
-    'test': test_split['cell_line_counts']
-}).sort_values(by = 'train', ascending = True)
-
-drug_counts = pd.DataFrame({
-    'train': train_split['drug_counts'],
-    'test': test_split['drug_counts']
-}).sort_values(by = 'train', ascending = True)
-
-
 # In[10]:
 
 
-cell_line_counts
+cat_col, pert_col = 'cell_line', 'drug'
 
 
-# In[11]:
+# # Train/test split:
+
+# In[16]:
 
 
-drug_counts
+# train_split, test_split = Tu.Tahoe100M_split(tf_adata,
+#                                           train_frac = 0.9, 
+#                                           min_drug_frac = 0.7, 
+#                                           min_cell_line_frac = 0.7, 
+#                                           exclude_control = True, 
+#                                           max_attempts = 1000, 
+#                                           seed = seed)
+
+# train_cells = train_split['barcodes']
+# test_cells = test_split['barcodes']
+
+# cell_line_counts = pd.DataFrame({
+#     'train': train_split['cell_line_counts'],
+#     'test': test_split['cell_line_counts']
+# }).sort_values(by = 'train', ascending = True)
+
+# drug_counts = pd.DataFrame({
+#     'train': train_split['drug_counts'],
+#     'test': test_split['drug_counts']
+# }).sort_values(by = 'train', ascending = True)
 
 
-# Get the PLS models for test prediction projections -- we assume at most the # of components needed to describe the subset is that of the full dataset, so we set that as the number of components, rather than doing the automated elbow selection.
+from sklearn.model_selection import train_test_split
 
-# In[12]:
-
-
-from scLEMBAS import latent_separation as ls
-import joblib
-
-ctrl_pert = 'DMSO_TF'
-pls_rank = tf_adata.uns['pls']['model_fit']['n_components']
-pls_models = {}
-
-pls_fn = os.path.join(
-    data_path, 'trash',
-    '_'.join([author, 'PLSfits', 'seed{}'.format(seed)]) + '.pkl'
+train_df, test_df = train_test_split(
+    tf_adata.obs,
+    test_size=0.1,
+    stratify=tf_adata.obs[pert_col],   # ensures balanced category proportions
+    random_state=seed
 )
 
-if not os.path.isfile(pls_fn):
-    print('Get PLS model fits')
-    for test_cond in tqdm(tf_adata[test_cells, :].obs.condition.unique()):
-        cell_line, pert = test_cond.split('^')
-        tf_adata_sub, r2_df = ls.pls_da_pipeline(
-            adata = tf_adata, 
-            pert_ids = [pert, ctrl_pert],
-            cat_ids = cell_line,
-            n_components = pls_rank, 
-            pert_col = 'drug', 
-            cat_col = 'cell_line', 
-            separate_by = 'perturbation', 
-            control_confounders = [], 
-            covariate_associations = ['drug'],
-            scale = False, # TF activity already Z-scored
-            run_umap = False, 
-            file_prefix = None, 
-            verbose = True,
-            seed = seed, 
-            n_cores = n_cores
-        )
-
-        for k in ['pls_mod']: # ['encoder_y', '']:
-            pls_models[test_cond] = {
-                k: tf_adata_sub.uns['pls'][k]
-            }
-#         pls_models[test_cond]['umap_pls_mod'] = tf_adata_sub.uns['umap_pls']['umap_pls_mod']
-        pls_models[test_cond]['top_components_drug'] = ls.get_top_components(r2_df, top_components_cov = 'drug')
-
-    joblib.dump(pls_models, pls_fn)
-    del tf_adata_sub
+train_cells = train_df.index.tolist()
+test_cells = test_df.index.tolist()
 
 
-# In[13]:
+# In[17]:
 
 
 if subset:
-    train_cells = []
     np.random.seed(seed)
-    for cond in train_split['conditions'].condition:
-        subset_cond = tf_adata.obs[tf_adata.obs.condition == cond]
-        subset_cells = list(np.random.choice(
-            subset_cond.index,
-            size = int(np.round(subset_cond.shape[0] * subset_size)),
+    train_cells = list(np.random.choice(
+            train_cells,
+            size = int(np.round(len(train_cells) * subset_size)),
             replace = False
         ))
-        train_cells+=subset_cells
+
     tf_adata = tf_adata[tf_adata.obs_names.isin(train_cells + test_cells),:].copy()
     adata = adata[tf_adata.obs_names, :].copy()
     expr = adata.to_df().copy()
 
 
-# In[14]:
+# In[18]:
 
 
 cat_col = 'cell_line'
 pert_col = 'drug'
 
 
-# In[15]:
-
-
-tf_adata[train_cells, :].obs[cat_col].value_counts().unique()
-
-
-# In[16]:
+# In[20]:
 
 
 tf_adata[train_cells, :].obs[pert_col].value_counts().unique()
@@ -371,7 +298,7 @@ tf_adata[train_cells, :].obs[pert_col].value_counts().unique()
 
 # # Hyper-parameters:
 
-# In[17]:
+# In[21]:
 
 
 def generate_lr_params(n_epochs, 
@@ -430,7 +357,7 @@ def generate_lr_params(n_epochs,
     }
 
 
-# In[18]:
+# In[22]:
 
 
 projection_amplitude_in = 10
@@ -459,7 +386,7 @@ noise_params = {
 }
 
 
-# In[19]:
+# In[23]:
 
 
 loss_scaler = 100
@@ -503,7 +430,7 @@ lr_params = generate_lr_params(n_epochs = max_epochs,
 # initialize_fc = True # DEPRECATED
 
 
-# In[20]:
+# In[24]:
 
 
 bionet_params['cat_max_norm'] = 100
@@ -548,7 +475,7 @@ cat_pert_params = {'regularization_scaler': cat_bias_pert_scaler,
                       }
 
 
-# In[21]:
+# In[25]:
 
 
 training_params = {
@@ -564,7 +491,7 @@ training_params['prediction_loss_fn_scaler'] = loss_scaler
 
 # VAE:
 
-# In[22]:
+# In[26]:
 
 
 # building
@@ -610,7 +537,7 @@ del vae_params['max_epochs']
 
 # Discriminator:
 
-# In[23]:
+# In[27]:
 
 
 discriminator_params = {
@@ -625,31 +552,30 @@ discriminator_params = {
     'discriminator_lambda_L2': 1e-3,
     'discriminator_penalty_weight': np.nan, 
     'bionet_activation': False,
-    'smooth_labels': True, 
+    'smooth_labels': smooth_labels, 
     'epsilon_smooth': np.nan
 }
 
 
-# In[24]:
+# In[28]:
 
 
 # architecture -- pert >> cat bc harder classification problem
 cat_n_layers_disc = 3
 cat_disc_n_hidden_nodes = list(np.round(np.linspace(n_nodes, 
-                                                    cell_line_counts.shape[0],
+                                                    train_df[cat_col].nunique(),
                                                     cat_n_layers_disc + 2)).astype(int)[1:-1])
 cat_discriminator_params = discriminator_params.copy()
 cat_discriminator_params['n_hidden_nodes'] = cat_disc_n_hidden_nodes
 cat_discriminator_params['dropout_rate'] = cat_dropout
 
-cat_discriminator_params['spectral_norm'] = cat_spectral_norm
-if cat_spectral_norm:
-    cat_discriminator_params['discriminator_lambda_L2'] = 0
+cat_discriminator_params['spectral_norm'] = True
+cat_discriminator_params['discriminator_lambda_L2'] = 0
 
 
 pert_n_layers_disc = pert_n_layers
 pert_disc_n_hidden_nodes = list(np.round(np.linspace(n_nodes, 
-                                                     drug_counts.shape[0], 
+                                                     train_df[pert_col].nunique(), 
                                                      pert_n_layers_disc + 2)).astype(int)[1:-1])
 
 # add 3 additional "starting" layers since classifying perturbation is difficult
@@ -657,17 +583,17 @@ pert_disc_n_hidden_nodes = [pert_disc_n_hidden_nodes[0]]*3 + pert_disc_n_hidden_
 
 pert_discriminator_params = discriminator_params.copy()
 pert_discriminator_params['n_hidden_nodes'] = pert_disc_n_hidden_nodes
-pert_discriminator_params['dropout_rate'] = 0.1
+pert_discriminator_params['dropout_rate'] = pert_dropout
 
 pert_discriminator_params['spectral_norm'] = pert_spectral_norm
 if pert_spectral_norm:
     pert_discriminator_params['discriminator_lambda_L2'] = 0
 
 cat_discriminator_params['epsilon_smooth'] = 1/tf_adata.obs.cell_line.nunique()
-pert_discriminator_params['epsilon_smooth'] = 1/tf_adata.obs.drug.nunique()
+pert_discriminator_params['epsilon_smooth'] = pert_epsilon_smooth #1/tf_adata.obs.drug.nunique()
 
 
-# In[25]:
+# In[29]:
 
 
 # adverserial penalty curve
@@ -735,7 +661,7 @@ else:
 # pert_discriminator_params['discriminator_penalty_weight'] = pert_discriminator_penalty_weight
 
 
-# In[26]:
+# In[30]:
 
 
 # discriminator LRs
@@ -762,7 +688,7 @@ discriminator_lr_params = generate_lr_params(
     lr_scaling_factor = lr_scaling_factor, 
     lr_decay = lr_decay,
     n_restarts = n_restarts_adversarial,
-    n_adversarial_start = n_adversarial_start, 
+    n_adversarial_start = 0, 
 #     n_pert_discriminator_train = n_pert_discriminator_train,
 #     n_cat_discriminator_train = np.nan,
     role = 'pert_discriminator')
@@ -771,28 +697,9 @@ del discriminator_lr_params['max_epochs']
 pert_discriminator_params = {**pert_discriminator_params, **discriminator_lr_params}
 
 
-# Visualize hyperparameters:
-
-# In[27]:
-
-
-fig, ax = plt.subplots(ncols = 2, figsize = (13,5))
-sns.lineplot(cat_discriminator_params['discriminator_penalty_weight'], ax = ax[0])
-ax[0].set_title('Categorical Discriminator')
-
-sns.lineplot(pert_discriminator_params['discriminator_penalty_weight'], ax = ax[1])
-ax[1].set_title('Perturbation Discriminator')
-
-for i in range(2):
-    ax[i].set_xlabel('Epochs')
-    ax[i].set_ylabel('Discriminator Penalty Weight')
-    
-fig.tight_layout();
-
-
 # # Build model and trainer
 
-# In[28]:
+# In[68]:
 
 
 # input stimulation
@@ -800,7 +707,7 @@ X_in = pd.get_dummies(tf_adata.obs.drug).astype(int)
 X_in.drop(columns = 'DMSO_TF', inplace = True) # all 0s
 
 
-# In[29]:
+# In[69]:
 
 
 # lr_mod = SignalingModel(
@@ -874,7 +781,7 @@ X_in.drop(columns = 'DMSO_TF', inplace = True) # all 0s
 # del lr_trainer
 
 
-# In[30]:
+# In[86]:
 
 
 mod = SignalingModel(
@@ -894,98 +801,278 @@ mod.input_layer.weights.requires_grad = False # don't learn scaling factors for 
 mod.signaling_network.prescale_weights(target_radius = target_spectral_radius) # spectral radius
 
 
-# In[29]:
+trainer = TrainSC(
+    mod = mod,
+    prediction_optimizer = torch.optim.Adam,
+    prediction_loss_fn = prediction_loss_fn, 
+    per_condition_loss = False,
+    n_adversarial_start = n_adversarial_start, 
+n_cat_discriminator_train = n_cat_discriminator_train,
+n_pert_discriminator_train = n_pert_discriminator_train,
+    gradient_ascent = True,
+    cat_discriminator_params = cat_discriminator_params,
+    pert_discriminator_params = pert_discriminator_params,
+    vae_params = vae_params,
+    hyper_params = training_params,
+    contrastive_loss_params = contrastive_loss_params,
+    cat_pert_params = cat_pert_params,
+    train_split = {'train': train_cells, 'test': test_cells, 'validation': None}, 
+    train_seed = mod_seed, 
+    track_test = True,
+    track_validation = False, 
+    n_eval_cells = np.nan, 
+    n_eval_bootstrap = np.nan
+)
+train_dataloader = trainer.train_dataloader
+test_dataloader = trainer.test_dataloader
 
 
-if not no_adv:
-    trainer = TrainSC(
-        mod = mod,
-        prediction_optimizer = torch.optim.Adam,
-        prediction_loss_fn = prediction_loss_fn, 
-        per_condition_loss = False,
-        n_adversarial_start = n_adversarial_start, 
-    n_cat_discriminator_train = n_cat_discriminator_train,
-    n_pert_discriminator_train = n_pert_discriminator_train,
-        gradient_ascent = True,
-        cat_discriminator_params = cat_discriminator_params,
-        pert_discriminator_params = pert_discriminator_params,
-        vae_params = vae_params,
-        hyper_params = training_params,
-        contrastive_loss_params = contrastive_loss_params,
-        cat_pert_params = cat_pert_params,
-        train_split = {'train': train_cells, 'test': test_cells, 'validation': None}, 
-        train_seed = mod_seed, 
-        track_test = True,
-        track_validation = False, 
-        n_eval_cells = np.nan, 
-        n_eval_bootstrap = np.nan
-    )
+# In[87]:
+
+
+from scLEMBAS.model.model_components import CatDiscriminator
+from scLEMBAS.model.train import *
+pert_discriminator_params_actual = pert_discriminator_params.copy()
+pert_n_layers_disc = pert_n_layers
+pert_disc_n_hidden_nodes = list(np.round(np.linspace(adata.n_vars, 
+                                                     train_df[pert_col].nunique(), 
+                                                     pert_n_layers_disc + 2)).astype(int)[1:-1])
+
+# add 3 additional "starting" layers since classifying perturbation is difficult
+pert_disc_n_hidden_nodes = [pert_disc_n_hidden_nodes[0]]*3 + pert_disc_n_hidden_nodes
+
+pert_discriminator_params_actual['n_hidden_nodes'] = pert_disc_n_hidden_nodes
+
+disc = CatDiscriminator(
+    n_features_in = tf_adata.n_vars,
+    n_labels = train_df[pert_col].nunique(), 
+    dtype = trainer.mod.dtype, 
+    device = device,
+    batch_momentum = pert_discriminator_params_actual['batch_momentum'], 
+    layer_norm = pert_discriminator_params_actual['layer_norm'],
+    spectral_norm = pert_discriminator_params_actual['spectral_norm'],
+    dropout_rate = pert_discriminator_params_actual['dropout_rate'],
+    activation_fn = pert_discriminator_params_actual['activation_fn'], 
+    bionet_activation = pert_discriminator_params_actual['bionet_activation'], 
+    rnn_params = None,
+    smooth_labels = pert_discriminator_params_actual['smooth_labels'],
+    epsilon_smooth = pert_discriminator_params_actual['epsilon_smooth'],                                
+    n_hidden_nodes = pert_discriminator_params_actual['n_hidden_nodes'], 
+    seed = 888
+)
+
+optimizer = torch.optim.Adam(disc.parameters(), 
+                            lr = pert_discriminator_params_actual['maximum_learning_rate'], 
+                            weight_decay = 0)
+lr_scheduler = WarmupCosineAnnealingWarmRestarts(
+    optimizer = optimizer,
+    T_0 = pert_discriminator_params_actual['lr_restart_epoch'],
+    T_mul = pert_discriminator_params_actual['lr_restart_factor'], 
+    gamma = pert_discriminator_params_actual['lr_decay'],
+    eta_min = pert_discriminator_params_actual['minimum_learning_rate'],
+    max_lr=pert_discriminator_params_actual['maximum_learning_rate'],
+    warmup_steps = pert_discriminator_params_actual['warmup_epochs'],
+    last_epoch = -1)
+
+def to_target(X_in_, disc):
+    target = X_in_.argmax(dim=1)
+    no_pert = X_in_.sum(dim=1) == 0  
+    target[no_pert] = disc.n_labels - 1 # -1 for indexing
     
-    if retrain or not os.path.isfile(os.path.join(data_path, 'trash', fn + author +  '_trainer.pickle')):
-        mod = trainer.train_model(verbose = True)
-        io.write_pickled_object(trainer, os.path.join(data_path, 'trash', fn + author +  '_trainer.pickle'))
-
-else:
-    pdp_noadv = pert_discriminator_params.copy()
-    cdp_noadv = cat_discriminator_params.copy()
-
-    pdp_noadv['discriminator_penalty_weight'] = 0.0
-    cdp_noadv['discriminator_penalty_weight'] = 0.0
-
-    trainer_noadv = TrainSC(
-        mod = mod,
-        prediction_optimizer = torch.optim.Adam,
-        prediction_loss_fn = prediction_loss_fn, 
-        per_condition_loss = False,
-        n_adversarial_start = n_adversarial_start, 
-    n_cat_discriminator_train = n_cat_discriminator_train,
-    n_pert_discriminator_train = n_pert_discriminator_train,
-        gradient_ascent = True,
-        cat_discriminator_params = cdp_noadv,
-        pert_discriminator_params = pdp_noadv,
-        vae_params = vae_params,
-        hyper_params = training_params,
-        contrastive_loss_params = contrastive_loss_params,
-        cat_pert_params = cat_pert_params,
-        train_split = {'train': train_cells, 'test': test_cells, 'validation': None}, 
-        train_seed = mod_seed, 
-        track_test = True,
-        track_validation = False, 
-        n_eval_cells = np.nan, 
-        n_eval_bootstrap = np.nan
-    )
+    return target
     
-    if retrain or not os.path.isfile(os.path.join(data_path, 'trash', fn + author +  '_trainer.pickle')):
-        mod_noadv = trainer_noadv.train_model(verbose = True)
-        io.write_pickled_object(trainer_noadv, os.path.join(data_path, 'trash', fn + author +  '_trainer.pickle'))    
+
+
+# In[88]:
+
+
+start_time = time.time()
+# torch.autograd.set_detect_anomaly(True)
+
+
+train_stats_cols = ['epoch', 'batch_index', 'pert_discriminator_learning_rate', #'iter_time', 
+             'pert_discriminator_loss_prediction', 'pert_discriminator_param_reg_loss', 
+             'pert_discriminator_loss_total']
+# stats_train = np.empty((0, len(train_stats_cols)))
+
+eval_stats_cols = ['epoch', 'batch_index', 'test_loss']
+# stats_eval = np.empty((0, len(eval_stats_cols)))
+
+stats_train = []
+stats_eval = []
+
+
+for e in trange(max_epochs):
+    disc.train()
+    cur_lr = optimizer.param_groups[0]['lr']
+    utils.set_seeds(seed + e)
+    for batch, (X_in_, y_out_, covariates_idx_, expr_) in enumerate(train_dataloader):
+        X_in_, y_out_ = X_in_.to(device), y_out_.to(device) #covariates_idx_.to(self.mod.device), expr_.to(self.mod.device)
+        
+        optimizer.zero_grad()
+        
+        pred = disc(y_out_)
+        target = to_target(X_in_, disc)
+        pert_discriminator_loss_accuracy = disc.loss_fn(pred, target)    
+
+        # discriminator regularization
+        pert_discriminator_reg = disc.L2_reg(pert_discriminator_params['discriminator_lambda_L2'])
+        pert_discriminator_loss = pert_discriminator_loss_accuracy + pert_discriminator_reg
+
+        # discriminator optimization
+        pert_discriminator_loss.backward()
+        nn.utils.clip_grad_norm_(disc.parameters(), max_norm=100.0)
+
+        optimizer.step()
+        
+        stats_train.append([
+            e , batch, cur_lr, #time.time() - start_time,
+            pert_discriminator_loss_accuracy.detach().item(),pert_discriminator_reg.detach().item(),  pert_discriminator_loss.detach().item()
+        ])
+        
+        
+        del target, pred, pert_discriminator_loss_accuracy, pert_discriminator_reg, pert_discriminator_loss
+        del X_in_, y_out_, covariates_idx_, expr_
+        utils.clear_memory()
+        
+        
+    lr_scheduler.step()
+    
+    # eval
+    if e % 25 == 0:
+        disc.eval()
+        for batch, (X_in_, y_out_, _, _) in enumerate(test_dataloader):
+            X_in_, y_out_ = X_in_.to(device), y_out_.to(device)
+            with torch.inference_mode():
+                pred = disc(y_out_)
+                target = to_target(X_in_, disc)
+                eval_loss = disc.eval_loss_fn(pred, target)
+
+            stats_eval.append([
+                e+1, batch, 
+                eval_loss.item()
+            ])
+
+            del X_in_, y_out_, pred, target, eval_loss
+            utils.clear_memory()
+
+
+# In[92]:
+
+
+mins, secs = divmod(time.time() - start_time, 60)
+print("Training ran in: {:.0f} min {:.2f} sec".format(mins, secs))
+
+
+# In[93]:
+
+
+stats_train = pd.DataFrame(stats_train, columns=train_stats_cols)
+stats_eval = pd.DataFrame(stats_eval, columns=eval_stats_cols)
+
+stats_train = stats_train.groupby('epoch').mean().reset_index()
+stats_eval = stats_eval.groupby('epoch').mean().reset_index()
+
+
+# In[101]:
+
+
+import matplotlib.ticker as mticker
+
+fig, ax = plt.subplots(ncols = 3, figsize = (12, 4))
+
+i = 0
+sns.lineplot(data = stats_train, x = 'epoch', y = 'pert_discriminator_learning_rate', ax = ax[i])
+ax[i].set_ylabel('LR')
+
+i = 1
+viz_df = stats_train.drop(columns = ['batch_index', 'pert_discriminator_learning_rate']).melt(
+    id_vars = 'epoch', var_name = 'loss_type', value_name='loss')
+
+viz_df.loss_type = viz_df.loss_type.map({'pert_discriminator_loss_prediction': 'Prediction', 
+                     'pert_discriminator_param_reg_loss': 'L2_reg', 
+                     'pert_discriminator_loss_total': 'Total'})
+viz_df.loss_type = pd.Categorical(viz_df.loss_type, 
+               categories = ['L2_reg', 'Prediction', 'Total'], 
+               ordered = True)
+
+zeros = (
+    viz_df.groupby("loss_type", observed=False)["loss"]
+          .agg(lambda s: (s.size > 0) and np.all(s.values == 0))
+)
+zeros = zeros[zeros].index.values.tolist()  
+viz_df = viz_df[~viz_df.loss_type.isin(zeros)].copy()
+viz_df.loss_type = viz_df.loss_type.cat.remove_unused_categories().copy()
+sns.lineplot(data = viz_df, x = 'epoch', y = 'loss', hue = 'loss_type', ax = ax[i])
+ax[i].set_title('Train Loss Only')
+# ax[i].yaxis.set_major_formatter(mticker.ScalarFormatter())
+# ax[i].yaxis.set_major_formatter(mticker.FormatStrFormatter('%.2f'))
+ax[i].ticklabel_format(style='plain', axis='y', useOffset=False, useMathText=False)
+ax[i].yaxis.get_offset_text().set_visible(False)
+
+cp = tf_adata[train_cells,:].obs[pert_col].value_counts(normalize = True).values
+rand_loss = disc.random_loss(class_probs = cp, train_mode = True)
+ax[i].axhline(y=rand_loss, color='dimgray', linestyle='--', label = 'random_loss')
+
+
+i = 2
+viz_df = stats_train[['epoch', 'pert_discriminator_loss_prediction']].copy()
+viz_df.rename(columns = {'pert_discriminator_loss_prediction': 'loss'}, inplace = True)
+viz_df['loss_type'] = 'train'
+
+viz_df_2 = stats_eval[['epoch', 'test_loss']].rename(columns = {'test_loss': 'loss'})
+viz_df_2['loss_type'] = 'test'
+viz_df = pd.concat([viz_df, viz_df_2])
+viz_df.loss_type = pd.Categorical(viz_df.loss_type, 
+                                 categories = ['train', 'test'], 
+                                 ordered = True)
+
+sns.lineplot(data = viz_df, x = 'epoch', y = 'loss', 
+             hue = 'loss_type', 
+             palette = ["#ff7f0e", "#8c564b"], #,
+             ax = ax[i])
+cp = tf_adata[train_cells,:].obs[pert_col].value_counts(normalize = True).values
+rand_loss = disc.random_loss(class_probs = cp, train_mode = False)
+ax[i].axhline(y=rand_loss, color="#ffb877", linestyle='--', label = 'Random Train')
+
+cp = tf_adata[test_cells,:].obs[pert_col].value_counts(normalize = True).values
+rand_loss = disc.random_loss(class_probs = cp, train_mode = False)
+ax[i].axhline(y=rand_loss, color="#b98a81", linestyle='--', label = 'Random Test')
+ax[i].legend()
+
+fig.suptitle("Training ran in: {:.0f} min {:.2f} sec".format(mins, secs))
+fig.tight_layout()
+
+fig.savefig(os.path.join(data_path, 'trash', '_'.join([fn, author, 'pert_disc.png'])), 
+            dpi=300, bbox_inches='tight')
 
 
 # In[ ]:
 
 
-import papermill as pm
-from nbconvert import HTMLExporter
-import nbformat
-import os
+# import papermill as pm
+# from nbconvert import HTMLExporter
+# import nbformat
+# import os
 
-input_notebook = 'test_visualize.ipynb' # in the current directory
-output_notebook = os.path.join(data_path, 'trash', fn +  '_' + author + '.ipynb')
-output_html = os.path.join(data_path, 'trash', fn + '_' + author + '.html')
+# input_notebook = 'test_visualize.ipynb' # in the current directory
+# output_notebook = os.path.join(data_path, 'trash', fn +  '_' + author + '.ipynb')
+# output_html = os.path.join(data_path, 'trash', fn + '_' + author + '.html')
 
-pm.execute_notebook(
-    input_path=input_notebook,
-    output_path=output_notebook,
-    parameters={"fn": fn}, 
-    kernel_name='python3'
-)
+# pm.execute_notebook(
+#     input_path=input_notebook,
+#     output_path=output_notebook,
+#     parameters={"fn": fn}, 
+#     kernel_name='python3'
+# )
 
-nb = nbformat.read(output_notebook, as_version=4)
-html_exporter = HTMLExporter()
-html_exporter.exclude_input = True  # <-- hides code cells
-(body, _) = html_exporter.from_notebook_node(nb)
+# nb = nbformat.read(output_notebook, as_version=4)
+# html_exporter = HTMLExporter()
+# html_exporter.exclude_input = True  # <-- hides code cells
+# (body, _) = html_exporter.from_notebook_node(nb)
 
-with open(output_html, "w", encoding="utf-8") as f:
-    f.write(body)
+# with open(output_html, "w", encoding="utf-8") as f:
+#     f.write(body)
     
-os.remove(output_notebook)
+# os.remove(output_notebook)
 

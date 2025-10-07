@@ -582,7 +582,7 @@ class CatDiscriminator(nn.Module):
         assert 0 < epsilon_smooth < 1, "epsilon_smooth must be between (0,1)"
         self.epsilon_smooth = epsilon_smooth
         
-
+        # TODO: replace with CE native label-smoothing parameter -- see 'dev_CEsmooth.py'
         if self.n_labels > 2: # multi-class
             if self.smooth_labels:
                 self.loss_fn = self.smooth_multi_loss
@@ -696,7 +696,7 @@ class CatDiscriminator(nn.Module):
         if len(class_probs) != self.n_labels:
             raise ValueError('The class_probs must be the same length as self.n_labels')
             
-        eps = self.epsilon_smooth if train_mode else 0
+        eps = self.epsilon_smooth if (train_mode and self.smooth_labels) else 0
         if self.n_labels == 2:
             # Binary classification baseline
             p1 = class_probs[1]

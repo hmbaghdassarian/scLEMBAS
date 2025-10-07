@@ -377,7 +377,7 @@ from scLEMBAS import io
 
 # from scLEMBAS.model.train_dev_mu_regularizer import TrainSC as TrainSCDevMu
 # from scLEMBAS.model.train_dev_weights_standard import TrainSC as TrainSCDevWstandard
-from scLEMBAS.model.train import TrainSC
+from scLEMBAS.model.train_smoothdev import TrainSC
 from scLEMBAS.preprocess import discriminator_weight_curve, get_alignment_score
 
 

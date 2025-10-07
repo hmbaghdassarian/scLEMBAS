@@ -1735,7 +1735,7 @@ class TrainSC(TrainBase):
         start_time = time.time()
         self.mod.signaling_network.implement_mask() # shouldn't be necessary bc called in signaling_network init
 
-        torch.autograd.set_detect_anomaly(True)
+        # torch.autograd.set_detect_anomaly(True)
 
         for e in trange(self.hyper_params['max_epochs']):
             self._run_adv = (self.n_adversarial_start <= e)

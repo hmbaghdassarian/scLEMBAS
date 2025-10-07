@@ -179,7 +179,7 @@ sclembas = '/home/hmbaghda/Projects/scLEMBAS'
 sys.path.insert(1, os.path.join(sclembas))
 from scLEMBAS import io
 from scLEMBAS import preprocess as pp 
-from scLEMBAS.model.train import TrainSC
+from scLEMBAS.model.train_smoothdev import TrainSC
 from scLEMBAS.model.scl import SignalingModel
 
 import Tahoe_utils as Tu

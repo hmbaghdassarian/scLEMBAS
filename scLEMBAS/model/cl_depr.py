@@ -187,3 +187,4 @@ def sc_actual(Y_hat, y_out, X_in, covariates_idx,
         return lambda_scaler * torch.stack(losses).mean()
     else:
         return Y_hat.new_tensor(0.0)
+  
