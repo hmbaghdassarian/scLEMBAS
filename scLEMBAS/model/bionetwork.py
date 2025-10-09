@@ -953,8 +953,50 @@ class BioNetSC(BioNetCat):
         Y_full = X_new.T
         return Y_full, (bias_global, bias_mu, bias_log_sigma_squared), t
         
+    def forward_no_bc(self, X_full: torch.Tensor, covariates_idx: torch.Tensor, expr: torch.Tensor):
+        """Emulates the forward pass, but without including the categorical bias.
+
+        Parameters
+        ----------
+        X_full : torch.Tensor
+            the linearly scaled ligand inputs. Shape is (samples x network nodes). Output of ProjectInput.
+        covariates_idx : torch.Tensor
+            rows correspond to samples as in X_full. Each column represents one categorical covariate group. Values
+            in the columns represent the index mapping of the category label. Basically a rowsubset of `self.covariates_idx`.
+        expr : torch.Tensor
+            the expression matrix. rows correspond to samples as in X_full. Columns are genes
+
+        Returns
+        -------
+        Y_full :  torch.Tensor
+            the signaling network scaled by learned interaction weights. Shape is (samples x network nodes).
+        bias_global : torch.Tensor
+            the context-independent bias term output by the VAE. Shape is (samples x network nodes).
+        """
+        bias_mu, bias_log_sigma_squared, bias_global = self.vae(expr)
+        bias_global.data.masked_fill_(mask = self.bias_mask.T.expand(bias_global.shape[0], -1), value = 0.0) # apply bias mask
+        
+        bias_tot = bias_global.T
+        X_bias = X_full.T + bias_tot # this is the bias and ligand input combined
+
+        # RNN
+        X_new = torch.zeros_like(X_bias) #initialize hidden state values at 0
+        for t in range(self.bionet_params['max_steps']): # like an RNN, updating from previous time step
+            X_old = X_new.detach()
+            X_new = torch.mm(self.weights, X_new) # scale matrix by edge weights
+            
+            X_new = X_new + X_bias  # add original values and bias       
+            X_new = self.activation(X_new, self.bionet_params['leak'])
+            
+            if (t % 10 == 0) and (t > 20):
+                diff = torch.max(torch.abs(X_new - X_old))    
+                if diff.lt(self.bionet_params['tolerance']):
+                    break
+
+        Y_full = X_new.T
+        return Y_full, (bias_global, bias_mu, bias_log_sigma_squared), t
     
-    def forward_novar(self, X_full: torch.Tensor, covariates_idx: torch.Tensor, expr: torch.Tensor):
+    def forward_no_bg(self, X_full: torch.Tensor, covariates_idx: torch.Tensor, expr: torch.Tensor):
         """Emulates the forward pass, but without including the global bias.
 
         Parameters
@@ -996,6 +1038,45 @@ class BioNetSC(BioNetCat):
             X_new = X_new + X_bias  # add original values and bias       
             X_new = self.activation(X_new, self.bionet_params['leak'])
 
+            if (t % 10 == 0) and (t > 20):
+                diff = torch.max(torch.abs(X_new - X_old))    
+                if diff.lt(self.bionet_params['tolerance']):
+                    break
+
+        Y_full = X_new.T
+        return Y_full, None, t
+    
+    def forward_no_b(self, X_full: torch.Tensor, covariates_idx: torch.Tensor, expr: torch.Tensor):
+        """Emulates the forward pass, but without including any bias terms.
+
+        Parameters
+        ----------
+        X_full : torch.Tensor
+            the linearly scaled ligand inputs. Shape is (samples x network nodes). Output of ProjectInput.
+        covariates_idx : torch.Tensor
+            rows correspond to samples as in X_full. Each column represents one categorical covariate group. Values
+            in the columns represent the index mapping of the category label. Basically a rowsubset of `self.covariates_idx`.
+        expr : torch.Tensor
+            the expression matrix. rows correspond to samples as in X_full. Columns are genes
+
+        Returns
+        -------
+        Y_full :  torch.Tensor
+            the signaling network scaled by learned interaction weights. Shape is (samples x network nodes).
+        bias_global : torch.Tensor
+            the context-independent bias term output by the VAE. Shape is (samples x network nodes).
+        """
+        X_bias = X_full.T      
+
+        # RNN
+        X_new = torch.zeros_like(X_bias) #initialize hidden state values at 0
+        for t in range(self.bionet_params['max_steps']): # like an RNN, updating from previous time step
+            X_old = X_new.detach()
+            X_new = torch.mm(self.weights, X_new) # scale matrix by edge weights
+            
+            X_new = X_new + X_bias  # add original values and bias       
+            X_new = self.activation(X_new, self.bionet_params['leak'])
+            
             if (t % 10 == 0) and (t > 20):
                 diff = torch.max(torch.abs(X_new - X_old))    
                 if diff.lt(self.bionet_params['tolerance']):

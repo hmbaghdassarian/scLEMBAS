@@ -76,7 +76,7 @@ class ContrastiveLoss:
         # flatten covariates
         self.cats = covariates_idx.squeeze(1)
 
-        self.control_mask = (X_in.abs().sum(dim=1) == 0)
+        self.control_mask = (X_in.sum(dim=1) == 0)
         self.pert_mask = ~self.control_mask
         self.pert_ids = X_in.argmax(dim=1)
         self.combos = torch.stack([self.cats[self.pert_mask], 

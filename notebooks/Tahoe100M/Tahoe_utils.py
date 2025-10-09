@@ -496,7 +496,7 @@ def run_prediction(mod,
     if len(remove_type) not in [1,2]:
         raise ValueError('Cannot remove more than two components at once')
     if len(set(remove_type).difference(['none', 'global_bias', 'categorical_bias', 'total_bias', 'adj'])) > 0:
-        raise ValeuError('Incorrect remove_type specified')
+        raise ValueError('Incorrect remove_type specified')
     if len(remove_type) == 2:
         if sorted(remove_type) not in [['adj', 'categorical_bias'], ['adj', 'global_bias']]:
             raise ValueError('Can only specify multiple remove types when ')

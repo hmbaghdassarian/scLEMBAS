@@ -254,7 +254,7 @@ class SignalingModel(torch.nn.Module):
         return Y_hat, Y_full, biases
     
     
-    def forward_novar(self, X_in, covariates_idx: torch.Tensor, expr: torch.Tensor):
+    def forward_no_bg(self, X_in, covariates_idx: torch.Tensor, expr: torch.Tensor):
         """Emulates the forward pass, but without including the global bias.
 
         Parameters
@@ -270,7 +270,7 @@ class SignalingModel(torch.nn.Module):
             only relevant for single-cell, otherwise None
         """
         X_full = self.input_layer(X_in) # input ligands to signaling network
-        Y_full, _, rnn_iter_t = self.signaling_network.forward_novar(X_full, covariates_idx, expr) # RNN of full signaling network
+        Y_full, _, rnn_iter_t = self.signaling_network.forward_no_bg(X_full, covariates_idx, expr) # RNN of full signaling network
         Y_hat = self.output_layer(Y_full)
 
         return Y_hat, Y_full, _

@@ -112,7 +112,7 @@ contrastive_percentile = args.contrastive_percentile
 contrastive_triplet_margin_frac = args.contrastive_triplet_margin_frac
 no_collapse_bg = args.no_collapse_bg
 
-#python test_run.py --index 14 --retrain true --subset_size 0.15 --noadv false --max_epochs 600 --KL_scaling 5e-3 --n_cat_discriminator_train 5 --n_pert_discriminator_train 5 --cat_dropout 0.1 --pert_dropout 0.1 --n_adversarial_start 200 --main_max_lr 2e-3 --gen_max_lr 2.75e-4 --cat_max_lr 1e-3 --pert_max_lr 1e-3 --cat_max_penalty_weight 11 --generator_dropout_rate 0.7 --n_layers_vae 3 --pert_n_layers 4 --cat_bias_pert_scaler 0 --cat_pert_method orthogonality --cat_pert_pert_label false --cat_bias_lambda_L2 1e-4 --spectral_loss_factor 0 --uniform_lambda_L2 0 --contrastive_loss_scaler 1 0.2 --contrastive_loss_type sc_actual sc_predicted --contrastive_percentile 0.3 --contrastive_triplet_margin_frac 0.1 --cat_spectral_norm true --pert_spectral_norm true --no_collapse_bg 0
+#python test_bgcollapse_v1.py --index 14 --retrain true --subset_size 0.15 --noadv false --max_epochs 600 --KL_scaling 5e-3 --n_cat_discriminator_train 5 --n_pert_discriminator_train 5 --cat_dropout 0.1 --pert_dropout 0.1 --n_adversarial_start 200 --main_max_lr 2e-3 --gen_max_lr 2.75e-4 --cat_max_lr 1e-3 --pert_max_lr 1e-3 --cat_max_penalty_weight 11 --generator_dropout_rate 0.7 --n_layers_vae 3 --pert_n_layers 4 --cat_bias_pert_scaler 0 --cat_pert_method orthogonality --cat_pert_pert_label false --cat_bias_lambda_L2 1e-4 --spectral_loss_factor 0 --uniform_lambda_L2 0 --contrastive_loss_scaler 1 0.2 --contrastive_loss_type sc_actual sc_predicted --contrastive_percentile 0.3 --contrastive_triplet_margin_frac 0.1 --cat_spectral_norm false --pert_spectral_norm true --no_collapse_bg 0
 
 
 # In[1]:
@@ -181,7 +181,7 @@ sclembas = '/home/hmbaghda/Projects/scLEMBAS'
 sys.path.insert(1, os.path.join(sclembas))
 from scLEMBAS import io
 from scLEMBAS import preprocess as pp 
-from scLEMBAS.model.train import TrainSC
+from scLEMBAS.model.train_bgcollapse_v1 import TrainSC
 from scLEMBAS.model.scl import SignalingModel
 
 import Tahoe_utils as Tu
@@ -486,6 +486,10 @@ if subset:
 
     batch_params['train_batch_size'] = int(512*batch_scaler)
     batch_params['test_batch_size'] = int(512*batch_scaler)
+
+small_scaler = 2
+batch_params['train_batch_size'] = int(batch_params['train_batch_size']/small_scaler) 
+batch_params['test_batch_size'] = int(batch_params['test_batch_size']/small_scaler) 
 # max_epochs = 600
 
 lr_scaling_factor = 10

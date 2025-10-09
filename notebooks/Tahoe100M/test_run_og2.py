@@ -66,7 +66,6 @@ parser.add_argument("--contrastive_loss_type", type=str, nargs="+", required=Tru
 parser.add_argument("--contrastive_percentile", type = float, required=True)
 parser.add_argument("--contrastive_triplet_margin_frac", type = float, required=True)
 
-parser.add_argument("--no_collapse_bg", type = float, required = True)
 
 
 ########################################################################
@@ -110,9 +109,8 @@ contrastive_loss_scaler = args.contrastive_loss_scaler
 contrastive_loss_type = args.contrastive_loss_type
 contrastive_percentile = args.contrastive_percentile
 contrastive_triplet_margin_frac = args.contrastive_triplet_margin_frac
-no_collapse_bg = args.no_collapse_bg
 
-#python test_run.py --index 14 --retrain true --subset_size 0.15 --noadv false --max_epochs 600 --KL_scaling 5e-3 --n_cat_discriminator_train 5 --n_pert_discriminator_train 5 --cat_dropout 0.1 --pert_dropout 0.1 --n_adversarial_start 200 --main_max_lr 2e-3 --gen_max_lr 2.75e-4 --cat_max_lr 1e-3 --pert_max_lr 1e-3 --cat_max_penalty_weight 11 --generator_dropout_rate 0.7 --n_layers_vae 3 --pert_n_layers 4 --cat_bias_pert_scaler 0 --cat_pert_method orthogonality --cat_pert_pert_label false --cat_bias_lambda_L2 1e-4 --spectral_loss_factor 0 --uniform_lambda_L2 0 --contrastive_loss_scaler 1 0.2 --contrastive_loss_type sc_actual sc_predicted --contrastive_percentile 0.3 --contrastive_triplet_margin_frac 0.1 --cat_spectral_norm true --pert_spectral_norm true --no_collapse_bg 0
+#python test_run.py --index 14 --retrain true --subset_size 0.15 --noadv false --max_epochs 600 --KL_scaling 5e-3 --n_cat_discriminator_train 5 --n_pert_discriminator_train 5 --cat_dropout 0.1 --pert_dropout 0.1 --n_adversarial_start 200 --main_max_lr 2e-3 --gen_max_lr 2.75e-4 --cat_max_lr 1e-3 --pert_max_lr 1e-3 --cat_max_penalty_weight 11 --generator_dropout_rate 0.7 --n_layers_vae 3 --pert_n_layers 4 --cat_bias_pert_scaler 0 --cat_pert_method orthogonality --cat_pert_pert_label false --cat_bias_lambda_L2 1e-4 --spectral_loss_factor 0 --uniform_lambda_L2 0 --contrastive_loss_scaler 1 0.2 --contrastive_loss_type sc_actual sc_predicted --contrastive_percentile 0.3 --contrastive_triplet_margin_frac 0.1 --cat_spectral_norm false --pert_spectral_norm false
 
 
 # In[1]:
@@ -181,8 +179,8 @@ sclembas = '/home/hmbaghda/Projects/scLEMBAS'
 sys.path.insert(1, os.path.join(sclembas))
 from scLEMBAS import io
 from scLEMBAS import preprocess as pp 
-from scLEMBAS.model.train import TrainSC
-from scLEMBAS.model.scl import SignalingModel
+from scLEMBAS.model.train_og2 import TrainSC
+from scLEMBAS.model.scl_og2 import SignalingModel
 
 import Tahoe_utils as Tu
 
@@ -541,7 +539,6 @@ contrastive_loss_params = {
     'min_percentile': contrastive_percentile, # only for _sc
     'triplet_margin_frac': contrastive_triplet_margin_frac, # for sc only 
 }
-regularization_params['no_collapse_bg'] = no_collapse_bg
 
 cat_pert_params = {'regularization_scaler': cat_bias_pert_scaler, 
                        'method': cat_pert_method, 
@@ -660,7 +657,7 @@ pert_disc_n_hidden_nodes = [pert_disc_n_hidden_nodes[0]]*3 + pert_disc_n_hidden_
 
 pert_discriminator_params = discriminator_params.copy()
 pert_discriminator_params['n_hidden_nodes'] = pert_disc_n_hidden_nodes
-pert_discriminator_params['dropout_rate'] = pert_dropout
+pert_discriminator_params['dropout_rate'] = 0.1
 
 pert_discriminator_params['spectral_norm'] = pert_spectral_norm
 if pert_spectral_norm:
@@ -918,8 +915,8 @@ if not no_adv:
         cat_pert_params = cat_pert_params,
         train_split = {'train': train_cells, 'test': test_cells, 'validation': None}, 
         train_seed = mod_seed, 
-        n_track_test = 20,
-        n_track_validation = None, 
+        track_test = True,
+        track_validation = False, 
         n_eval_cells = np.nan, 
         n_eval_bootstrap = np.nan
     )
@@ -952,8 +949,8 @@ else:
         cat_pert_params = cat_pert_params,
         train_split = {'train': train_cells, 'test': test_cells, 'validation': None}, 
         train_seed = mod_seed, 
-        n_track_test = 20,
-        n_track_validation = None, 
+        track_test = True,
+        track_validation = False, 
         n_eval_cells = np.nan, 
         n_eval_bootstrap = np.nan
     )
@@ -991,4 +988,3 @@ with open(output_html, "w", encoding="utf-8") as f:
     f.write(body)
     
 os.remove(output_notebook)
-
