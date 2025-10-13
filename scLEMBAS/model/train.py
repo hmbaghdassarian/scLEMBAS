@@ -945,8 +945,6 @@ class TrainSC(TrainBase):
                     **{'include_gradient_noise_vae': True, #add noise to vae params
                        'include_gradient_noise_embedding': True, # add noise to embedding params
                       'constant_gradient_noise': True},
-                    **{'no_collapse_bg': 0.0} 
-
                    }
     CAT_PERT_PARAMS = {'regularization_scaler': 0.0, 
                        'method': 'orthogonality', 
@@ -1229,11 +1227,7 @@ class TrainSC(TrainBase):
             if type(self.contrastive_loss_params[k]) != list:
                 self.contrastive_loss_params[k] = [self.contrastive_loss_params[k]]
         assert len(self.contrastive_loss_params['methods']) == len(self.contrastive_loss_params['lambda_scalers']), 'Contrastive loss needs one lambda scaler per method'
-                
-        for cm in self.contrastive_loss_params['methods']:
-            self._stats_cols.insert(self._stats_cols.index('contrastive_loss_total'), 'contrastive_loss_' + cm)
-        self._stats_cols.insert(self._stats_cols.index('contrastive_loss_total'), 'contrastive_loss_no_collapse_bg')
-        self.stats['train'] = [] #np.empty((0, len(self._stats_cols)))
+
         self.call_contrastive_loss = cl.ContrastiveLoss(
             methods = OrderedDict(zip(self.contrastive_loss_params['methods'], self.contrastive_loss_params['lambda_scalers'])), 
             underestimate_only = self.contrastive_loss_params['underestimate_only'], 
@@ -1242,14 +1236,9 @@ class TrainSC(TrainBase):
         )
 
 
-        if self.hyper_params.get('no_collapse_bg') is None:
-            self.hyper_params['no_collapse_bg'] = 0.0
-        self.temp_call_contrastive_loss = cl.ContrastiveLoss(
-            methods = OrderedDict({'sc_predicted': self.hyper_params['no_collapse_bg']}), 
-            underestimate_only = np.nan, 
-            min_percentile = self.contrastive_loss_params['min_percentile'], 
-            triplet_margin_frac = np.nan
-        )
+        # tracking
+        for cm in self.call_contrastive_loss.methods:
+            self._stats_cols.insert(self._stats_cols.index('contrastive_loss_total'), 'contrastive_loss_' + cm)
 
     def add_gradient_noise(self, cur_lr, e, batch):
         """Adds noise to gradients as a function of the LR and parameter gradient norm."""
@@ -1282,7 +1271,6 @@ class TrainSC(TrainBase):
         
         self.stats['gradient_noise'] = np.vstack((self.stats['gradient_noise'], 
                                                   np.array(noise_tracker)))  
-
   
     def initialize_vae(self, vae_params):
 
@@ -1923,30 +1911,33 @@ class TrainSC(TrainBase):
                     target_max = self.hyper_params['uniform_max']
                 ) 
 
-                contrastive_loss_tot = self._zero.clone()
-                self.call_contrastive_loss.update(Y_hat = Y_hat, 
-                                                  y_out = y_out_, 
-                                                  X_in = X_in_, 
-                                                  covariates_idx = covariates_idx_)
-                contrastive_losses = self.call_contrastive_loss.get_loss()
-                
-
-                no_collapse_bg_loss = self._zero.clone()
-                if self._run_adv and self.hyper_params['no_collapse_bg'] != 0:
+                Y_hat_no_bc, Y_hat_no_b = None, None
+                if self._run_adv and self.call_contrastive_loss._need_no_bc:
+                    # no categorical bias forward pass
                     Y_full_no_bc, _, _ = self.mod.signaling_network.forward_no_bc(X_full = X_full, 
                                                                     covariates_idx = covariates_idx_, 
                                                                     expr = expr_)
                     Y_hat_no_bc = self.mod.output_layer(Y_full_no_bc)
-                    self.temp_call_contrastive_loss.update(Y_hat = Y_hat_no_bc, 
-                                    y_out = y_out_, 
-                                    X_in = X_in_, 
-                                    covariates_idx = covariates_idx_)
-                    no_collapse_bg_loss = self.temp_call_contrastive_loss.get_loss()['sc_predicted']
-                    del Y_full_no_bc, _, Y_hat_no_bc
-                    utils.clear_memory()
-                
-                contrastive_losses['no_collapse_bg'] = no_collapse_bg_loss
-                contrastive_loss_tot += sum(contrastive_losses.values())
+                    del Y_full_no_bc, _
+                    if self.call_contrastive_loss._need_no_b:
+                        # adj only forward pass
+                        Y_full_no_b, _, _ = self.mod.signaling_network.forward_no_b(X_full = X_full, 
+                                                                        covariates_idx = covariates_idx_, 
+                                                                        expr = expr_)
+                        Y_hat_no_b = self.mod.output_layer(Y_full_no_b)
+                        del Y_full_no_b, _
+                        
+                self.call_contrastive_loss.update(
+                    X_in = X_in_,
+                    covariates_idx = covariates_idx_, 
+                    run_adv = self._run_adv,
+                    y_out = y_out_, 
+                    Y_hat = Y_hat, 
+                    Y_hat_no_bc = Y_hat_no_bc, 
+                    Y_hat_no_b = Y_hat_no_b
+                )
+                contrastive_losses = self.call_contrastive_loss.get_loss()
+                contrastive_loss_tot = sum(contrastive_losses.values())
 
                 input_param_reg, sn_param_reg, output_param_reg = self.mod.L2_reg(
                     input_lambda_L2=self.hyper_params['input_lambda_L2'],
@@ -2002,7 +1993,7 @@ class TrainSC(TrainBase):
                                                                                 prior_mu = self.vae_learning['params']['prior_mu'], 
                                                                                 prior_sigma = self.vae_learning['params']['prior_sigma'])
                 tot_pred_loss = prediction_loss + sign_reg + param_reg + stability_loss + uniform_reg + \
-                    contrastive_loss_tot + no_collapse_bg_loss + kl_divergence_gb + kl_divergence_adj
+                    contrastive_loss_tot + kl_divergence_gb + kl_divergence_adj
 
                 pert_adverserial_loss, cat_adverserial_loss = self._zero.clone(), self._zero.clone()
                 # adverserial portion -- same as discriminator, but recalculating on trained model
@@ -2152,7 +2143,7 @@ class TrainSC(TrainBase):
                     self.stats['train_eval'].append(eval_sv) #(self.stats['train_eval'], eval_sv))
 
                 # free up CUDA mem
-                del sign_reg, stability_loss, uniform_reg, param_reg, prediction_loss
+                del sign_reg, stability_loss, uniform_reg, param_reg, prediction_loss, contrastive_loss_tot, contrastive_losses
                 del input_param_reg, sn_param_reg, output_param_reg
                 del vae_reg, kl_divergence_gb, kl_divergence_adj
                 del cat_discriminator_loss, cat_discriminator_loss_accuracy, cat_discriminator_reg

@@ -3,16 +3,23 @@ from collections import OrderedDict
 
 import torch
 
+
 class ContrastiveLoss:
     """
     Regularizes lack of separation by perturbation in instances where separation collapses 
     or perturbation signal in data is weak.
     """
+    
+    ALLOWED_METHODS = [
+        'sc_actual', 
+        'sc_predicted',
+        'sc_actual_control', #'sc_actual_bidirectional',
+        'sc_predicted_no_bc', 'no_collapse_no_bc',
+        'sc_triplet', 'bulk_actual', 'bulk_predicted', 'bulk_triplet']
 
-    def __init__(self, 
-                 methods: Dict[str, float] = {'sc_actual': 0.0},
-                 underestimate_only=True, 
-                 min_percentile=0.3, triplet_margin_frac=0.1):
+    def __init__(self,
+                 methods: Dict[str, float],
+                 underestimate_only=True, min_percentile=0.3, triplet_margin_frac=0.1):
         """Initializes hyperparameters for calculating regularization. 
 
         Parameters
@@ -31,10 +38,7 @@ class ContrastiveLoss:
             multiplier for calculating the triplet margin, by default 0.1
             relevant for methods: 'bulk_triplet', 'sc_triplet'
         """
-        allowed_methods = ['sc_actual', 'sc_predicted', 
-                           'sc_actual_control', #'sc_actual_bidirectional',
-                           'sc_triplet', 'bulk_actual', 'bulk_predicted', 'bulk_triplet']
-        assert len(set(methods).difference(allowed_methods)) == 0, 'Please only use allowed contrastive loss methods'
+        assert len(set(methods).difference(self.ALLOWED_METHODS)) == 0, 'Please only use allowed contrastive loss methods'
 
         # if 'sc_actual_bidirectional' in methods: 
         #     if len(set(methods).intersection(['sc_actual', 'sc_actual_control'])) != 0:
@@ -45,6 +49,11 @@ class ContrastiveLoss:
         self.min_percentile = min_percentile
         self.triplet_margin_frac = triplet_margin_frac
         
+        self._no_collapse_only = len(set(methods).difference(['sc_predicted_no_bc', 'no_collapse_no_bc'])) == 0
+        self._need_y_out = len(set(methods).difference(['no_collapse_no_bc'])) != 0
+        self._need_no_bc = any(m in self.methods for m in ['sc_predicted_no_bc', 'no_collapse_no_bc'])
+        self._need_no_b =  any(m in self.methods for m in ['no_collapse_no_bc'])
+
         self._need_bulk = any(m in self.methods for m in ['bulk_actual', 'bulk_triplet', 'bulk_predicted'])
         self._need_pred_ctrl_centroid = any(m in self.methods for m in ['bulk_predicted', 'sc_predicted'])
         self._need_triplet = any(m in self.methods for m in ['bulk_triplet', 'sc_triplet'])
@@ -53,23 +62,49 @@ class ContrastiveLoss:
         self._need_pert_centroid = self._need_bulk or self._need_triplet or self._need_actual_control
         self._need_pred_ctrl = self._need_pred_ctrl_centroid or self._need_actual_control
 
-        self._need_sc = any(m in self.methods for m in ['sc_actual', 'sc_actual_bidirectional', 'sc_triplet', 'sc_predicted'])
+        self._need_sc = any(m in self.methods for m in ['sc_actual', 'sc_actual_bidirectional', 'sc_triplet', 'sc_predicted', 
+                                                        'sc_predicted_no_bc'])
         self._need_neg_bulk = any(m in self.methods for m in ['bulk_actual', 'bulk_triplet'])
         self._need_neg_sc = any(m in self.methods for m in ['sc_actual', 'sc_actual_bidirectional', 'sc_triplet'])
 
+
+        self.clear_attrs()
+        
+    def list_methods(self):
+        print(self.ALLOWED_METHODS)
+
+    def clear_attrs(self):
         # will hold batch-specific attributes after calling .update()
         self.cats = None
         self.control_mask = None
         self.pert_mask = None
         self.pert_ids = None
         self.combos = None
+
         self.Y_hat = None
         self.y_out = None
+        self.Y_hat_no_bc = None
+        self.Y_hat_no_b = None
 
-    def update(self, Y_hat, y_out, X_in, covariates_idx):
+    def update(self, 
+               X_in, 
+               covariates_idx, 
+               run_adv, 
+               y_out: None,
+               Y_hat: None, 
+               Y_hat_no_bc: None, 
+               Y_hat_no_b: None
+               ):
         """Cache all batch-specific inputs and masks."""
+        # these help keep memory in check
+
         self.Y_hat = Y_hat
         self.y_out = y_out
+        self.Y_hat_no_bc = Y_hat_no_bc
+        self.Y_hat_no_b = Y_hat_no_b
+
+        self.run_adv = run_adv
+
         # assert X_in.sum(axis = 1).max() <= 1, 'contrastive loss can currently only handle 1 perturbation per cell'
         # assert covariates_idx.size(1) == 1, "Contrastive regularization is currently only designed for one categorical covariate"
 
@@ -97,18 +132,23 @@ class ContrastiveLoss:
             if n_ctrl == 0 or n_pert == 0:
                 self.combo_cache[(cat.item(), pid.item())] = None
             else:
-                actual_ctrl = self.y_out[ctrl_cat_mask]
-                actual_ctrl_centroid = actual_ctrl.mean(dim=0, keepdim=True)
-                actual_pert = self.y_out[cp_mask]
-                pred_pert = self.Y_hat[cp_mask]
-
 
                 # method-specific calculations
+                actual_ctrl, actual_ctrl_centroid = None, None
+                actual_pert, pred_pert = None, None
                 pred_ctrl, pred_ctrl_centroid = None, None
                 actual_pert_centroid, pred_pert_centroid = None, None
                 neg_dist_bulk, actual_dist_bulk = None, None
                 neg_dist_sc, actual_dist_sc = None, None
                 min_percentile_thresh = None
+                pred_pert_no_bc, pred_ctrl_centroid_no_bc = None, None
+
+                if self._need_y_out:
+                    actual_ctrl = self.y_out[ctrl_cat_mask]
+                    actual_ctrl_centroid = actual_ctrl.mean(dim=0, keepdim=True)
+                    actual_pert = self.y_out[cp_mask]
+                if not self._no_collapse_only:
+                    pred_pert = self.Y_hat[cp_mask]
                 
                 if self._need_pred_ctrl:
                     pred_ctrl = self.Y_hat[ctrl_cat_mask]
@@ -126,7 +166,10 @@ class ContrastiveLoss:
                     min_percentile_thresh = torch.quantile(actual_dist_sc, self.min_percentile).detach()
                     if self._need_neg_sc:
                         neg_dist_sc = torch.norm(pred_pert - actual_ctrl_centroid, p=2, dim=1)
-
+                if self._need_no_bc and self.run_adv:
+                    pred_pert_no_bc = self.Y_hat_no_bc[cp_mask]
+                    pred_ctrl_centroid_no_bc = self.Y_hat_no_bc[ctrl_cat_mask].mean(dim = 0, keepdim = True).detach()
+                
                 self.combo_cache[(cat.item(), pid.item())] = {
                     "pred_ctrl": pred_ctrl,
                     "actual_ctrl": actual_ctrl, # only used in sc_actual_control
@@ -140,8 +183,15 @@ class ContrastiveLoss:
                     "neg_dist_sc": neg_dist_sc,
                     "actual_dist_sc": actual_dist_sc, 
                     "min_percentile_thresh": min_percentile_thresh, 
-                    "pred_ctrl_centroid": pred_ctrl_centroid
+                    "pred_ctrl_centroid": pred_ctrl_centroid, 
+                    "pred_pert_no_bc": pred_pert_no_bc, 
+                    "pred_ctrl_centroid_no_bc": pred_ctrl_centroid_no_bc
                 }
+
+                if self._need_no_b and self.run_adv:
+                    self.combo_cache[(cat.item(), pid.item())]['cp_mask'] = cp_mask
+                    self.combo_cache[(cat.item(), pid.item())]['ctrl_cat_mask'] = ctrl_cat_mask
+
 
     def sc_actual(self):
         """
@@ -259,6 +309,61 @@ class ContrastiveLoss:
                 losses.append(torch.square(under_predicted - min_percentile_thresh).mean(axis = 0))
         return self._finalize(losses, lambda_scaler)
     
+    def sc_predicted_no_bc(self):
+        """Like sc_predicted, but run on forward pass without categorical bias."""
+                
+        lambda_scaler = self.methods.get('sc_predicted_no_bc', 0.0)
+        if lambda_scaler == 0:
+            return self.Y_hat.new_tensor(0.0)
+        
+        losses = []
+        for (cat, pid), precalculated in self.combo_cache.items():
+            if precalculated is None:
+                continue
+
+            pred_pert = precalculated['pred_pert_no_bc']
+            pred_ctrl_centroid = precalculated['pred_ctrl_centroid_no_bc']
+            pred_dist = torch.norm(pred_pert - pred_ctrl_centroid, p=2, dim=1)
+            
+            min_percentile_thresh = precalculated['min_percentile_thresh']
+            
+            under_predicted = pred_dist[pred_dist < min_percentile_thresh]
+            if under_predicted.numel() > 0:
+                losses.append(torch.square(under_predicted - min_percentile_thresh).mean(axis = 0))
+        return self._finalize(losses, lambda_scaler)
+    
+    def no_collapse_no_bc(self):
+        """Prevents forward pass f(A, X_pert, b_g) from shrinking relative to f(A, X_pert). 
+        Does so by changing the perturbaiton predictions of f(A, X_pert_no_bc) (everything else is detached).
+        """
+        lambda_scaler = self.methods.get('no_collapse_no_bc', 0.0)
+        if lambda_scaler == 0:
+            return self.Y_hat.new_tensor(0.0)
+        
+        losses = []
+        for (cat, pid), precalculated in self.combo_cache.items():
+            if precalculated is None:
+                continue
+
+            # forward pass f(A, X_pert, b_g)
+            pred_pert_centroid_no_bc = precalculated['pred_pert_no_bc'].mean(dim=0, keepdim=True)
+            pred_ctrl_centroid_no_bc = precalculated['pred_ctrl_centroid_no_bc']
+            no_bc_dist = torch.norm(pred_pert_centroid_no_bc - pred_ctrl_centroid_no_bc, p=2)
+
+            # forward pass f(A, X_pert)
+            # could take first index because without b_g, there is no variance, but adding noise to X_full 
+            # in training makes them slightly different, so take centroid
+            cp_mask = precalculated['cp_mask']
+            ctrl_cat_mask = precalculated['ctrl_cat_mask']
+            pred_pert_no_b = self.Y_hat_no_b[cp_mask].mean(dim=0, keepdim=True).detach() #[0, :].detach()
+            pred_ctrl_no_b = self.Y_hat_no_b[ctrl_cat_mask].mean(dim=0, keepdim=True).detach() #[0, :].detach()
+            no_b_dist = torch.norm(pred_pert_no_b - pred_ctrl_no_b, p = 2)
+
+            if no_b_dist > no_bc_dist:
+                losses.append(torch.square(no_b_dist - no_bc_dist))
+
+        return self._finalize(losses, lambda_scaler)
+    
     def _finalize(self, losses, lambda_scaler):
         if len(losses) > 0:
             return lambda_scaler * torch.mean(torch.stack(losses))
@@ -266,8 +371,18 @@ class ContrastiveLoss:
 
     def get_loss(self):
         contrastive_losses = OrderedDict()
-        for method_name, lambda_scaler in self.methods.items():
+        for method_name in self.methods:
+            if not self.run_adv and method_name in ['no_collapse_no_bc', 'sc_predicted_no_bc']:
+                contrastive_losses[method_name] = self.Y_hat.new_tensor(0.0)
+                continue
+
             contrastive_losses[method_name] = getattr(self, method_name)()
+
+        # memory stuff
+        self.combo_cache.clear()
+        self.clear_attrs()
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
         return contrastive_losses 
 
 #### TODO: deprecate below
