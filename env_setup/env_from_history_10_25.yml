@@ -1,0 +1,31 @@
+name: scLEMBAS
+channels:
+  - bioconda
+  - conda-forge
+  - https://ftp.osuosl.org/pub/open-ce/current
+  - https://ftp.osuosl.org/pub/open-ce/1.10.0
+dependencies:
+  - python=3.11
+  - scanpy
+  - pip
+  - omnipath
+  - kneed
+  - leidenalg
+  - plotnine[version='<=0.12.3']
+  - patchworklib
+  - lightning
+  - ipykernel
+  - ca-certificates
+  - openssl
+  - conda-forge::scikit-image
+  - certifi
+  - conda-forge::pathos
+  - conda-forge::annotated-types
+  - openpyxl
+  - conda-forge::notebook
+  - conda-forge::papermill
+  - conda-forge::datasets
+  - conda-forge::dask
+  - anndata
+  - bioconda::bbknn
+prefix: /nobackup/users/hmbaghda/Software/miniforge3/envs/scLEMBAS
