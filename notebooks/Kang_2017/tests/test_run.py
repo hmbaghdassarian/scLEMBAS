@@ -16,7 +16,7 @@ def str_to_bool(value):
         return False
     else:
         raise argparse.ArgumentTypeError("Boolean value expected (true/false or 1/0).")
-        
+
 def int_or_str(val):
     try:
         return int(val)
@@ -26,6 +26,7 @@ def int_or_str(val):
 parser = argparse.ArgumentParser()
 parser.add_argument("--index", type=int_or_str, required=True, help="Filename index")
 parser.add_argument("--run_type", type=str, required=True, help="Filename index")
+parser.add_argument("--retrain", type=str_to_bool, default=True)
 # parser.add_argument("--seed", type=int, default=1, help="Filename index")
 # parser.add_argument("--loo", type=str_to_bool, required=True, help="Leave-one-out flag (true/false or 1/0)")
 
@@ -105,6 +106,8 @@ parser.add_argument("--spectral_loss_factor", type=float)
 args = parser.parse_args()
 fn = str(args.index)
 run_type = str(args.run_type)
+retrain = args.retrain
+
 fn += run_type
 # seed = args.seed
 # loo = args.loo
@@ -171,8 +174,8 @@ cp_per_label = args.cp_per_label
 spectral_loss_factor = args.spectral_loss_factor
 
 
-#python test_run.py --index 52 --run_type E --bn_weights_lambda_L2 1e-7 --cat_max_norm 100 --global_bias_lambda_L2 0 --cat_bias_lambda_L2 1e-4 --vae_scaling_KL 1e-3 --global_bias_lambda_L1 0 --cat_bias_lambda_L1 0 --vae_prior_mu 0 --vae_prior_sigma 1 --adj_scaling_KL 0 --adj_prior_mu 0 --adj_prior_sigma 0.2 --loss_type MSE --per_condition_loss true --cat_max_penalty_weight 12 --cat_b_adv 2 --pert_max_penalty_weight 8 --pert_b_adv 3.5 --network_noise_scale 0.01 --min_network_noise 0.0025 --include_gradient_noise_vae true --include_gradient_noise_embedding true --constant_gradient_noise true --gradient_noise_scale 1e-9 --lr_period 4 --reset_state false --train_batch 500 --initialize_fc true --generator_dropout_rate 0.7 --cat_discriminator_dropout_rate 0.1 --pert_discriminator_dropout_rate 0.1 --discriminator_batch_momentum 0 --spectral_norm false --discriminator_lambda_L2 1e-3 --discriminator_bionet_activation false --smooth_labels true --gradient_ascent true --n_adversarial_start 200 --n_discriminator_train 5 --vae_lambda_l2 1e-5 --min_cat_adv_penalty 0.1 --min_pert_adv_penalty 0.1 --main_max_lr 2e-3 --generator_max_lr 5e-4 --cat_max_lr 1e-3 --pert_max_lr 1e-3 --lr_decay 0.9 --cat_bias_orthogonality_scaler 100 --cp_method orthogonality --cp_include_adjacency false --cp_per_label false --spectral_loss_factor 1e-06 --uniform_lambda_L2 1e-7
-#python test_run.py --index 53 --run_type E --bn_weights_lambda_L2 1e-7 --cat_max_norm 100 --global_bias_lambda_L2 0 --cat_bias_lambda_L2 1e-4 --vae_scaling_KL 1e-3 --global_bias_lambda_L1 0 --cat_bias_lambda_L1 0 --vae_prior_mu 0 --vae_prior_sigma 1 --adj_scaling_KL 0 --adj_prior_mu 0 --adj_prior_sigma 0.2 --loss_type MSE --per_condition_loss true --cat_max_penalty_weight 12 --cat_b_adv 2 --pert_max_penalty_weight 8 --pert_b_adv 3.5 --network_noise_scale 0.01 --min_network_noise 0.0025 --include_gradient_noise_vae true --include_gradient_noise_embedding true --constant_gradient_noise true --gradient_noise_scale 1e-9 --lr_period 4 --reset_state false --train_batch 500 --initialize_fc true --generator_dropout_rate 0.7 --cat_discriminator_dropout_rate 0.1 --pert_discriminator_dropout_rate 0.1 --discriminator_batch_momentum 0 --spectral_norm false --discriminator_lambda_L2 1e-3 --discriminator_bionet_activation false --smooth_labels true --gradient_ascent true --n_adversarial_start 200 --n_discriminator_train 5 --vae_lambda_l2 1e-5 --min_cat_adv_penalty 0.1 --min_pert_adv_penalty 0.1 --main_max_lr 2e-3 --generator_max_lr 5e-4 --cat_max_lr 1e-3 --pert_max_lr 1e-3 --lr_decay 0.9 --cat_bias_orthogonality_scaler 100 --cp_method orthogonality --cp_include_adjacency false --cp_per_label false --spectral_loss_factor 0 --uniform_lambda_L2 0
+#python test_run.py --index 52 --run_type E --retrain true --bn_weights_lambda_L2 1e-7 --cat_max_norm 100 --global_bias_lambda_L2 0 --cat_bias_lambda_L2 1e-4 --vae_scaling_KL 1e-3 --global_bias_lambda_L1 0 --cat_bias_lambda_L1 0 --vae_prior_mu 0 --vae_prior_sigma 1 --adj_scaling_KL 0 --adj_prior_mu 0 --adj_prior_sigma 0.2 --loss_type MSE --per_condition_loss true --cat_max_penalty_weight 12 --cat_b_adv 2 --pert_max_penalty_weight 8 --pert_b_adv 3.5 --network_noise_scale 0.01 --min_network_noise 0.0025 --include_gradient_noise_vae true --include_gradient_noise_embedding true --constant_gradient_noise true --gradient_noise_scale 1e-9 --lr_period 4 --reset_state false --train_batch 500 --initialize_fc true --generator_dropout_rate 0.7 --cat_discriminator_dropout_rate 0.1 --pert_discriminator_dropout_rate 0.1 --discriminator_batch_momentum 0 --spectral_norm false --discriminator_lambda_L2 1e-3 --discriminator_bionet_activation false --smooth_labels true --gradient_ascent true --n_adversarial_start 200 --n_discriminator_train 5 --vae_lambda_l2 1e-5 --min_cat_adv_penalty 0.1 --min_pert_adv_penalty 0.1 --main_max_lr 2e-3 --generator_max_lr 5e-4 --cat_max_lr 1e-3 --pert_max_lr 1e-3 --lr_decay 0.9 --cat_bias_orthogonality_scaler 100 --cp_method orthogonality --cp_include_adjacency false --cp_per_label false --spectral_loss_factor 1e-06 --uniform_lambda_L2 1e-7
+#python test_run.py --index 53 --run_type E --retrain true --bn_weights_lambda_L2 1e-7 --cat_max_norm 100 --global_bias_lambda_L2 0 --cat_bias_lambda_L2 1e-4 --vae_scaling_KL 1e-3 --global_bias_lambda_L1 0 --cat_bias_lambda_L1 0 --vae_prior_mu 0 --vae_prior_sigma 1 --adj_scaling_KL 0 --adj_prior_mu 0 --adj_prior_sigma 0.2 --loss_type MSE --per_condition_loss true --cat_max_penalty_weight 12 --cat_b_adv 2 --pert_max_penalty_weight 8 --pert_b_adv 3.5 --network_noise_scale 0.01 --min_network_noise 0.0025 --include_gradient_noise_vae true --include_gradient_noise_embedding true --constant_gradient_noise true --gradient_noise_scale 1e-9 --lr_period 4 --reset_state false --train_batch 500 --initialize_fc true --generator_dropout_rate 0.7 --cat_discriminator_dropout_rate 0.1 --pert_discriminator_dropout_rate 0.1 --discriminator_batch_momentum 0 --spectral_norm false --discriminator_lambda_L2 1e-3 --discriminator_bionet_activation false --smooth_labels true --gradient_ascent true --n_adversarial_start 200 --n_discriminator_train 5 --vae_lambda_l2 1e-5 --min_cat_adv_penalty 0.1 --min_pert_adv_penalty 0.1 --main_max_lr 2e-3 --generator_max_lr 5e-4 --cat_max_lr 1e-3 --pert_max_lr 1e-3 --lr_decay 0.9 --cat_bias_orthogonality_scaler 100 --cp_method orthogonality --cp_include_adjacency false --cp_per_label false --spectral_loss_factor 0 --uniform_lambda_L2 0
 
 
 # 
@@ -182,6 +185,8 @@ spectral_loss_factor = args.spectral_loss_factor
 
 # index = 52
 # run_type = "E"
+# retrain = True
+
 # bn_weights_lambda_L2 = 1e-7
 # cat_max_norm = 100
 # global_bias_lambda_L2 = 0
@@ -305,6 +310,7 @@ train_frac, test_frac = 0.8, 0.2
 #     fn += '_loo'
 
 
+
 # In[6]:
 
 
@@ -342,6 +348,7 @@ from matplotlib.lines import Line2D
 import seaborn as sns
 
 from sklearn.model_selection import train_test_split
+
 
 
 # In[7]:
@@ -397,7 +404,7 @@ os.environ["OPENBLAS_NUM_THREADS"] = str(n_cores)
 os.environ["VECLIB_MAXIMUM_THREADS"] = str(n_cores)
 os.environ["NUMEXPR_NUM_THREADS"] = str(n_cores)
 
-data_path = '/nobackup/users/hmbaghda/scLEMBAS/analysis'
+data_path = '/home/hmbaghda/orcd/pool/scLEMBAS/analysis'
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 
@@ -450,7 +457,7 @@ def ood_split(tf_adata,
              include_train_cond: Optional[Dict[str, List]] = None):
     """Generate an OOD train test split, where both the condition data and the single-cells have approximately
     the specified split.
-    
+
     Rules: 
     1. cell split and condition split is similar (conditions is exactly the split, 
     cells is approximate by deviation_thresh)
@@ -551,7 +558,7 @@ def ood_split(tf_adata,
         return train_cells, test_cells, train_cond, test_cond
     else:
         return None, None, None, None
-    
+
 
 
 # In[12]:
@@ -590,13 +597,13 @@ else:
     elif run_type in ['C', 'D']:
         unique_conditions.remove('STIM^DC')
         unique_conditions.insert(0, 'STIM^DC')  
-    
+
     test_cond = [unique_conditions[0]]
     train_cond = sorted(set(unique_conditions).difference(test_cond))
-    
+
     train_conds = train_cond
     test_conds = test_cond
-    
+
     test_cells = tf_adata.obs[tf_adata.obs.condition.isin(test_cond)].index.tolist()
     train_cells = tf_adata.obs[tf_adata.obs.condition.isin(train_cond)].index.tolist()
 
@@ -649,7 +656,7 @@ if subset:
     subset_indices.extend(test_cells)
     tf_adata = tf_adata_all[subset_indices,:]
     adata = adata_all[subset_indices,:]
-    
+
 
 
 # In[21]:
@@ -727,16 +734,16 @@ def generate_lr_params(n_epochs, max_lr, lr_scaling_factor=10, lr_decay=0.75, ro
     Returns:
         Dict of scheduler parameters
     """
-    
-    
-    
+
+
+
     total_active_epochs = n_epochs
     n_discriminator_train_ = 1
     if role in ['discriminator', 'generator']:
         total_active_epochs = n_epochs - n_adversarial_start
         if role == 'generator':
             n_discriminator_train_ = n_discriminator_train
-            
+
 #     n_restarts = 3 if total_active_epochs // n_discriminator_train_ > 500 else 2
     n_restarts = 4 if total_active_epochs // n_discriminator_train_ > 500 else 2
 
@@ -753,7 +760,7 @@ def generate_lr_params(n_epochs, max_lr, lr_scaling_factor=10, lr_decay=0.75, ro
             n_optimizer_resets = 1
     else:
         n_optimizer_resets = 0
-        
+
     if warmup_epochs >= T_0:
         warmup_epochs = 0
 
@@ -777,7 +784,7 @@ def generate_discriminator_params(n_epochs, max_lr, discriminator_penalty_weight
                                         lr_scaling_factor = lr_scaling_factor, 
                                         lr_decay = lr_decay,
                                        role = 'discriminator')
-    
+
     keys_to_keep = ['maximum_learning_rate', 'minimum_learning_rate', 'lr_restart_epoch', 
                    'warmup_epochs', 'lr_decay', 'n_optimizer_resets']
     discriminator_params = {'batch_momentum': discriminator_batch_momentum,
@@ -796,7 +803,7 @@ def generate_discriminator_params(n_epochs, max_lr, discriminator_penalty_weight
                            'epsilon_smoothing': 0.1}
     discriminator_params = {**discriminator_params, 
                            **{k:v for k,v in general_params.items() if k in keys_to_keep}}
-    
+
     return discriminator_params
 
 
@@ -1026,7 +1033,7 @@ training_params['contrastive_loss_scaler'] = 0 # no contrastive loss
 #       'vae': []}
 # for e in range(tr.hyper_params['max_epochs']):
 #     no_vae = (tr.n_adversarial_start > e) or (e % tr.n_discriminator_train != 0)
-    
+
 #     lrs['mod'].append(tr.prediction_optimizer.param_groups[0]['lr'])
 #     lrs['vae'].append(tr.vae_learning['optimizer'].param_groups[0]['lr'])
 #     lrs['cat_disc'].append(tr.cat_discriminator['optimizer'].param_groups[0]['lr'])
@@ -1037,7 +1044,7 @@ training_params['contrastive_loss_scaler'] = 0 # no contrastive loss
 #     if not no_vae:
 #         tr.vae_learning['lr_scheduler'].step()
 #     tr.lr_scheduler.step()
-    
+
 # lrs = pd.DataFrame(lrs)
 # lrs['epoch'] = range(lrs.shape[0])
 
@@ -1068,7 +1075,7 @@ training_params['contrastive_loss_scaler'] = 0 # no contrastive loss
 # for i in range(2):
 #     ax[i].set_xlabel('Epochs')
 #     ax[i].set_ylabel('Discriminator Penalty Weight')
-    
+
 # fig.tight_layout();
 
 
@@ -1125,35 +1132,39 @@ from io import StringIO
 profiler = cProfile.Profile()
 profiler.enable()
 
-mod = trainer.train_model(verbose = False)
 
-profiler.disable()
+if retrain:
+    mod = trainer.train_model(verbose = False)
 
-s = StringIO()
-ps = pstats.Stats(profiler, stream=s).sort_stats('cumulative')
-ps.print_stats()
+    profiler.disable()
 
-lines = s.getvalue().split('\n')
+    s = StringIO()
+    ps = pstats.Stats(profiler, stream=s).sort_stats('cumulative')
+    ps.print_stats()
 
-# Convert to DataFrame
-parsed = []
-for line in lines[5:]:  
-    parts = line.split(None, 5)  
-    if len(parts) == 6:
-        ncalls, tottime, percall1, cumtime, percall2, func = parts
-        parsed.append({
-            'ncalls': ncalls,
-            'tottime': float(tottime),
-            'percall_tottime': float(percall1),
-            'cumtime': float(cumtime),
-            'percall_cumtime': float(percall2),
-            'func': func
-        })
+    lines = s.getvalue().split('\n')
 
-timer_df = pd.DataFrame(parsed)
-timer_df.to_csv(os.path.join(data_path, 'trash', fn + '_timing.csv'))
+    # Convert to DataFrame
+    parsed = []
+    for line in lines[5:]:  
+        parts = line.split(None, 5)  
+        if len(parts) == 6:
+            ncalls, tottime, percall1, cumtime, percall2, func = parts
+            parsed.append({
+                'ncalls': ncalls,
+                'tottime': float(tottime),
+                'percall_tottime': float(percall1),
+                'cumtime': float(cumtime),
+                'percall_cumtime': float(percall2),
+                'func': func
+            })
 
-io.write_pickled_object(trainer,  os.path.join(data_path, 'trash', fn + '_feb_trainer.pickle'))
+    timer_df = pd.DataFrame(parsed)
+    timer_df.to_csv(os.path.join(data_path, 'trash', fn + '_timing.csv'))
+
+    io.write_pickled_object(trainer,  os.path.join(data_path, 'trash', fn + '_feb_trainer.pickle'))
+elif not os.path.isfile(os.path.join(data_path, 'trash', fn + '_feb_trainer.pickle')):
+    raise ValueError('Must run training of the model, set retrain to True')
 
 
 # In[30]:
@@ -1188,6 +1199,6 @@ html_exporter.exclude_input = True  # <-- hides code cells
 
 with open(output_html, "w", encoding="utf-8") as f:
     f.write(body)
-    
+
 os.remove(output_notebook)
 

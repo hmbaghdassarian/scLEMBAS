@@ -1937,7 +1937,7 @@ class TrainSC(TrainBase):
                     Y_hat_no_b = Y_hat_no_b
                 )
                 contrastive_losses = self.call_contrastive_loss.get_loss()
-                contrastive_loss_tot = sum(contrastive_losses.values())
+                contrastive_loss_tot = sum(contrastive_losses.values(), self._zero)
 
                 input_param_reg, sn_param_reg, output_param_reg = self.mod.L2_reg(
                     input_lambda_L2=self.hyper_params['input_lambda_L2'],

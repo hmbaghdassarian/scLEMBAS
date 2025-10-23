@@ -1,0 +1,27 @@
+name: scLEMBAS
+channels:
+  - conda-forge
+dependencies:    
+    - python=3.11
+    - conda-forge::pytorch # replace with below for OS other than ppc64le
+    - conda-forge::scanpy
+    - conda-forge::pip
+    - conda-forge::kneed
+    - conda-forge::leidenalg
+    - conda-forge::scipy<1.13
+    - conda-forge::omnipath
+    - conda-forge::numpy<2.0 # necessary for omnipath
+    - conda-forge::decoupler-py=1.5.0
+    - conda-forge::numba<0.59 # necessary for decoupler
+    - conda-forge::annotated-types
+#     - conda-forge::plotnine<=0.12.3
+#     - conda-forge::patchworklib
+#     - conda-forge::annotated-types
+#     - conda-forge::scikit-image
+    - pip:
+        - cliffs-delta
+        - geomloss
+#         - annotated-types
+#         - pykeops
+
+    

@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 import scanpy as sc
 from anndata import AnnData
+from sklearn.metrics import normalized_mutual_info_score
 
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -812,6 +813,23 @@ def ss_explained_var(Y, Y_pred):
     ss_tot = np.sum((Y - np.mean(Y)) ** 2)
     return 1 - ss_res / ss_tot
 
+def calc_adj_r2(r2, n, p):
+    """Calculated the adjusted R^2"""
+    return 1 - (1 - r2) * (n - 1) / (n - p - 1)
+
+def calc_nmi(y,cov):
+    y_disc = pd.qcut(y, q=min(20, len(np.unique(y))), duplicates='drop', labels=False)
+
+    # Discretize covariate only if continuous
+    if pd.api.types.is_numeric_dtype(cov):
+        x_disc = pd.qcut(cov, q=min(20, len(np.unique(cov))), duplicates='drop', labels=False)
+    else:
+        x_disc = cov.astype('category').cat.codes
+
+    nmi = normalized_mutual_info_score(x_disc, y_disc)
+    
+    return nmi
+
 def latent_association(
     adata,
     covariates: List[str],
@@ -866,17 +884,30 @@ def latent_association(
             model = model_general.fit(X_cov, y)
             y_pred = model.predict(X_cov)
             r2 = ss_explained_var(y, y_pred)
+            adj_r2 = calc_adj_r2(r2, n=len(y), p=X_cov.shape[1])
+            nmi = calc_nmi(y,cov)
+
+
 #             model = model_general.fit(X_cov, y)            
 #             r2 = model.score(X_cov, y)
-            r2_scores.append({_label_name: lv_idx + 1, "R2": r2})
+   
+            r2_scores.append({
+                _label_name: lv_idx + 1,
+                "R2": r2,
+                "Adj_R2": adj_r2,
+                'NMI': nmi
+#                 "NMI": nmi
+            })
 
         r2_df = pd.DataFrame(r2_scores)
         r2_df['covariate'] = cov_
         res.append(r2_df)
         
     r2_df = pd.concat(res, axis=0, ignore_index=True)
-    r2_df = r2_df.pivot(index=_label_name, columns='covariate', values='R2').reset_index()
-    r2_df.columns.name = None
+    r2_df = r2_df.pivot(index=_label_name, columns='covariate')[["R2", "Adj_R2", "NMI"]]
+    r2_df.columns = ['_'.join(col).strip() for col in r2_df.columns.values]
+    r2_df = r2_df.reset_index()
+
     r2_df['model_type'] = model_type
     
     return r2_df
@@ -980,6 +1011,8 @@ def visualize_latent_space(
             ax[i].legend_.remove()
         ax[i].set_title(panel_titles[i])
         
+    for j in range(len(covariates), len(ax)): ax[j].set_visible(False)
+
     if fig_title is not None:
         fig.suptitle(fig_title)
     fig.tight_layout()
@@ -988,15 +1021,16 @@ def visualize_latent_space(
         
         
 def visualize_latent_association(
-    r2_df,
+    metric_df,
     fig_title: str | None = None, 
+    metric_label = 'Fraction of Variance Explained',
     file_name: str | None = None,
 ):
     """Visualize the variance explained in the latent space, as calculated by`latent_association`."""
-    latent_label = r2_df.columns[0]
+    latent_label = metric_df.columns[0]
     fig, ax = plt.subplots(ncols = 2, figsize = (10, 5))
     for i, model_type in enumerate(['linear', 'nonlinear']):
-        viz_df = r2_df[r2_df.model_type == model_type]
+        viz_df = metric_df[metric_df.model_type == model_type]
         viz_df = viz_df.drop(columns = [latent_label, 'model_type']).copy()
 
         ranked_covars = viz_df.median(axis = 0).sort_values(ascending = False).index.tolist()
@@ -1009,7 +1043,7 @@ def visualize_latent_association(
         sns.boxplot(data = viz_df, x = 'covariate', y = 'var_explained', ax = ax[i])
 
         ax[i].set_title(model_type.capitalize())
-        ax[i].set_ylabel('Fraction of Variance Explained')
+        ax[i].set_ylabel(metric_label)
         ax[i].set_xlabel('Covariates')
 
         for label in ax[i].get_xticklabels():
@@ -1020,6 +1054,45 @@ def visualize_latent_association(
     fig.tight_layout()
     if file_name is not None:
         plt.savefig(file_name, dpi=300, bbox_inches="tight")
+        
+# def visualize_latent_association(
+#     r2_df,
+#     fig_title: str | None = None, 
+#     file_name: str | None = None,
+#     use_adj_r2: bool = False,
+# ):
+#     """Visualize the variance explained in the latent space, as calculated by `latent_association`."""
+#     latent_label = r2_df.columns[0]
+#     metric = "Adj_R2" if use_adj_r2 else "R2"
+
+#     fig, ax = plt.subplots(ncols=2, figsize=(10, 5))
+#     for i, model_type in enumerate(['linear', 'nonlinear']):
+#         viz_df = r2_df[r2_df.model_type == model_type]
+#         viz_df = viz_df.filter(like=metric).copy()
+#         viz_df.insert(0, latent_label, r2_df[latent_label])
+#         viz_df['model_type'] = model_type
+
+#         viz_df = viz_df.drop(columns=[latent_label, 'model_type']).copy()
+#         ranked_covars = viz_df.median(axis=0).sort_values(ascending=False).index.tolist()
+
+#         viz_df = pd.melt(viz_df, var_name='covariate', value_name='var_explained')
+#         viz_df.covariate = pd.Categorical(viz_df.covariate, categories=ranked_covars, ordered=True)
+
+#         sns.boxplot(data=viz_df, x='covariate', y='var_explained', ax=ax[i])
+#         ax[i].set_title(model_type.capitalize())
+#         ax[i].set_ylabel('Fraction of Variance Explained')
+#         ax[i].set_xlabel('Covariates')
+
+#         for label in ax[i].get_xticklabels():
+#             label.set_rotation(45)
+
+#     if fig_title is not None:
+#         fig.suptitle(fig_title)
+#     fig.tight_layout()
+#     if file_name is not None:
+#         plt.savefig(file_name, dpi=300, bbox_inches="tight")
+        
+        
 
 def get_top_components(r2_df, top_components_cov):
     """Identify top 2 components explaining a covariate."""
