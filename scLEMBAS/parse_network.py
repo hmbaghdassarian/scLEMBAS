@@ -457,10 +457,10 @@ def create_connected_network(sn_ppis: pd.DataFrame, ligand_labels: List[str], tf
                     break
 
         both_connected = set()
-        for source in tf_connected: 
-            for target in ligand_labels:
+        for target in tf_connected: 
+            for source in ligand_labels:
                 if source == target or nx.shortest_paths.has_path(G, source, target):
-                    both_connected.add(source)
+                    both_connected.add(target)
                     break
     #     sn_ppis = sn_ppis[sn_ppis[[source_label, target_label]].apply(lambda row: row.isin(both_connected).all(), axis=1)]
         sn_ppis = sn_ppis[sn_ppis[source_label].isin(both_connected) & sn_ppis[target_label].isin(both_connected)]
