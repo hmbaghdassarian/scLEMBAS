@@ -359,7 +359,7 @@ def setup_prediction(mod,
     ))
     cov_rev_map = {v:k for k,v in cov_idx_map.items()}
 
-    pert_columns = tf_adata.obs[pert_col].cat.categories.tolist()
+    pert_columns = sorted(mod.X_in.columns.tolist() + [ctrl_pert]) #tf_adata.obs[pert_col].cat.categories.tolist()
     ctrl_idx = pert_columns.index(ctrl_pert)
 
     full_expr, full_X, full_covariates = None, None, None
@@ -423,6 +423,15 @@ def setup_prediction(mod,
         ctrl_cells = pert_vals[pert_vals.sum(axis = 1) == 0].index.tolist()
         obs.loc[ctrl_cells, pert_col] = ctrl_pert
 
+    ################## sanity check  ##################
+    assert not set(torch.unique(full_X.sum(axis = 1)).detach().cpu().numpy()).difference([0,1]), 'Combinatorial perturbations are present'
+    assert full_X.shape[1] == mod.X_in.shape[1], 'Incorrect # of perturbations are dummy encoded'
+    
+    obs_mask = (obs[pert_col] == ctrl_pert).values
+    pert_mask = (full_X.sum(axis =1) == 0 ).detach().cpu().numpy()
+    assert all(obs_mask == pert_mask), 'Incorrect encoding of perturbation conditions'
+    ################## end sanity check  ##################
+        
     obs['condition'] = obs[cat_col].astype(str) + '^' + obs[pert_col].astype(str)
     obs['counterfactual_condition'] = obs.condition.map(counterfactual_cond_map)
     obs['plate'] = plates
@@ -452,7 +461,10 @@ def run_prediction(mod,
                    covariates_idx: torch.tensor, 
                    expr: torch.tensor, 
                    obs: pd.DataFrame, 
-                   return_full: bool = False):
+                   pert_col: str,
+                   ctrl_pert: bool = 'DMSO_TF',
+                   return_full: bool = False
+                  ):
     """Gets the model prediction.
 
     Parameters
@@ -507,6 +519,13 @@ def run_prediction(mod,
     mod.eval()
     with torch.inference_mode():
         X_full = mod.input_layer(X_in) # input ligands to signaling network
+        
+        ################## sanity check  ##################
+        node_idx_map = mod.node_idx_map.copy()
+        node_idx_map[ctrl_pert]=0
+        indices = (X_full == mod.input_layer.projection_amplitude).int().argmax(dim=1).detach().cpu().numpy()
+        assert all(indices == obs[pert_col].apply(lambda node_name: node_idx_map[node_name]).values), 'Input nodes are not being encoded by dummy correctly'
+        ################## end sanity check  ##################
 
         bias_cats = torch.zeros_like(X_full.T, device = mod.signaling_network.device, dtype = mod.signaling_network.dtype)
         # add categorical covariates
@@ -534,10 +553,13 @@ def run_prediction(mod,
         else:
             raise ValueError('Incorrect remove_type specified')
 
-        X_bias = X_full.T + bias_tot # this is the bias with the projection_amplitude included
-        X_new = torch.zeros_like(X_bias) #initialize hidden state values at 0
-
         if 'adj' in remove_type: 
+            X_bias = bias_tot 
+            # Note: THIS IS THE EQUIVALENT OF X_bias = X_full.T + bias_tot when not using the adjacency matrix
+            # because adj is necessary to propagate input signal; otherwise, only the input ligand
+            # is different when adding in X_full, and ProjectOutput removes this difference with the exception of the 
+            # edge case that the ligand IS a TF
+            
             X_new = mod.signaling_network.activation(X_bias,
                                                      mod.signaling_network.bionet_params['leak'])
             # this is the equivalen of setting the signaling network weights to 0 in the 
@@ -545,6 +567,8 @@ def run_prediction(mod,
 
             # see commented out remove_type == 'adj' below for the equivalent
         else:
+            X_bias = X_full.T + bias_tot # this is the bias with the projection_amplitude included
+            X_new = torch.zeros_like(X_bias) #initialize hidden state values at 0
             for t in range(mod.signaling_network.bionet_params['max_steps']): # like an RNN, updating from previous time step
                 X_old = X_new
 
@@ -571,6 +595,9 @@ def run_prediction(mod,
         y_predicted = mod.output_layer(Y_full)
         
         utils.clear_memory()
+    
+    
+    
     if remove_type == ['none']:
         consistent_forward = True
         y_predicted_, Y_full_, biases_ = mod(X_in, covariates_idx, expr)
@@ -682,6 +709,8 @@ def get_prediction(mod,
                              covariates_idx = covariates_idx, 
                              expr = expr, 
                             obs = obs, 
+                             pert_col = pert_col, 
+                             ctrl_pert = ctrl_pert,
                             return_full = return_full)
 
     else:
@@ -704,7 +733,7 @@ def get_prediction(mod,
                                  covariates_idx_chunks[chunk_idx], 
                                  expr_chunks[chunk_idx], 
                                 obs.loc[obs_chunks[chunk_idx], :], 
-                                 return_full)
+                                 pert_col, ctrl_pert, return_full)
             res.append(res_)
 
         if not return_bias:

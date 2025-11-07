@@ -406,7 +406,7 @@ def create_connected_network(sn_ppis: pd.DataFrame, ligand_labels: List[str], tf
         method by which to identify the interactions to retain, by default 'connected'. Options include: 
             - 'all': filter interactions by finding all paths between the sources and targets (can be very slow)
             - 'shortest': filter interactions by finding the shortest path between the sources and targets
-            - 'connected': filter interactions by finding those that contain nodes which are connected to both the sources and the targets
+            - 'connected': filter interactions by finding those that contain nodes which are connected to both the sources and the targets (superset of shortest)
 
     Returns
     -------
@@ -449,19 +449,36 @@ def create_connected_network(sn_ppis: pd.DataFrame, ligand_labels: List[str], tf
             all_connected.loc[idx, :] = [interaction[0], interaction[1]]
         sn_ppis = sn_ppis.merge(all_connected, on = [source_label, target_label])
     elif path_finder == 'connected':
-        tf_connected = set()
-        for source in all_nodes: 
-            for target in tf_labels:
-                if source == target or nx.shortest_paths.has_path(G, source, target):
-                    tf_connected.add(source)
-                    break
+#         tf_connected = set()
+#         for source in all_nodes: 
+#             for target in tf_labels:
+#                 if source == target or nx.shortest_paths.has_path(G, source, target):
+#                     tf_connected.add(source)
+#                     break
 
-        both_connected = set()
-        for target in tf_connected: 
-            for source in ligand_labels:
-                if source == target or nx.shortest_paths.has_path(G, source, target):
-                    both_connected.add(target)
-                    break
+#         both_connected = set()
+#         for target in tf_connected: 
+#             for source in ligand_labels:
+#                 if source == target or nx.shortest_paths.has_path(G, source, target):
+#                     both_connected.add(target)
+#                     break
+        
+        # much faster version of code above
+        reachable_from_ligand = set()
+        for l in ligand_labels:
+            if l in G:
+                reachable_from_ligand |= nx.descendants(G, l) | {l}
+
+        # Nodes that can reach TFs
+        can_reach_tf = set()
+        for t in tf_labels:
+            if t in G:
+                can_reach_tf |= nx.ancestors(G, t) | {t}
+
+        both_connected = reachable_from_ligand & can_reach_tf # filters out if don't have path from ligand --> TF with node included
+        
+        
+        
     #     sn_ppis = sn_ppis[sn_ppis[[source_label, target_label]].apply(lambda row: row.isin(both_connected).all(), axis=1)]
         sn_ppis = sn_ppis[sn_ppis[source_label].isin(both_connected) & sn_ppis[target_label].isin(both_connected)]
         ligand_connections = map_connections(sn_ppis, ligand_labels_unfiltered, tf_labels, source_label, target_label)

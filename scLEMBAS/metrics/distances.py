@@ -2,10 +2,37 @@
 
 from typing import Literal
 
-import sklearn
 import pandas as pd
-
 import scanpy as sc
+
+import sklearn
+
+from .. import utilities as utils
+
+from geomloss import SamplesLoss
+import torch
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
+
+
+def get_EMD_loss(tf_adata_actual, tf_adata_predicted, device = device):
+    """Calculates the loss between predicted and actual data per condition. 
+    geom_loss by default normalizes to sample size so that doesn't need to be done. 
+    Does take average across conditions for the total loss (rather than simply summing), so that it does not change with 
+    the number of conditions 
+    """
+    loss_fn = SamplesLoss("sinkhorn", p=2, blur=0.05).to(device)
+    loss = {}
+    conds = tf_adata_predicted.obs.condition.unique()
+    for cond in conds:
+        y_predicted = torch.tensor(tf_adata_predicted[tf_adata_predicted.obs.condition == cond, ].to_df().values).to(device)
+        y_actual = torch.tensor(tf_adata_actual[tf_adata_actual.obs.condition == cond, ].to_df().values).to(device)
+        loss[cond] = loss_fn(y_predicted, y_actual)
+        utils.clear_memory()
+    loss['Mean EMD Loss'] = sum(loss.values())/len(loss) # averaged across condition to not scale with n_conditions
+    
+    
+    return {k: float(v.cpu().numpy()) for k,v in loss.items()}
 
 def rank_score(
     tf_adata_actual, 

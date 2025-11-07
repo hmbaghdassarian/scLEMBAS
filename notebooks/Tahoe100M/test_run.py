@@ -16,7 +16,7 @@ def str_to_bool(value):
         return False
     else:
         raise argparse.ArgumentTypeError("Boolean value expected (true/false or 1/0).")
-        
+
 def int_or_str(val):
     try:
         return int(val)
@@ -116,13 +116,13 @@ global_bias_L2 = args.global_bias_L2
 
 batch_scaler_mem = args.batch_scaler_mem
 
-#python test_run.py --index 14 --retrain true --subset_size 0.15 --noadv false --max_epochs 600 --KL_scaling 5e-3 --n_cat_discriminator_train 5 --n_pert_discriminator_train 5 --cat_dropout 0.1 --pert_dropout 0.1 --n_adversarial_start 200 --main_max_lr 2e-3 --gen_max_lr 2.75e-4 --cat_max_lr 1e-3 --pert_max_lr 1e-3 --cat_max_penalty_weight 11 --generator_dropout_rate 0.7 --n_layers_vae 3 --pert_n_layers 4 --cat_bias_pert_scaler 0 --cat_pert_method orthogonality --cat_pert_pert_label false --cat_bias_lambda_L2 1e-4 --spectral_loss_factor 0 --uniform_lambda_L2 0 --contrastive_loss_scaler 1 0.2 --contrastive_loss_type sc_actual sc_predicted --contrastive_percentile 0.3 --contrastive_triplet_margin_frac 0.1 --cat_spectral_norm true --pert_spectral_norm true --global_bias_L2 0 --batch_scaler_mem 1
+#python test_run.py --index 14_engaging --retrain true --subset_size 0.15 --noadv false --max_epochs 600 --KL_scaling 5e-3 --n_cat_discriminator_train 5 --n_pert_discriminator_train 5 --cat_dropout 0.1 --pert_dropout 0.1 --n_adversarial_start 200 --main_max_lr 2e-3 --gen_max_lr 2.75e-4 --cat_max_lr 1e-3 --pert_max_lr 1e-3 --cat_max_penalty_weight 11 --generator_dropout_rate 0.7 --n_layers_vae 3 --pert_n_layers 4 --cat_bias_pert_scaler 0 --cat_pert_method orthogonality --cat_pert_pert_label false --cat_bias_lambda_L2 1e-4 --spectral_loss_factor 0 --uniform_lambda_L2 0 --contrastive_loss_scaler 1 0.2 --contrastive_loss_type sc_actual sc_predicted --contrastive_percentile 0.3 --contrastive_triplet_margin_frac 0.1 --cat_spectral_norm true --pert_spectral_norm true --global_bias_L2 0 --batch_scaler_mem 1
 
 
 # In[1]:
 
 
-# for i in range(1,7):
+# for i in range(2,9):
 #     print('sbatch batch_job{}.slurm'.format(i))
 # print()
 
@@ -155,6 +155,8 @@ batch_scaler_mem = args.batch_scaler_mem
 # cat_bias_lambda_L2 = 1e-4
 # spectral_loss_factor = 0
 # uniform_lambda_L2 = 0
+
+# batch_scaler_mem = 1
 
 # vae_scaling_KL = 1e-3
 
@@ -217,10 +219,11 @@ os.environ["NUMEXPR_NUM_THREADS"] = str(n_cores)
 
 seed = 888
 mod_seed = 888
-data_path = '/nobackup/users/hmbaghda/scLEMBAS/analysis'
+data_path = '/home/hmbaghda/orcd/pool/scLEMBAS/analysis'
 author = 'Tahoe100M'
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
+
 
 
 # Load data:
@@ -243,13 +246,13 @@ expr = adata.to_df().copy()
 # basic formatting checks
 if not np.all(tf_adata.var_names == sorted(tf_adata.var_names)):
     raise ValueError('Ensure TF adata features are sorted on input')
-    
+
 if not np.all(adata.obs_names == tf_adata.obs_names):
     raise ValueError('Ensure gene expression and TF activity sample features are orderd the same')
-    
+
 if len(set(tf_adata.obs.drug)) != len(tf_adata.obs.drug.cat.categories):
     raise ValueError('Make sure only present perturbations are in the categorical columns')
-    
+
 if len(set(tf_adata.obs.cell_line)) != len(tf_adata.obs.cell_line.cat.categories):
     raise ValueError('Make sure only present cell lines are in the categorical columns')
 
@@ -279,6 +282,7 @@ drug_counts = pd.DataFrame({
     'train': train_split['drug_counts'],
     'test': test_split['drug_counts']
 }).sort_values(by = 'train', ascending = True)
+
 
 
 # In[7]:
@@ -469,7 +473,7 @@ noise_params = {
     'include_gradient_noise_vae': True, 
     'include_gradient_noise_embedding': True, 
     'constant_gradient_noise': True
-    
+
 }
 
 
@@ -526,7 +530,7 @@ lr_params = generate_lr_params(n_epochs = max_epochs,
 bionet_params['cat_max_norm'] = 100
 regularization_params = {
     'input_lambda_L2': 0, # irrelevant because setting the requires grad to False
-    
+
     'bn_weights_lambda_L2': 1e-7,
     'moa_lambda_L1': 1e2,
     'uniform_lambda_L2': uniform_lambda_L2, #0, #1e-7, 
@@ -535,13 +539,13 @@ regularization_params = {
     'adj_scaling_KL': 0,  # using uniform/bn_weights already
     'adj_prior_mu': 0, # irrelevant because adj_scaling_KL is 0
     'adj_prior_sigma': 0.2, # irrelevant because adj_scaling_KL is 0
-    
+
     'output_weights_lambda_L2': 1e-7,
     'output_bias_lambda_L2': 1e-7,
-    
+
     'spectral_loss_factor': spectral_loss_factor,
-    
-    
+
+
     'global_bias_lambda_L2': global_bias_L2, # using KL divergence instead
     'global_bias_lambda_L1': 0, # using KL divergence instead
     'cat_bias_lambda_L2': cat_bias_lambda_L2, # 1e-4, # allow for generalization (not collapsing on perturbation)
@@ -563,6 +567,7 @@ cat_pert_params = {'regularization_scaler': cat_bias_pert_scaler,
                        'include_adjacency': False, 
                        'temperature': 0.1
                       }
+
 
 
 # In[18]:
@@ -610,7 +615,7 @@ vae_params = {
     'optimizer': torch.optim.Adam
 }
 
- 
+
 n_restarts_adversarial = 4
 vae_lr_params = generate_lr_params(n_epochs = max_epochs,
                                    max_lr = gen_max_lr, #max_lr,
@@ -803,7 +808,7 @@ ax[1].set_title('Perturbation Discriminator')
 for i in range(2):
     ax[i].set_xlabel('Epochs')
     ax[i].set_ylabel('Discriminator Penalty Weight')
-    
+
 fig.tight_layout();
 
 
@@ -837,7 +842,7 @@ mod.input_layer.weights.requires_grad = False # don't learn scaling factors for 
 mod.signaling_network.prescale_weights(target_radius = target_spectral_radius) # spectral radius
 
 
-# In[29]:
+# In[1]:
 
 
 if not no_adv:
@@ -863,7 +868,7 @@ if not no_adv:
         n_eval_cells = np.nan, 
         n_eval_bootstrap = np.nan
     )
-    
+
     if retrain or not os.path.isfile(os.path.join(data_path, 'trash', fn + author +  '_trainer.pickle')):
         mod = trainer.train_model(verbose = False)
         io.write_pickled_object(trainer, os.path.join(data_path, 'trash', fn + author +  '_trainer.pickle'))
@@ -897,7 +902,7 @@ else:
         n_eval_cells = np.nan, 
         n_eval_bootstrap = np.nan
     )
-    
+
     if retrain or not os.path.isfile(os.path.join(data_path, 'trash', fn + author +  '_trainer.pickle')):
         mod_noadv = trainer_noadv.train_model(verbose = False)
         io.write_pickled_object(trainer_noadv, os.path.join(data_path, 'trash', fn + author +  '_trainer.pickle'))    
@@ -908,27 +913,80 @@ else:
 
 import papermill as pm
 from nbconvert import HTMLExporter
+from traitlets.config import Config
 import nbformat
 import os
 
-input_notebook = 'test_visualize.ipynb' # in the current directory
-output_notebook = os.path.join(data_path, 'trash', fn +  '_' + author + '.ipynb')
+# ---------- Parameters ----------
+input_notebook = 'test_visualize.ipynb'  # Template notebook
+output_notebook = os.path.join(data_path, 'trash', fn + '_' + author + '.ipynb')
 output_html = os.path.join(data_path, 'trash', fn + '_' + author + '.html')
 
+# ---------- Step 1: Execute notebook with Papermill ----------
 pm.execute_notebook(
     input_path=input_notebook,
     output_path=output_notebook,
-    parameters={"fn": fn}, 
+    parameters={"fn": fn},
     kernel_name='python3'
 )
 
-nb = nbformat.read(output_notebook, as_version=4)
-html_exporter = HTMLExporter()
-html_exporter.exclude_input = True  # <-- hides code cells
-(body, _) = html_exporter.from_notebook_node(nb)
+# ---------- Step 2: Load executed notebook ----------
+with open(output_notebook, 'r', encoding='utf-8') as f:
+    nb = nbformat.read(f, as_version=4)
 
-with open(output_html, "w", encoding="utf-8") as f:
-    f.write(body)
-    
+# ---------- Step 3: Configure HTML exporter ----------
+c = Config()
+c.HTMLExporter.preprocessors = ['nbconvert.preprocessors.TagRemovePreprocessor']
+c.TagRemovePreprocessor.remove_cell_tags = ('remove_cell',)
+c.TagRemovePreprocessor.remove_input_tags = ('remove_input',)
+c.TagRemovePreprocessor.remove_all_outputs_tags = ('remove_output',)
+c.TagRemovePreprocessor.enabled = True
+
+html_exporter = HTMLExporter(config=c, template_name='classic')
+html_exporter.exclude_input = False  # Keep code cells visible (so they can be toggled)
+
+# ---------- Step 4: Export notebook to HTML ----------
+(body, resources) = html_exporter.from_notebook_node(nb)
+
+# ---------- Step 5: Add toggleable JavaScript ----------
+custom_js = """
+<script>
+document.addEventListener('DOMContentLoaded', function(){
+    var cells = document.querySelectorAll('.cell.code_cell .input');
+    cells.forEach(function(cell) {
+        var button = document.createElement('button');
+        button.textContent = 'Show Code';
+        button.style.display = 'block';
+        button.style.margin = '5px 0';
+        button.style.padding = '2px 6px';
+        button.style.fontSize = '12px';
+        button.style.backgroundColor = '#f0f0f0';
+        button.style.border = '1px solid #ccc';
+        button.style.cursor = 'pointer';
+
+        button.onclick = function() {
+            if (cell.style.display === 'none' || cell.style.display === '') {
+                cell.style.display = 'block';
+                button.textContent = 'Hide Code';
+            } else {
+                cell.style.display = 'none';
+                button.textContent = 'Show Code';
+            }
+        };
+
+        cell.parentNode.insertBefore(button, cell);
+        cell.style.display = 'none';  // Hide all code blocks by default
+    });
+});
+</script>
+"""
+
+html_with_js = body.replace('</body>', custom_js + '</body>')
+
+# ---------- Step 6: Save final HTML ----------
+with open(output_html, 'w', encoding='utf-8') as f:
+    f.write(html_with_js)
+
+# ---------- Step 7: Optional cleanup ----------
 os.remove(output_notebook)
 

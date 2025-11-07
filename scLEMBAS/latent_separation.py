@@ -1094,21 +1094,22 @@ def visualize_latent_association(
         
         
 
-def get_top_components(r2_df, top_components_cov):
+def get_top_components(r2_df, top_components_cov, verbose = True):
     """Identify top 2 components explaining a covariate."""
     latent_label = r2_df.columns[0]
     top_components = r2_df[[latent_label, top_components_cov, 'model_type']].copy()
     top_components = top_components[top_components.model_type == 'linear']
     top_components = top_components.sort_values(by = top_components_cov, ascending=False).iloc[:2, :].reset_index(drop = True)
 
-    print('The two {} components that best univariately separate by {} are components {} and {} explaining {:.2f}% and {:.2f}% of variance, respectively'.format(
-        latent_label,
-        top_components_cov,
-        top_components[latent_label][0],
-        top_components[latent_label][1], 
-        top_components[top_components_cov][0]*100, 
-        top_components[top_components_cov][1]*100,
-    ))
+    if verbose:
+        print('The two {} components that best univariately separate by {} are components {} and {} explaining {:.2f}% and {:.2f}% of variance, respectively'.format(
+            latent_label,
+            top_components_cov,
+            top_components[latent_label][0],
+            top_components[latent_label][1], 
+            top_components[top_components_cov][0]*100, 
+            top_components[top_components_cov][1]*100,
+        ))
 
     top_components = ['{}'.format(i) for i in top_components[latent_label]]
     return top_components
