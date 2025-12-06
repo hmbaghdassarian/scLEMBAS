@@ -465,7 +465,7 @@ def run_prediction(mod,
                    ctrl_pert: bool = 'DMSO_TF',
                    return_full: bool = False
                   ):
-    """Gets the model prediction.
+    """Gets the model prediction. Assumes columns are in sorted order!!
 
     Parameters
     ----------
@@ -610,7 +610,7 @@ def run_prediction(mod,
         del y_predicted_, Y_full_, biases_
 
     y_predicted = pd.DataFrame(y_predicted.detach().cpu().numpy())
-    y_predicted.columns = mod.y_out.columns
+    y_predicted.columns = sorted(mod.y_out.columns) # accounts for randomized baselines, assumes input is sorted as is default in init
     tf_adata_predicted = sc.AnnData(X = y_predicted, obs = obs)
 
     del X_full, X_in, covariates_idx, expr
@@ -1000,14 +1000,14 @@ def project_prediction(
     if linear_projection == 'pca':
         X_in_pred = tf_adata_predicted.to_df().values
     elif linear_projection == 'pls':
-        if tf_adata_actual.uns['pls']['encoder_x'] is not None:
-            msg = 'Internal: Need to account for confounder controlling -- store params in tf_adata_actual to run '
-            msg += 'prepar_input_matrix_plsda in an automated manner'
-            raise ValueError(msg)
+        # if tf_adata_actual.uns['pls']['encoder_x'] is not None:
+        #     msg = 'Internal: Need to account for confounder controlling -- store params in tf_adata_actual to run '
+        #     msg += 'prepar_input_matrix_plsda in an automated manner'
+        #     raise ValueError(msg)
 
         X_in_pred, _ = ls.prepare_input_matrix_plsda(adata = tf_adata_predicted,
                             control_confounders = [],
-                            enc_X = tf_adata_actual.uns['pls']['encoder_x'])
+                            enc_X = None)#tf_adata_actual.uns['pls']['encoder_x'])
 
     if project_umap:
         umap_key = 'umap' if linear_projection == 'pca' else 'umap_pls'

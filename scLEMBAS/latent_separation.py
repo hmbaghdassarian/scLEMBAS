@@ -15,10 +15,14 @@ from sklearn.metrics import normalized_mutual_info_score
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+import numpy as np
+import scipy.sparse as sparse
+
 from kneed import KneeLocator
 
-
 import umap
+
+from cliffs_delta import cliffs_delta
 
 from sklearn.model_selection import StratifiedKFold, cross_val_score
 from sklearn.linear_model import LogisticRegression, LinearRegression
@@ -29,7 +33,7 @@ from sklearn.pipeline import make_pipeline
 from sklearn.metrics import normalized_mutual_info_score
 
 import scipy
-from scipy import sparse
+from scipy import sparse, stats
 
 # from . import preprocess as pp
 from ._scanpy_umap import scanpy_umap    
@@ -100,9 +104,6 @@ def _compute_elbow(adata, curve='concave', direction='increasing', **kwargs):
     kneedle = KneeLocator(x = pcs, y = cumulative_variance_ratio, curve=curve, direction=direction, **kwargs)
     rank = kneedle.elbow
     return rank
-
-import numpy as np
-import scipy.sparse as sparse
 
 def project_to_pca(X_new, adata):
     """
@@ -364,39 +365,600 @@ def prepare_input_matrix_plsda(adata,
     return X, enc_X
 
 
-def pls_da(adata,
-           n_components: int,
-          control_confounders: List = [], #'plate',
-          assess: bool = True,
-           return_components: bool = True,
-          seed: int = 888,
-          enc_X = None,
-          enc_Y = None,
-           separate_by: Literal['perturbation', 'category'] = 'perturbation',
-           pert_col: str = 'drug',
-           cat_col: str = 'cell_line'
+import numpy as np
+from sklearn.base import clone
+from sklearn.utils import check_random_state
+
+import numpy as np
+from sklearn.base import clone
+from sklearn.model_selection import KFold
+from sklearn.utils import check_random_state
+from sklearn.metrics import accuracy_score
+
+
+def calculate_pls_explained_variance_ratio(
+    pls_model, X, y
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Copied straight from: https://github.com/scikit-learn/scikit-learn/issues/32675
+
+    Calculate explained variance ratios using sequential deflation.
+    Useful for per-component assessment. 
+
+    This implements the variance decomposition for PLS regression following
+    the deflation methodology described in Wegelin (2000).
+
+    This method calculates how much variance each component explains by
+    sequentially deflating the X and Y matrices. This is the standard
+    approach in PLS and provides accurate component-wise variance.
+
+    Parameters
+    ----------
+    pls_model : sklearn.cross_decomposition.PLSRegression
+        A fitted PLSRegression model.
+    X : array-like of shape (n_samples, n_features)
+        Training vectors. Accepts numpy arrays, pandas DataFrames.
+    y : array-like of shape (n_samples,) or (n_samples, n_targets)
+        Target vectors. Accepts 1D (univariate) or 2D (multivariate) targets.
+
+    Returns
+    -------
+    tuple[ndarray, ndarray]
+        - X variance ratios of shape (n_components,)
+        - Y variance ratios of shape (n_components,)
+    """
+    # Convert to arrays and ensure y is 2D (handles pandas DataFrame/Series)
+    X = np.asarray(X, dtype=float)
+    y_array = np.asarray(y, dtype=float)
+    y = np.atleast_2d(y_array).T if y_array.ndim == 1 else y_array
+
+    # Center X and Y (PLS already centers data, but we need the original
+    # centered versions)
+    X_centered = X - X.mean(axis=0)
+    y_centered = y - y.mean(axis=0)
+
+    # Check for scaling
+    if pls_model.scale:
+        X_std = X.std(axis=0, ddof=1)
+        X_std[X_std == 0.0] = 1.0
+        X_centered /= X_std
+        y_std = y.std(axis=0, ddof=1)
+        y_std[y_std == 0.0] = 1.0
+        y_centered /= y_std
+
+    # Total variance in centered data
+    X_total_var = np.var(X_centered, axis=0, ddof=1).sum()
+    y_total_var = np.var(y_centered, axis=0, ddof=1).sum()
+    has_x_variance = not np.isclose(X_total_var, 0.0)
+    has_y_variance = not np.isclose(y_total_var, 0.0)
+
+    # Initialize matrices for deflation
+    X_current = X_centered.copy()
+    y_current = y_centered.copy()
+
+    X_var_ratios = []
+    y_var_ratios = []
+
+    # For each component, calculate variance explained then deflate
+    for a in range(pls_model.n_components):
+        # Get scores and loadings for component a (using slicing to keep 2D)
+        t_a = pls_model.x_scores_[:, a : a + 1]  # (n_samples, 1)
+        p_a = pls_model.x_loadings_[:, a : a + 1]  # (n_features_X, 1)
+        q_a = pls_model.y_loadings_[:, a : a + 1]  # (n_features_y, 1)
+
+        # Reconstruct X and y using current component
+        X_hat = t_a @ p_a.T
+        y_hat = t_a @ q_a.T
+
+        # Variance of current residual before deflation
+        X_var_before = np.var(X_current, axis=0, ddof=1.0).sum()
+        y_var_before = np.var(y_current, axis=0, ddof=1.0).sum()
+
+        # Deflate X and y
+        X_current -= X_hat
+        y_current -= y_hat
+
+        # Variance of residual after deflation
+        X_var_after = np.var(X_current, axis=0, ddof=1.0).sum()
+        y_var_after = np.var(y_current, axis=0, ddof=1.0).sum()
+
+        # Store variance explained as ratio of total variance
+        if has_x_variance:
+            X_var_ratios.append((X_var_before - X_var_after) / X_total_var)
+        else:
+            X_var_ratios.append(0.0)
+        if has_y_variance:
+            y_var_ratios.append((y_var_before - y_var_after) / y_total_var)
+        else:
+            y_var_ratios.append(0.0)
+
+    return np.array(X_var_ratios), np.array(y_var_ratios)
+
+def pls_deflation_r2(pls_model, X, y):
+    """
+    Assess an already fitted ``PLSRegression`` model.
+
+    This function computes the cumulative explained variance in the X and Y
+    matrices using the deflation-based variance decomposition implemented in
+    ``calculate_pls_explained_variance_ratio``.
+    
+    Results are numerically identical to `calculate_pls_reconstruction_r2`. Use that function instead, this is slower
+
+    Parameters
+    ----------
+    pls_model : sklearn.cross_decomposition.PLSRegression
+        A fitted PLSRegression model.
+
+    X : array-like of shape (n_samples, n_features)
+        The predictor matrix used to fit the model.
+
+    y : array-like of shape (n_samples,) or (n_samples, n_targets)
+        The response matrix used to fit the model.
+
+    Returns
+    -------
+    R2X : float
+        Cumulative explained variance in the X matrix (should match reconstruction-based R2X coefficient of determination as in `calculate_pls_reconstruction_r2`)
+
+    R2Y : float
+        Cumulative explained variance in the Y matrix (should match reconstruction-based R2Y coefficient of determination as in `calculate_pls_reconstruction_r2`).
+    """
+
+    explained_x, explained_y = calculate_pls_explained_variance_ratio(pls_model = pls_model, X = X, y = y)
+    R2X = explained_x.sum()
+    R2Y = explained_y.sum()
+    # sanity check
+#     assert np.allclose((R2X, R2Y), calculate_pls_reconstruction_r2(pls_model, X, y)), 'Deflation- and reconstruction-based R2 does not match'
+
+    
+    return R2X, R2Y
+
+
+def calculate_pls_reconstruction_r2(pls_model: PLSRegression, X: np.ndarray, y: np.ndarray):
+    """
+    Reconstruction-based R2X and R2Y for a fitted PLSRegression model.
+
+    Uses the same centering/scaling as the model:
+        R2X = 1 - ||Xc - X_hat||² / ||Xc||²
+        R2Y = 1 - ||yc - y_hat||² / ||yc||²
+
+    Parameters
+    ----------
+    pls_model : sklearn.cross_decomposition.PLSRegression
+        A fitted PLSRegression model.
+
+    X : array-like of shape (n_samples, n_features)
+        The predictor matrix used in model fitting.
+
+    y : array-like of shape (n_samples,) or (n_samples, n_targets)
+        The response matrix used in model fitting.
+
+    Returns
+    -------
+    R2X : float
+        Reconstruction-based coefficient of determination for X.
+
+    R2Y : float
+        Reconstruction-based coefficient of determination for y.
+    """
+    X = np.asarray(X, dtype=float)
+    y = np.asarray(y, dtype=float)
+    if y.ndim == 1:
+        y = y[:, None]
+
+    # --- center/scale exactly as the model did ---
+    Xc = X - pls_model._x_mean
+    if getattr(pls_model, "scale", False):
+        Xc = Xc / pls_model._x_std
+
+    yc = y - pls_model._y_mean
+    y_std = getattr(pls_model, "_y_std", None)
+    if y_std is not None:
+        yc = yc / y_std
+
+    # --- reconstruct in centered/scaled space ---
+    T = pls_model.x_scores_
+    P = pls_model.x_loadings_
+    C = pls_model.y_loadings_
+
+    X_hat = T @ P.T
+    y_hat = T @ C.T
+
+    # --- reconstruction-based R² ---
+    ssx_tot = np.sum(Xc ** 2)
+    ssy_tot = np.sum(yc ** 2)
+
+    ssx_res = np.sum((Xc - X_hat) ** 2)
+    ssy_res = np.sum((yc - y_hat) ** 2)
+
+    R2X = 1.0 - ssx_res / ssx_tot
+    R2Y = 1.0 - ssy_res / ssy_tot
+
+    return R2X, R2Y
+
+
+def calculate_pls_q2y(pls_model, X, y, n_folds=5, seed=888):
+    """
+    Compute Q²Y for a fitted PLSRegression model using K-fold CV
+    following the PRESS definition:
+
+        Q²Y = 1 - PRESS / SSY
+
+    Parameters
+    ----------
+    pls_model : sklearn.cross_decomposition.PLSRegression
+        A fitted PLSRegression model. Only its hyperparameters are used;
+        the model is refit inside each fold.
+
+    X : array-like of shape (n_samples, n_features)
+        Predictor matrix.
+
+    y : array-like of shape (n_samples,) or (n_samples, n_targets)
+        Response matrix. (OK for one-hot encoded PLS-DA.)
+
+    n_folds : int, default=5
+        Number of CV folds.
+
+    seed : int, default=888
+        Random seed for reproducibility.
+
+    Returns
+    -------
+    q2y : float
+        The Q²Y metric.
+    """
+    rng = check_random_state(seed)
+
+    # Ensure y is 2D
+    if y.ndim == 1:
+        y = y[:, None]
+
+    # --- Total Sum of Squares in Y ---
+    y_mean = y.mean(axis=0)
+    SSY = np.sum((y - y_mean)**2)
+
+    # --- PRESS accumulator ---
+    PRESS = 0.0
+
+    # --- K-Fold CV ---
+    kf = KFold(n_splits=n_folds, shuffle=True, random_state=seed)
+
+    for train_idx, test_idx in kf.split(X):
+        X_train, X_test = X[train_idx], X[test_idx]
+        y_train, y_test = y[train_idx], y[test_idx]
+
+        # Clone and fit model
+        pls_cv = clone(pls_model)
+        pls_cv.fit(X_train, y_train)
+
+        # Predict
+        y_pred = pls_cv.predict(X_test)
+
+        # Add the squared prediction error for this fold
+        PRESS += np.sum((y_test - y_pred)**2)
+
+    # --- Q²Y formula ---
+    Q2Y = 1.0 - PRESS / SSY
+    return Q2Y
+
+
+def calculate_pls_accuracy(pls_model, X, y, n_folds=5, seed=888):
+    """
+    Compute model accuracy for a fitted PLSRegression model using K-fold CV, similar to Q2Y.
+
+    Parameters
+    ----------
+    pls_model : sklearn.cross_decomposition.PLSRegression
+        A fitted PLSRegression model. Only its hyperparameters are used;
+        the model is refit inside each fold.
+
+    X : array-like of shape (n_samples, n_features)
+        Predictor matrix.
+
+    y : array-like of shape (n_samples, n_classes)
+        One-hot encoded response matrix for PLS-DA.
+
+    n_folds : int, default=5
+        Number of CV folds.
+
+    seed : int, default=888
+        Random seed for reproducibility.
+
+    Returns
+    -------
+    accuracy : float
+        Mean cross-validated classification accuracy.
+    """
+    rng = check_random_state(seed)
+
+    kf = KFold(n_splits=n_folds, shuffle=True, random_state=seed)
+    
+    accuracy = []
+    for train_idx, test_idx in kf.split(X):
+        X_train, X_test = X[train_idx], X[test_idx]
+        y_train, y_test = y[train_idx], y[test_idx]
+
+        # Clone and fit model
+        pls_cv = clone(pls_model)
+        pls_cv.fit(X_train, y_train)
+
+        # Predict
+        y_pred = pls_cv.predict(X_test)
+        
+        accuracy_cv = accuracy_score(np.argmax(y_test, axis = 1), np.argmax(y_pred, axis = 1))
+        accuracy.append(accuracy_cv)
+
+    return np.mean(accuracy)
+
+
+def assess_pls_model(pls_model, X, y, 
+                     n_perm: int = 100,
+                     get_q2_pval: bool = True, 
+                     get_r2_pval: bool = False, 
+                     get_accuracy_pval: bool = False,
+                     n_folds=5, 
+                     seed=888):
+    """
+    Assess a fitted PLSRegression model and optionally compute permutation
+    p-values for R²Y and Q²Y.
+
+    This function computes:
+        - R²X, R²Y (reconstruction-based coefficients of determination)
+        - Q²Y (cross-validated predictive ability)
+        - p-values for Q²Y and R²Y using a Y-permutation test
+
+    Parameters
+    ----------
+    pls_model : sklearn.cross_decomposition.PLSRegression
+        A fitted PLSRegression model. Hyperparameters are reused for CV and
+        permutation fits.
+
+    X : array-like of shape (n_samples, n_features)
+        Predictor matrix used for fitting or consistent with the fitted model.
+
+    y : array-like of shape (n_samples,) or (n_samples, n_targets)
+        Response matrix. For PLS-DA, this should be a one-hot encoded matrix
+        of class labels.
+
+    n_perm : int, optional
+        Number of permutations to perform for estimating permutation-based
+        p-values. If None, permutation testing is skipped.
+
+    n_folds : int, default=5
+        Number of cross-validation folds used to compute Q²Y.
+
+    seed : int, default=888
+        Random seed for reproducibility of CV splits and permutations.
+
+    Returns
+    -------
+    R2X : float
+        Reconstruction-based coefficient of determination for X.
+
+    R2Y : float
+        Reconstruction-based coefficient of determination for y.
+
+    Q2Y : float
+        Cross-validated predictive ability of the model based on PRESS.
+    
+    accuracy : float
+        Mean cross-validated classification accuracy.
+
+    p_Q2Y : float or None
+        Permutation p-value for Q²Y. None if `get_q2_pval` is False.
+
+    p_R2Y : float or None
+        Permutation p-value for R²Y. None if `get_r2_pval` is False.
+    
+    p_accuracy : float or None
+        Permutation p-value for accuracy. None if `get_accuracy_pval` is False.
+    """
+
+    R2X, R2Y = calculate_pls_reconstruction_r2(pls_model, X, y)
+    Q2Y = calculate_pls_q2y(pls_model, X, y, n_folds=n_folds, seed=seed)
+    accuracy = calculate_pls_accuracy(pls_model, X, y, n_folds=n_folds, seed=seed)
+    
+    
+    p_Q2Y = None
+    p_R2Y = None
+    p_accuracy = None
+    
+    if n_perm is None:
+        permute = False
+    else:
+        permute = get_q2_pval or get_r2_pval or get_accuracy_pval
+        
+    
+    if permute:
+        
+        rng = check_random_state(seed)
+
+        q2_perm = np.zeros(n_perm, float)
+        r2_perm = np.zeros(n_perm, float)
+        accuracy_perm = np.zeros(n_perm, float)
+        for ir in trange(n_perm):
+            # Permute Y *rows*  (ropls permutes class labels)
+            perm_idx = rng.permutation(len(y))
+            y_perm = y[perm_idx]
+
+            if get_q2_pval:
+                pls_perm_q2 = clone(pls_model)
+                q2_perm[ir] = calculate_pls_q2y(pls_perm_q2, X, y_perm, n_folds=n_folds, seed=seed + ir + 1)
+            
+            if get_r2_pval:
+                pls_perm_r2 = clone(pls_model)
+                pls_perm_r2.fit(X, y_perm)
+                r2_perm[ir] = calculate_pls_reconstruction_r2(pls_perm_r2, X, y_perm)[1]
+                
+            if get_accuracy_pval:
+                pls_perm_accuracy = clone(pls_model)
+                accuracy_perm[ir] = calculate_pls_accuracy(pls_perm_accuracy, X, y_perm, n_folds=n_folds, seed=seed + ir + 1)
+        
+        if get_q2_pval:
+            p_Q2Y = (np.sum(q2_perm >= Q2Y) + 1) / (n_perm + 1)
+        if get_r2_pval:
+            p_R2Y = (np.sum(r2_perm >= R2Y) + 1) / (n_perm + 1)
+        if get_accuracy_pval: 
+            p_accuracy = (np.sum(accuracy_perm >= accuracy) + 1) / (n_perm + 1)
+
+    return R2X, R2Y, Q2Y, accuracy, p_R2Y, p_Q2Y, p_accuracy
+
+
+def select_pls_components(
+    pls_model, X, y,
+    max_components: int = 25,
+    metric: Literal['Q2Y', 'R2Y', 'accuracy'] = 'accuracy', 
+    method: Literal['maximize', 'elbow'] = 'elbow', 
+    n_folds=5,
+    seed=888,
+):
+    """Determine the number of components for the PLS model. 
+
+    Parameters
+    ----------
+    pls_model : 
+        `PLSRegression` instance with initialized hyperparameters
+    X : _type_
+        array-like of shape (n_samples, n_features)
+        Predictor matrix used for fitting or consistent with the fitted model.
+    y : 
+        array-like of shape (n_samples,) or (n_samples, n_targets)
+        Response matrix. For PLS-DA, this should be a one-hot encoded matrix
+        of class labels.
+    max_components : int, optional
+        maximum number of components to test, by default 25
+    metric : Literal['Q2Y', 'R2Y', 'accuracy'], optional
+        what metric to use for selection, by default 'accuracy'
+        see `assess_pls_model` for details
+    method : Literal['maximize', 'elbow'], optional
+        whether to find the elbow in components or component that gets the optimal metric value, by default 'elbow'
+    n_folds : int, optional
+        number of folds to use if using Q2Y or accuracy, by default 5
+    seed : int, optional
+        Random seed for reproducibility of CV splits and permutations, by default 888
+        
+    Returns
+    -------
+    rank: int
+        the non-zero indexed optimal number of PLS components
+    metric_per_rank: list
+        the metric value at each component (e.g., at index 4, the metric value of the PLS model with 5 components)
+    """
+    
+    if metric == 'R2Y':
+        pls_model_ranking = clone(pls_model)
+        pls_model_ranking.n_components = max_components
+        pls_model_ranking.fit(X, y)
+        explained_var_x, explained_var_y = calculate_pls_explained_variance_ratio(pls_model_ranking, X, y)
+        metric_per_rank = list(np.cumsum(explained_var_y))
+    else:    
+        metric_per_rank = [np.nan]*max_components
+        for r in range(1, max_components+1):
+            pls_model_ranking = clone(pls_model)
+            pls_model_ranking.n_components = r
+
+            if metric == 'Q2Y':
+                metric_per_rank[r-1] = calculate_pls_q2y(pls_model_ranking, X, y, n_folds=n_folds, seed=seed)
+            elif metric == 'accuracy':
+                metric_per_rank[r-1] = calculate_pls_accuracy(pls_model_ranking, X, y, n_folds=n_folds, seed=seed)
+
+    # get the non-zero_indexed rank 
+    if method == 'elbow':
+        kneedle = KneeLocator(x = range(1, max_components + 1), y = metric_per_rank, curve='concave', direction='increasing')
+        rank = kneedle.elbow
+    elif method == 'maximize':
+        rank = np.argmax(metric_per_rank) + 1
+        
+    return rank, metric_per_rank
+    
+
+    
+default_pls_component_selection_kwargs = {
+    'max_components': 25, 
+    'metric': 'accuracy', 
+    'method': 'elbow', 
+    'n_folds': 5, 
+    'seed': 888
+}
+
+default_pls_assessment_kwargs = {
+    'n_perm': 100, 
+    'get_q2_pval': True, 
+    'get_r2_pval': True, 
+    'get_accuracy_pval': True,
+    'n_folds': 5, 
+    'seed': 888
+}
+
+def pls_da(
+    adata,
+    n_components: int = None,
+    control_confounders: List | None = None, #'plate',
+    assess: bool = True,
+    enc_X = None,
+    enc_Y = None,
+    separate_by: Literal['perturbation', 'category'] = 'perturbation',
+    pert_col: str = 'drug',
+    cat_col: str = 'cell_line', 
+    pls_kwargs = None, 
+    component_selection_kwargs = None,
+    assessment_kwargs = None
           ):
-    """Creates a PLS-DA model (drug ~ TF activity) with confounding covariates
+    """Creates a PLS-DA model (e.g., drug ~ TF activity) given an input AnnData object.
 
     Parameters
     ----------
     adata : _type_
         anndata object
-    n_components : int
-        Number of PLS components to use
+    n_components : int, optional
+        Number of PLS components to use, by default None
+        If None, selected the number of components using the function `select_pls_components`
     control_confounders : List, optional
-        controls for various confounders in the X-block of PLS-DA, by default doesn't control for confounders
+        controls for various confounders in the X-block of PLS-DA, by default doesn't control for confounders.
+        Currently deprecated (prevents good projection for visualization). 
     assess : bool, optional
         gets assessment metrics for PLS fit, by default True
-    return_components : bool, optional
-        returns the X PLS components, by default True
-    seed : int, optional
-        random state, by default 888
     enc_X:
-        fit model for encoding. If not provided (when fitting on actual data) will fit an encoding.
-        If provided (when projecting predicted data), will use the fit encoding to transform the input
+        fit model for X covariate encoding. If not provided (when fitting on actual data) will fit an encoding.
+        If provided (when projecting predicted data), will use the fit encoding to transform the input. 
+        Currently deprecated (prevents good projection for visualization). 
+    enc_Y:
+        fit model for y encoding. If not provided (when fitting on actual data) will fit an encoding.
+        If provided (when projecting predicted data), will use the fit encoding to transform the input. 
+    separate_by : Literal[perturbation, category], optional
+        whether to fit the PLS model to separate by the `pert_col` ('perturbation') or `cat_col` ('categorical), by default 'perturbation'
+    pert_col: str, optional
+        specifies the label of the perturbation column in the metadata
+    cat_col: str, optional
+        specifies the label of the categorical column in the metadata
+    pls_kwargs: 
+        additional key word arguments to pass to sklearn's `PLSRegression`
+    component_selection_kwargs:
+        additional key word arguments to pass to `select_pls_components`
+    assessment_kwargs:
+        additioanl key word arguments to pass to `assessment_kwargs`
+        
+    Returns
+    -------
+    models: 
+        A dictionary of the various fit models
+        - enc_X: depreacted
+        - enc_Y: the encoder for the y response
+        - pls_model: the fit pls_model with the following additional attributes
+            - metric_per_component: the assessment per each additional component if `n_components` is None
+            - explained_x_variance_ratio_: X explained variance per component, if `assess` is True
+            - explained_y_variance_ratio, y explained variance per component, if `assess` is True
+            - assessment_metrics: standard pls model assessment metrics and associated p-values, if `assess` is True
+    X_pls:
+        The X scores from the model fit on the input X values
     """
 
+    if pls_kwargs is None:
+        pls_kwargs = {}
+    if component_selection_kwargs is None:
+        component_selection_kwargs = {}
+    if assessment_kwargs is None:
+        assessment_kwargs = {}
 
     if separate_by == 'perturbation':
         y = adata.obs[pert_col].astype(str).values.reshape(-1,1)
@@ -406,119 +968,240 @@ def pls_da(adata,
     if enc_Y is None:
         enc_Y = OneHotEncoder(sparse_output=False, drop=None)
         enc_Y.fit(y)
-    Y = enc_Y.transform(y)
+    y_encoded = enc_Y.transform(y)
 
     X, enc_X = prepare_input_matrix_plsda(
         adata = adata,
-        control_confounders = control_confounders,
+        control_confounders = [] if control_confounders is None else control_confounders,
         enc_X = enc_X
     )
 
-    pls_model = PLSRegression(n_components=n_components)
-    pls_model.fit(X, Y)
+    metric_per_component = None
+    if n_components is None:
+        component_selection_kwargs = {**default_pls_component_selection_kwargs, **component_selection_kwargs}
+        n_components, metric_per_component = select_pls_components(
+            pls_model = PLSRegression(**pls_kwargs), 
+            X = X, y = y_encoded,
+            **component_selection_kwargs
+        )
+        
+    pls_model = PLSRegression(n_components=n_components, **pls_kwargs)
+    pls_model.fit(X, y_encoded)
+    pls_model.metric_per_component = metric_per_component
 
-    X_pls = None
-    if assess or return_components:
-        X_pls = pls_model.transform(X)
-
-    assessment = None
     if assess:
-        clf = make_pipeline(StandardScaler(), LogisticRegression(max_iter=1000))
-        accuracy_score = cross_val_score(clf, X_pls, y.ravel(),
-                                         cv=StratifiedKFold(5, random_state=seed, shuffle=True),
-                                         scoring='accuracy').mean()
+        # get explained variance from model
+        explained_x, explained_y = calculate_pls_explained_variance_ratio(pls_model = pls_model, X = X, y = y_encoded)
+        pls_model.explained_x_variance_ratio_ = explained_x
+        pls_model.explained_y_variance_ratio_ = explained_y
 
-#         explained_var_y = np.var(pls_model.y_scores_, axis=0, ddof=0) / np.var(Y, axis=0, ddof=0).sum()
-#
-
-        Y_pred = pls_model.predict(X)
-        explained_var_y = ss_explained_var(Y, Y_pred) #1 - np.sum((Y - Y_pred) ** 2) / np.sum((Y - Y.mean(axis=0)) ** 2)
-
-
-#         X_pred = pls_model.x_scores_ @ pls_model.x_loadings_.T
-#         explained_var_x = ss_explained_var(X, X_pred)
-#         explained_var_x = np.var(pls_model.x_scores_, axis=0) / np.var(X, axis=0).sum()
-#         cum_explained_x = np.cumsum(explained_var_x)[-1]
-
-        assessment = {
-            'n_components': n_components,
-            'accuracy': accuracy_score,
-            'explained_y': explained_var_y}
-
+        assessment_kwargs = {**default_pls_assessment_kwargs, **assessment_kwargs}
+        R2X, R2Y, Q2Y, accuracy, p_R2Y, p_Q2Y, p_accuracy = assess_pls_model(
+            pls_model, X, y_encoded, 
+            **assessment_kwargs
+        )
+        pls_model.assessment_metrics = {
+            'R2X': {'value': R2X, 'pval': None}, 
+            'R2Y': {'value': R2Y, 'pval': p_R2Y}, 
+            'Q2Y': {'value': Q2Y, 'pval': p_Q2Y},  
+            'accuracy': {'value': accuracy, 'pval': p_accuracy}
+        }
+        
+    X_pls = pls_model.transform(X)
     models = {'pls_model': pls_model,
              'encoder_x': enc_X,
              'encoder_y': enc_Y}
+    
 
-    return models, assessment, X_pls
+    return models, X_pls
 
-def pls_elbow(
-    adata,
-    pls_components_max: int = 25,
-    elbow_metric: Literal['accuracy', 'explained_y'] = 'explained_y',
-    separate_by: Literal['perturbation', 'categorical'] = 'perturbation',
-    control_confounders: list = [],
-    pert_col: str = 'drug',
-    cat_col: str = 'cell_line',
-    seed: int = 888,
-):
-    """Identifies  the number of PLS components to use with an automated elbow analysis.
+def manual_pls_projections(pls_model, X):
+    """Manually projects the X block into the latent space. Should be analogous to 
+    `pls_model.transform(X)`."""
+    
+    # manual transform
+    W = pls_model.x_weights_
+    P = pls_model.x_loadings_
+
+    
+    Xc = (X - pls_model._x_mean) 
+    if pls_model.scale:
+        Xc /= pls_model._x_std
+
+    T_manual = Xc @ W @ np.linalg.inv(P.T @ W)
+    
+    return T_manual
+
+
+def compute_vip(pls_model):
+    """
+    Compute Variable Importance in Projection (VIP) scores for a fitted sklearn PLSRegression model.
+    Works for both single- and multi-response Y.
 
     Parameters
     ----------
-    adata : _type_
-        anndata object
-    pls_components_max : int, optional
-        max number of PLS components to iterate through, by default 25
-    elbow_metric : Literal['accuracy', 'explained_y'], optional
-        what assessment metric to use for identifying the elbow, by default 'explained_y'
-        - 'accuracy': Mean accuracy score across 5-fold CV of a logistic regression classifier trained
-        on the PLS components (cannot directly use PLS model CV because it is technically a
-        regression model on the one-hot encodings, and the high R^2 does not necessarily mean
-        high classification accuracy)
-        - 'explained_y': the fraction of variance in the test y-block (drug) by the PLS model prediction
-    separate_by : Literal['perturbation', 'categorical'], by default 'perturbation'
-        whether to separate PLS-DA by perturbation or categorical covariate
-    control_confounders : List, optional
-        controls for various confounders in the X-block of PLS-DA, by default doesn't control for confounders
+    pls_model : sklearn.cross_decomposition.PLSRegression
+        A fitted PLSRegression object (after .fit()).
 
     Returns
     -------
-    assessment_df: pd.DataFrame
-        results from each PLS component
-    n_components: identified number of PLS components to use for downstream analysis
+    vip_scores : np.ndarray of shape (n_features,)
+        VIP score for each feature in X.
     """
+    T = pls_model.x_scores_      # (n_samples, n_components)
+    W = pls_model.x_weights_     # (n_features, n_components)
+    Q = pls_model.y_loadings_    # (n_targets, n_components)
 
-    assessment_df = []
-    iter_res = {}
-    for n_components in trange(pls_components_max, 0, -1): #(1, pls_components_max + 1):
-        models, assessment, X_pls = pls_da(
-            adata = adata,
-            n_components = n_components,
-            control_confounders = control_confounders,
-            assess = True,
-            return_components = True,
-            seed = seed,
-            enc_X = None,
-            enc_Y = None,
-            separate_by = separate_by,
-          pert_col = pert_col,
-           cat_col = cat_col
-        )
-        assessment_df.append(assessment)
-        iter_res[n_components] = (models, assessment, X_pls)
+    # Compute sum of squares of Y explained by each component (across all targets)
+    ssy = np.sum(np.sum((T ** 2), axis=0) * np.sum((Q ** 2), axis=0))  # scalar total
+    ssy_per_comp = np.sum((T ** 2), axis=0) * np.sum((Q ** 2), axis=0)  # per-component
+    
+    p = W.shape[0]  # number of predictors
+    
+    # Compute VIP scores
+    vip = np.sqrt(p * np.sum(ssy_per_comp * (W ** 2) / np.sum(W ** 2, axis=0), axis=1) / ssy)
+    
+    return vip
 
-    assessment_df = pd.DataFrame(assessment_df)
-    assessment_df = assessment_df.sort_values(by = 'n_components').reset_index(drop = True)
 
-    y_ax = assessment_df[elbow_metric]
-    x_ax = np.array(range(len(y_ax))) + 1
-    kneedle = KneeLocator(x = x_ax, y = y_ax, curve='concave', direction='increasing')
-    n_components = kneedle.elbow
 
-    selected_res = iter_res[n_components]
-    del iter_res
+def assess_pls_separation(tf_adata, pls_model, enc_Y, 
+                          pert_col: str, 
+                          ctrl_pert: str,
+                         get_pert_separation_stats = True
+                         ):
+    """
+    Assess how well a fitted PLS model captures separation of perturbation.
+    Quantify which features contribute most to that separation.
 
-    return assessment_df, n_components, *selected_res
+    This function evaluates both component- and feature- level metrics that together
+    describe the strength and distribution of separation encoded by the PLS embedding.
+
+    Specifically, it:
+      • Computes VIP scores and X-loadings per feature, quantifying global and component-wise importance.
+      • Calculates per-component variance in Y explained (R²Y).
+      • Optionally, computes full feature space Cliff’s delta and Mann–Whitney U p-values 
+        between binary perturbation groups (perturbation vs control), allowing comparison of discriminant features 
+        in full feature space vs PLS space.
+
+    Parameters
+    ----------
+    tf_adata : anndata.AnnData
+        Expression matrix (features × samples) used for the PLS fit. 
+        Must contain a column in `obs` corresponding to the binary perturbation.
+    pls_model : sklearn.cross_decomposition.PLSRegression
+        A fitted PLSRegression model.
+    enc_Y : sklearn.preprocessing.OneHotEncoder
+        Encoder used to one-hot encode the perturbation variable prior to PLS fitting.
+    pert_col : str
+        Column name in `tf_adata.obs` indicating perturbation labels.
+    ctrl_pert : str
+        Label identifying the control condition (used for Cliff’s delta and MWU tests).
+    get_pert_separation_stats : bool, default=True
+        If True, compute per-feature Cliff’s delta and Mann–Whitney U statistics 
+        for binary perturbation vs control separation.
+
+    Returns
+    -------
+    pls_feature_importance : pandas.DataFrame
+        Feature-level metrics including:
+            - 'VIP' : Variable Importance in Projection (global feature importance)
+            - 'PLS_i' : X-loadings per PLS component
+            - (optional) 'Cliff’s Delta' and 'MWU p-val' : univariate separation metrics
+        Indexed by `tf_adata.var_names`, sorted by decreasing VIP.
+    pls_stats : pandas.DataFrame
+        Component-level metrics including:
+            - 'Y variance explained' (% of Y variance captured per component)
+            - 'Spearman Correlation (VIP, X loadings)' : alignment between global and component-wise feature importance
+            - 'Pearson Correlation (X scores, Y)' : strength of sample-level separation along each latent axis
+
+    Notes
+    -----
+    • Component-level metrics: 
+        • High R²Y and strong Pearson Correlation (X scores, Y) correlations in early components indicate that 
+          observation separation by perturbation is captured by the first few components. 
+        • High (VIP, X loadings) Spearman correlations tells us how much a component's high feature importance 
+          is reflected across all components.
+        • A strong association between these observation separation metrics (bullet point 1) and 
+          (VIP, X loadings) Spearman correlations (bullet point 2) tells us that the features in those PLS 
+          components are informative of separation. <-- this is unintuitive but should be somewhat correct.
+          Expectation is that there should be strong associations, by definition of the PLS objective.
+    • Feature-level metrics: 
+        • Non-uniform VIP / loading distributions imply sparsity in discriminant features (only a few drive signal) 
+          in PLS space, making projection into this PLS space a stringent test of model fidelity.
+        • Non-uniform Cliff's delta distributions imply sparsity in discriminant features (only a few drive signal)
+          in full feature space, making capturing separation a difficult task for the model.
+        • High correlation between Cliff’s delta and PLS metrics confirms that PLS captures 
+          the same discriminant structure as the full feature space.
+
+    """    
+    # get the feature contributions 
+    vip_scores = compute_vip(pls_model)
+    vip_scores = pd.DataFrame(data = {'VIP': vip_scores})
+    x_loadings = pd.DataFrame(pls_model.x_loadings_, 
+                columns = ['PLS_{}'.format(i +1) for i in range(pls_model.n_components)])
+    pls_feature_importance = pd.concat([vip_scores, x_loadings], axis = 1)
+    pls_feature_importance.set_index(tf_adata.var_names, inplace = True)
+
+    pls_feature_importance.sort_values(by = ['VIP'], ascending = False, inplace = True)
+    
+    
+    pls_stats = {
+        'Y variance explained': [], 
+        'Spearman Correlation (VIP, X loadings)': [], 
+        'Pearson Correlation (X scores, Y)': [],
+    }
+    
+    y = tf_adata.obs[pert_col].values.reshape(-1,1)
+    y = enc_Y.transform(y)
+    
+    R2Y_per_comp = pls_model.explained_y_variance_ratio_ #pls_explained_variance_y(pls_model, y)
+    
+
+    
+    for i in range(pls_model.n_components):
+        var_explained = R2Y_per_comp[i] * 100
+        sr = stats.spearmanr(pls_feature_importance["VIP"], pls_feature_importance["PLS_{}".format(i+1)]).statistic
+        # only with the first dummy variable (totally fine if binary)
+        pr = stats.pearsonr(pls_model.x_scores_[:, i], y[:, 0]).statistic
+        
+        
+        pls_stats['Y variance explained'].append(var_explained)
+        pls_stats['Spearman Correlation (VIP, X loadings)'].append(sr)
+        pls_stats['Pearson Correlation (X scores, Y)'].append(pr)
+        
+    pls_stats = pd.DataFrame(pls_stats)
+    pls_stats.index = ['PLS_{}'.format(i+1) for i in range(pls_model.n_components)]   
+    
+    
+    
+    if get_pert_separation_stats:
+        assert tf_adata.obs[pert_col].nunique() == 2, 'Stats are only for binary separation'
+        assert ctrl_pert in tf_adata.obs[pert_col].values, 'Stats are only for binary separation from control perturbation'
+
+
+        mwus = []
+        cds = []
+        for feature in pls_feature_importance.index:
+            stats_df = tf_adata[:, feature].to_df()
+            stats_df[pert_col] = tf_adata.obs[pert_col]
+
+            mask = (stats_df[pert_col] == ctrl_pert)
+
+            ctrl_expr = stats_df[mask][feature].values
+            pert_expr = stats_df[~mask][feature].values
+
+            mwu_pval = stats.mannwhitneyu(pert_expr, ctrl_expr).pvalue
+            cd = cliffs_delta(pert_expr, ctrl_expr)[0] # positive if pert > ctrl, negative othersie
+
+            mwus.append(mwu_pval)
+            cds.append(cd)
+        
+        pls_feature_importance['{} Separation MWU p-val'.format(pert_col)] = mwu_pval
+        pls_feature_importance["{} Separation Cliff's Delta".format(pert_col)] = cds
+    
+    return pls_feature_importance, pls_stats
+
 
 ############################ PIPELINES ############################ 
 def pls_da_pipeline(
@@ -526,12 +1209,15 @@ def pls_da_pipeline(
     pert_ids: list | str,
     cat_ids: list | str,
     n_components: int = None,
+    control_confounders: list | None = None,
+    assess_pls_fit: bool = True, 
     pert_col = 'drug',
     cat_col = 'cell_line',
-    control_confounders: list = [],
     separate_by: Literal['perturbation', 'category'] = 'perturbation',
-    covariate_associations: list = ['cell_line', 'drug', 'plate', 'phase', 'S_score', 'G2M_score', 'pcnt_mito'],
-    scale: bool = False, # for TF adata it is already z-scored
+    pls_kwargs = None, 
+    component_selection_kwargs = None,
+    assessment_kwargs = None,
+    covariate_associations: list | None = None,
     run_umap: bool = True,
     file_prefix: str | None = None,
     verbose: bool = False,
@@ -554,20 +1240,20 @@ def pls_da_pipeline(
     n_components : int, optional
         number of components to fit model on, by default None
         if None, will identify with an automated elbow selection up to 25 components (this can take a while to run)
+    assess_pls_fit : bool, optional
+        gets assessment metrics for PLS fit, by default True
+    control_confounders : List, optional
+        controls for various confounders in the X-block of PLS-DA, by default doesn't control for confounders.
+        Currently deprecated (prevents good projection for visualization). 
     pert_col : str, optional
         perturbation column in `adata.obs`, by default 'drug'
     cat_col : str, optional
         categorical column in `adata.obs`, by default 'cell_line'
-    control_confounders : list, optional
-        columns in `adata.obs` to control for in PLS model fitting, by default does not control for any confounders
     separate_by : Literal[perturbation, category], optional
-        whether to fit the PLS model to separate by the `pert_col` ('perturbation') or `cat_col` ('categorical), by default 'perturbation'
+        whether to fit the PLS model to separate by the `pert_col` ('perturbation') or `cat_col` ('category'), by default 'perturbation'
     covariate_associations : list, optional
-        calculates univariate statistical associations between each PLS component and a covariate in `adata.obs`, by default['cell_line', 'drug', 'plate', 'phase', 'S_score', 'G2M_score', 'pcnt_mito']
+        calculates univariate statistical associations between each PLS component and a covariate in `adata.obs`
         see `latent_association` for details
-    scale : bool, optional
-        whether to scale the adata object, by default False
-        assumiing this is inferred TF activities, these are already Z-scored, so will note scale
     run_umap: bool, optional
         whether to run umap (True) or not (False), by default True
     file_prefix : str | None, optional
@@ -586,102 +1272,82 @@ def pls_da_pipeline(
 
     if separate_by == 'perturbation':
         separate_col = pert_col
-    elif separate_by == 'categorical':
+    elif separate_by == 'category':
         separate_col = cat_col
 
 
     mask = (adata.obs[cat_col].isin(cat_ids)) & ((adata.obs[pert_col].isin(pert_ids)))
     adata_sub = adata[mask].copy()
 
-    if scale:
-        raise ValueError('Internal: This has to be appropriately implemented to allow for prediction projections')
-        sc.pp.scale(adata_sub)
-
-    # elbow selection
-    if n_components is None:
-        print("Run elbow selection") if verbose else None
-        assessment_df, n_components, models, pls_assessment, X_pls = pls_elbow(
-            adata = adata_sub,
-            pls_components_max = 25,
-            elbow_metric = 'explained_y',
-            pert_col = pert_col,
-            cat_col = cat_col,
-            seed = seed
-        )
-        if file_prefix is not None:
-            assessment_df.to_csv(file_prefix + '_PLS_elbow.csv')
-
-    else:
-        print("Fit PLS Model") if verbose else None
-        assessment_df = None
-        models, pls_assessment, X_pls = pls_da(
-            adata = adata_sub,
-            n_components = n_components,
-            control_confounders = control_confounders,
-            assess = True,
-            return_components = True,
-            seed = seed,
-            enc_X = None,
-            enc_Y = None,
-            separate_by = separate_by,
-            pert_col = pert_col,
-            cat_col = cat_col,
-        )
-
-    print("Calculate covariate - PLS associations") if verbose else None
-    if len(covariate_associations) == 0:
-        covariate_associations = [separate_col]
-    elif separate_col not in covariate_associations:
-        covariate_associations.append(separate_col)
-
+    print("Fit PLS Model") if verbose else None
+    models, X_pls = pls_da(
+        adata = adata_sub,
+        n_components = n_components,
+        control_confounders = control_confounders,
+        assess = assess_pls_fit,
+        enc_X = None,
+        enc_Y = None,
+        separate_by = separate_by,
+        pert_col = pert_col,
+        cat_col = cat_col,
+        pls_kwargs = pls_kwargs, 
+        component_selection_kwargs = component_selection_kwargs,
+        assessment_kwargs = assessment_kwargs
+    )
     adata_sub.obsm['X_pls'] = X_pls
 
-    r2_df_linear = latent_association(
-        adata = adata_sub,
-        covariates = covariate_associations,
-        model_type = 'linear',
-        latent_label = 'pls',
-        n_cores = n_cores,
-        seed = seed
-    )
+    r2_df = None
+    if covariate_associations is not None and len(covariate_associations) != 0:
+        print("Calculate covariate - PLS associations") if verbose else None
+        
+        r2_df_linear = latent_association(
+            adata = adata_sub,
+            covariates = covariate_associations,
+            model_type = 'linear',
+            latent_label = 'pls',
+            n_cores = n_cores,
+            seed = seed
+        )
 
-    r2_df_nl = latent_association(
-        adata = adata_sub,
-        covariates = covariate_associations,
-        model_type = 'nonlinear',
-        latent_label = 'pls',
-        n_cores = n_cores,
-        seed = seed
-    )
+        r2_df_nl = latent_association(
+            adata = adata_sub,
+            covariates = covariate_associations,
+            model_type = 'nonlinear',
+            latent_label = 'pls',
+            n_cores = n_cores,
+            seed = seed
+        )
 
-    r2_df = pd.concat([r2_df_linear, r2_df_nl])
-    if file_prefix is not None:
-        r2_df.to_csv(file_prefix + '_pls_associations.csv')
+        r2_df = pd.concat([r2_df_linear, r2_df_nl])
+        if file_prefix is not None:
+            r2_df.to_csv(file_prefix + '_pls_associations.csv')
 
     X_umap = None
     if run_umap:
         print("Get UMAP") if verbose else None
-        umap_model = umap.UMAP(
-            n_neighbors=15,
-            n_components=2,
-            metric='euclidean',
-            target_metric='categorical',
-            random_state = seed)
-        umap_model.fit(
-            X_pls,
-            adata_sub.obs[separate_col].cat.codes.values)
-        X_umap = umap_model.transform(X_pls)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=".*n_jobs value 1 overridden to 1 by setting random_state.*", category=UserWarning)
+
+            umap_model = umap.UMAP(
+                n_neighbors=15,
+                n_components=2,
+                metric='euclidean',
+                #target_metric='categorical',
+                n_jobs = n_cores,
+                random_state = seed)
+        
+            umap_model.fit(X_pls) #, adata_sub.obs[separate_col].cat.codes.values)
+            X_umap = umap_model.transform(X_pls)
         models['umap_model'] = umap_model
 
+        
+    # store values in AnnData object
     adata_sub.uns['pls'] = {'pls_mod': models['pls_model'],
                         'encoder_x': models['encoder_x'], 
                         'encoder_y': models['encoder_y'],
-                        'pls_rank': models['pls_model'].n_components,
-                        'elbow_analysis': assessment_df, 
-                        'model_fit': pls_assessment
                         }
 
-    adata_sub.obsm['X_pls'] = X_pls
+    
 
     if run_umap:
         adata_sub.uns['umap_pls'] = {'umap_pls_mod': umap_model}
@@ -916,14 +1582,17 @@ def visualize_latent_space(
     adata, 
     latent_label: Literal['pca', 'pls', 'umap', 'umap_pls'], 
     covariates: list, 
+    plot_type: Literal['scatter', 'contour'] = 'scatter',
     panel_titles: list = None,
     components: list = [1,2], 
-    n_frac: float = 0.2, 
+    n_frac: float = 1, #0.2, 
     frac_col: str | None = None, 
     fig_title: str | None = None,
     legend = False, 
     seed: int = 888, 
     file_name: str | None = None, 
+    show_fig: bool = True,
+    **kwargs
 
 ):
     """Visualize the latent space with specific covariates as the hue.
@@ -936,13 +1605,15 @@ def visualize_latent_space(
         which latent space to visualize
     covariates : list
         which covariates to visualize
+    plot_type : Literal['scatter', 'contour']
+        whether to visualize with a scatter or contour plot
     panel_titles : list, optional
         mapping of covariates to titles in the figure panels (corresponding index)
     components : list | dict, optional
         which components to display on the 2 axes, by default [1,2]
         if a dictionary, will map each covariate to that component
     n_frac : float, optional
-        subset to this fraction of the data for quicker visualization, by default 0.2
+        subset to this fraction of the data for quicker visualization, by default 1
     frac_col : str | None, optional
         if set, will evenly subset each value in this column, by default None
     fig_title : str, optional
@@ -953,6 +1624,10 @@ def visualize_latent_space(
         random state, by default 888
     file_name : str, optional
         save to this file name, by default None
+    show_fig : bool, optional
+        whether to show the figure when calling the function (i.e., when running in Notebook cell)
+    **kwargs : 
+        additional key word arguments to pass to main seaborn plot
     """
         
     if panel_titles is None or len(panel_titles) == 0:
@@ -980,13 +1655,10 @@ def visualize_latent_space(
     if frac_col is None:
         viz_df = viz_df.sample(frac=n_frac, replace=False, random_state=seed)
     else:
-        n_per_condition = int(np.round(adata.obs[frac_col].value_counts().min() * 0.2))
-
-        # Subsample indices evenly per condition
         sampled_indices = (
-            viz_df.groupby(frac_col)
-            .sample(n=n_per_condition, random_state=seed)
-            .index
+            viz_df.groupby(frac_col, observed=False)
+                  .sample(frac=n_frac, replace=False, random_state=seed)
+                  .index
         )
 
         # shuffle
@@ -1004,8 +1676,17 @@ def visualize_latent_space(
     ax = ax.flatten()
     for (i, covariate) in enumerate(covariates):
         plot_component = components[covariate]
-        sns.scatterplot(data = viz_df, x = plot_component[0], y = plot_component[1], hue = covariate, 
-               s = 10, ax = ax[i])
+
+        if plot_type == 'scatter':
+            scatter_defaults = {"s": 10}
+            final_kwargs = {**scatter_defaults, **kwargs}
+            sns.scatterplot(data = viz_df, x = plot_component[0], y = plot_component[1], hue = covariate,
+                            ax = ax[i], **final_kwargs)
+        elif plot_type == 'contour':
+            contour_defaults = {"fill": False, "levels": 10}
+            final_kwargs = {**contour_defaults, **kwargs}
+            sns.kdeplot(data = viz_df, x = plot_component[0], y = plot_component[1], hue = covariate,
+                        ax = ax[i], **final_kwargs)
         
         if not legend:
             ax[i].legend_.remove()
@@ -1018,6 +1699,10 @@ def visualize_latent_space(
     fig.tight_layout()
     if file_name is not None:
         plt.savefig(file_name, dpi=300, bbox_inches="tight")
+        
+    if not show_fig:
+        plt.close(fig)
+        
         
         
 def visualize_latent_association(

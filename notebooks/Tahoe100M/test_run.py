@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[1]:
+# In[7]:
 
 
 import argparse
@@ -28,6 +28,9 @@ parser.add_argument("--index", type=int_or_str, required=True, help="Filename in
 parser.add_argument("--retrain", type=str_to_bool, required = False, default = True)
 parser.add_argument("--subset_size", type=float, required=True)
 parser.add_argument("--noadv", type=str_to_bool, required=True)
+parser.add_argument("--randomize_features", type=str_to_bool, default=False)
+parser.add_argument("--randomize_samples", type=str_to_bool, default=False)
+
 
 parser.add_argument("--max_epochs", type=int, required=True)
 
@@ -77,6 +80,8 @@ fn = str(args.index)
 retrain = args.retrain
 subset_size = args.subset_size
 no_adv = args.noadv
+randomize_features = args.randomize_features
+randomize_samples = args.randomize_samples
 vae_scaling_KL = args.KL_scaling
 max_epochs = args.max_epochs
 n_cat_discriminator_train = args.n_cat_discriminator_train
@@ -116,10 +121,10 @@ global_bias_L2 = args.global_bias_L2
 
 batch_scaler_mem = args.batch_scaler_mem
 
-#python test_run.py --index 14_engaging --retrain true --subset_size 0.15 --noadv false --max_epochs 600 --KL_scaling 5e-3 --n_cat_discriminator_train 5 --n_pert_discriminator_train 5 --cat_dropout 0.1 --pert_dropout 0.1 --n_adversarial_start 200 --main_max_lr 2e-3 --gen_max_lr 2.75e-4 --cat_max_lr 1e-3 --pert_max_lr 1e-3 --cat_max_penalty_weight 11 --generator_dropout_rate 0.7 --n_layers_vae 3 --pert_n_layers 4 --cat_bias_pert_scaler 0 --cat_pert_method orthogonality --cat_pert_pert_label false --cat_bias_lambda_L2 1e-4 --spectral_loss_factor 0 --uniform_lambda_L2 0 --contrastive_loss_scaler 1 0.2 --contrastive_loss_type sc_actual sc_predicted --contrastive_percentile 0.3 --contrastive_triplet_margin_frac 0.1 --cat_spectral_norm true --pert_spectral_norm true --global_bias_L2 0 --batch_scaler_mem 1
+#python test_run.py --index 14_engaging --retrain true --subset_size 0.15 --noadv false --randomize_features false --randomize_samples false --max_epochs 600 --KL_scaling 5e-3 --n_cat_discriminator_train 5 --n_pert_discriminator_train 5 --cat_dropout 0.1 --pert_dropout 0.1 --n_adversarial_start 200 --main_max_lr 2e-3 --gen_max_lr 2.75e-4 --cat_max_lr 1e-3 --pert_max_lr 1e-3 --cat_max_penalty_weight 11 --generator_dropout_rate 0.7 --n_layers_vae 3 --pert_n_layers 4 --cat_bias_pert_scaler 0 --cat_pert_method orthogonality --cat_pert_pert_label false --cat_bias_lambda_L2 1e-4 --spectral_loss_factor 0 --uniform_lambda_L2 0 --contrastive_loss_scaler 1 0.2 --contrastive_loss_type sc_actual sc_predicted --contrastive_percentile 0.3 --contrastive_triplet_margin_frac 0.1 --cat_spectral_norm true --pert_spectral_norm true --global_bias_L2 0 --batch_scaler_mem 1
 
 
-# In[1]:
+# In[8]:
 
 
 # for i in range(2,9):
@@ -134,6 +139,8 @@ batch_scaler_mem = args.batch_scaler_mem
 # retrain = True
 # subset_size = 0.15
 # noadv = False
+# randomize_features = False
+# randomize_samples = False
 # max_epochs = 600
 # KL_scaling = 5e-3
 # n_cat_discriminator_train = 5
@@ -169,6 +176,7 @@ batch_scaler_mem = args.batch_scaler_mem
 # # Spectral norm flags
 # cat_spectral_norm = True
 # pert_spectral_norm = True
+# global_bias_L2 = 0
 
 
 # In[2]:
@@ -586,7 +594,7 @@ training_params['prediction_loss_fn_scaler'] = loss_scaler
 
 # VAE:
 
-# In[21]:
+# In[19]:
 
 
 # building
@@ -632,7 +640,7 @@ del vae_params['max_epochs']
 
 # Discriminator:
 
-# In[22]:
+# In[20]:
 
 
 discriminator_params = {
@@ -652,7 +660,7 @@ discriminator_params = {
 }
 
 
-# In[23]:
+# In[21]:
 
 
 # architecture -- pert >> cat bc harder classification problem
@@ -689,7 +697,7 @@ cat_discriminator_params['epsilon_smooth'] = 1/tf_adata.obs.cell_line.nunique()
 pert_discriminator_params['epsilon_smooth'] = 1/tf_adata.obs.drug.nunique()
 
 
-# In[24]:
+# In[22]:
 
 
 # adverserial penalty curve
@@ -757,7 +765,7 @@ else:
 # pert_discriminator_params['discriminator_penalty_weight'] = pert_discriminator_penalty_weight
 
 
-# In[25]:
+# In[23]:
 
 
 # discriminator LRs
@@ -795,7 +803,7 @@ pert_discriminator_params = {**pert_discriminator_params, **discriminator_lr_par
 
 # Visualize hyperparameters:
 
-# In[26]:
+# In[24]:
 
 
 fig, ax = plt.subplots(ncols = 2, figsize = (13,5))
@@ -814,7 +822,7 @@ fig.tight_layout();
 
 # # Build model and trainer
 
-# In[27]:
+# In[25]:
 
 
 # input stimulation
@@ -822,13 +830,27 @@ X_in = pd.get_dummies(tf_adata.obs.drug).astype(int)
 X_in.drop(columns = 'DMSO_TF', inplace = True) # all 0s
 
 
-# In[28]:
+# In[29]:
+
+
+y_out = tf_adata.to_df().copy()
+if randomize_features:
+    np.random.seed(seed)
+    permuted_tfs = np.random.permutation(tf_adata.var_names)
+    y_out = y_out.loc[:, permuted_tfs]
+if randomize_samples:
+    np.random.seed(seed)
+    permuted_bcs = np.random.permutation(tf_adata.obs_names)
+    y_out = y_out.loc[permuted_bcs, :]
+
+
+# In[30]:
 
 
 mod = SignalingModel(
     net = sn_ppis,
     X_in = X_in,
-    y_out = tf_adata.to_df().copy(), 
+    y_out = y_out, # tf_adata.to_df().copy(), 
     expr = expr, 
     covariates = tf_adata.obs.copy(),
     categorical_covariate_keys = ['cell_line'],
@@ -836,7 +858,10 @@ mod = SignalingModel(
     projection_amplitude_out = projection_amplitude_out,
     weight_label = weight_label, source_label = source_label, target_label = target_label,
     bionet_params = bionet_params, 
-    dtype = torch.float32, device = device, seed = mod_seed)
+    dtype = torch.float32, device = device, seed = mod_seed,
+    rand_y_features = randomize_features, 
+    rand_y_samples = randomize_samples
+)
 
 mod.input_layer.weights.requires_grad = False # don't learn scaling factors for the ligand input concentrations
 mod.signaling_network.prescale_weights(target_radius = target_spectral_radius) # spectral radius

@@ -319,7 +319,7 @@ def run_prediction(mod,
         del y_predicted_, Y_full_, biases_
 
     y_predicted = pd.DataFrame(y_predicted.detach().cpu().numpy())
-    y_predicted.columns = mod.y_out.columns
+    y_predicted.columns = sorted(mod.y_out.columns) # accounts for randomized baselines, assumes input is sorted as is default in init
     tf_adata_predicted = sc.AnnData(X = y_predicted, obs = obs)
 
     del X_full, X_in, covariates_idx, expr
@@ -529,30 +529,143 @@ def merge_novar_predictions(
     return tf_adata_predicted[keep_idx, :].copy()
 
 
-def _per_condition_projection(tf_adata, 
-                              X_in, 
-                              linear_projection, 
-                              per_condition_models, 
-                              ctrl_pert, 
-                              counterfactual, 
-                              cat_counterfactual_map, 
-                              project_umap
-                              ):
+def merge_ctrl_with_pert(
+    tf_adata_actual, 
+    tf_adata_pert_predicted, 
+    cat_col: str, 
+    pert_col: str,
+    tf_adata_ctrl_predicted = None, 
+    
+):
+    """Merges prediction AnnData with actual AnnData object
+
+    Parameters
+    ----------
+    tf_adata_actual : _type_
+        _description_
+    tf_adata_pert_predicted : _type_
+        _description_
+    cat_col : str
+        _description_
+    pert_col : str
+        _description_
+    tf_adata_ctrl_predicted : _type_, optional
+        contains predictions for control conditions if wanting to include, by default None
+    """
+    # merge the prediction dataframes
+    tf_adata_pert_predicted.obs_names = tf_adata_pert_predicted.obs_names + '_predicted'
+    tf_adata_pert_predicted.obs['batch'] = 'predicted'
+    if tf_adata_ctrl_predicted is not None:
+        tf_adata_ctrl_predicted.obs['batch'] = 'predicted_ctrl'
+        tf_adata_ctrl_predicted.obs_names = tf_adata_ctrl_predicted.obs_names + '_predicted_ctrl'
+        tf_adata_predicted = sc.concat([tf_adata_pert_predicted, tf_adata_ctrl_predicted])
+    else:
+        tf_adata_predicted = tf_adata_pert_predicted
+        
+    for tf_adata_ in [tf_adata_predicted, tf_adata_actual]:
+        if 'condition' not in tf_adata_.obs.columns:
+            tf_adata_.obs['condition'] = tf_adata.obs[cat_col].astype(str) + '^' + tf_adata.obs[pert_col].astype(str)
+        
+    tf_adata_actual.obs['batch'] = 'actual'
+    
+    tf_adata_actual.obs['counterfactual_condition'] = None 
+    
+    tf_adata_merged = sc.concat([tf_adata_actual, tf_adata_predicted])
+    tf_adata_merged.obs['barcode'] = tf_adata_merged.obs.index.tolist()
+
+    tf_adata_merged.obs_names_make_unique()
+    
+    return tf_adata_merged
+
+
+def project_pls_per_condition(
+    tf_adata,
+    pls_models, 
+    umap_models = None, 
+    ctrl_pert: str = 'CTRL', # only needed for per_condition_models
+    counterfactual: Literal['perturbation', 'category'] = 'perturbation', 
+    cat_counterfactual_map: dict = None,
+):
+    """Projects AnnData `.X` attribute per unique `.obs[<condition>]`. Expects and returns 
+    very specific input formats.
+
+    Note this is agnostic to predicted vs actual data, so depending on whether the PLS model was fit
+    on only the actual data or on the predicted + actual data, this can either be a projection of predictions
+    into actual data or a joint embedding, respectively. 
+
+    Parameters
+    ----------
+    tf_adata : _type_
+        AnnData object, which should contain all the conditions in `pls_models` and corresponding control
+    pls_models : _type_
+        a dictionary with keys as conditions and values as the fit PLS model. 
+        The expectation is that the PLS model was fit on the condition AND corresponding control condition. 
+    umap_models : _type_, optional
+        same as `pls_models` for UMAP, by default None
+    ctrl_pert : str, optional
+        the control perturbation, by default 'CTRL'
+    counterfactual : str, optional
+        whether the counterfactual prediction is across perturbations or categorical covariate
+    cat_counterfactual_map : dict, optional
+        counterfactuals being asked across categorical conditions, by default None
+    
+    Returns
+    ----------
+    tf_adata :
+        an expanded AnnData object
+        - adds the PLS and UMAP coordinates to the `uns` slot
+        - since conditions may have duplicate corresponding controls, duplicates these values. 
+          The `.X` for these control conditionswill be the same, but the PLS and UMAP coordinates 
+          will change because the PLS model was fit with a different corresponding non-control condition.
+        - the 'control_for' column in `obs` specified which corresponding condition the control condition matches up to
+    """
+
+    tf_adata = tf_adata.copy()
+    
+    # clear slots
+    for x_array in ['X_pls', 'X_umap_pls']:
+        if x_array in tf_adata.obsm:
+            del tf_adata.obsm[x_array]
+    
+
+    iter_conds = sorted(pls_models.keys())
+    
+    iter_ctrl_conds = []
+    
+    conds_to_keep = []
+    for cond in iter_conds:
+        cat, pert = cond.split('^')
+        if counterfactual == 'perturbation':
+            ctrl_cond = '^'.join([cat, ctrl_pert]) # include control condition
+        else:
+            ctrl_cond = '^'.join([cat_counterfactual_map[cat], pert])
+        conds_to_keep += [cond, ctrl_cond]
+
+    # only conditions with embeddings
+    assert len(set(conds_to_keep).difference(tf_adata.obs.condition)) == 0, 'There are missing conditions in the input anndata object'
+    tf_adata = tf_adata[tf_adata.obs.condition.isin(conds_to_keep)]
+    X_in,_ = ls.prepare_input_matrix_plsda(
+        adata = tf_adata, 
+        control_confounders = [], enc_X = None
+
+    )
+    
+    
     X_lp = []
     X_umap = []
     coords = [] # will repeat coords for control condition
     control_for_labels = [] # need to track which perturbaiton the control was used for
 
-    predicted_conds = tf_adata.obs.condition.unique().tolist()
-    predicted_conds = [tc for tc in predicted_conds if tc.split('^')[1] != ctrl_pert]
-    for cond_ in tqdm(predicted_conds):
-        cat, pert = cond_.split('^')
+    for cond in iter_conds:
+        cat, pert = cond.split('^')
         if counterfactual == 'perturbation':
             ctrl_cond = '^'.join([cat, ctrl_pert]) # include control condition
         else:
             ctrl_cond = '^'.join([cat_counterfactual_map[cat], pert])
-        coords_cond = np.where(tf_adata.obs.condition.isin([cond_, ctrl_cond]))[0]
-        
+
+        coords_cond = np.where(tf_adata.obs.condition.isin([cond, ctrl_cond]))[0]
+
+
         # record what perturbation the control is with respect to (since re-calculated per perturbation)
         new_control_for_labels = tf_adata[coords_cond, :].obs.condition.astype(str).copy()
         if counterfactual == 'perturbation':
@@ -560,210 +673,29 @@ def _per_condition_projection(tf_adata,
         else:
             ctrl_cond_label = cat #ctrl_cond + '| CONTROLFOR{}'.format(cat)
         new_control_for_labels[new_control_for_labels == ctrl_cond] = ctrl_cond_label 
-        new_control_for_labels[new_control_for_labels == cond_] = None
+        new_control_for_labels[new_control_for_labels == cond] = None
 
         control_for_labels += new_control_for_labels.tolist()
 
         X_in_cond = X_in[coords_cond, :]
-        X_lp_cond = per_condition_models[cond_][linear_projection + '_mod'].transform(X_in_cond)
+        X_lp_cond = pls_models[cond].transform(X_in_cond)
 
         X_lp.append(X_lp_cond)
         coords.append(coords_cond)
 
-        if project_umap: 
-            umap_mod = per_condition_models[cond_][umap_key + '_mod'] 
-            X_umap_cond = umap_mod.transform(X_lp_cond[:, :lp_rank])
-
+        if umap_models is not None:  
+            X_umap_cond = umap_models[cond].transform(X_lp_cond)
             X_umap.append(X_umap_cond)
 
-    X_umap = None
-    if project_umap:
-        X_umap = np.vstack(X_umap)
     X_lp = np.vstack(X_lp)
     coords = np.concatenate(coords, axis = 0)
 
     # expand with redundant values for controls since repeating for each PLS specific model
     tf_adata = tf_adata[coords, :].copy() 
     tf_adata.obs['control_for'] = pd.Categorical(control_for_labels)
-
-    return tf_adata, X_lp, X_umap
-
-
-
-def project_prediction(
-    tf_adata_actual, 
-    tf_adata_predicted, 
-    linear_projection: Literal['pca', 'pls'],
-    per_condition_models = None,
-    lp_rank: int | None = None,
-    ctrl_pert: str = 'CTRL', # only needed for per_condition_models
-    counterfactual: Literal['perturbation', 'category'] = 'perturbation', 
-    cat_counterfactual_map: dict = None,
-    project_umap: bool = True, 
-    merge: bool = True
-):
-    """Projects predictions into existing latent space. 
-
-    Parameters
-    ----------
-    tf_adata_actual : _type_
-        the actual TF activity data, with necessary embedding objects (if not using per_condition_models)
-    tf_adata_predicted : _type_
-       the predicted TF activity data
-    linear_projection : Literal['pca', 'pls']
-         the linear embedding to project into
-    per_condition_models : Dict, optional
-        allows for projections into models calculated on a subset of the data specific to condition, by default None
-        if None, assumes model fit on all data is stored in relevant `tf_adata_actual.uns` keys
-        otherwise, keys of dictionary should match test condition values that are a subset of those in `tf_adata_actual.obs.condition`. Will then project both predicted and actual data using the models specific to each condition.
-        Note, because we include the 
-        model predictions from the training counterfactual as well, this will make tf_adata_predicted larger with repeated values in the 
-        `tf_adata_predicted.X`. For example, if cell_type_A^perturbation_1 in a test condition, we include the predictions for 
-        cell_type_A^perturbation_CTRL. Consequently, each retrieved X_PLS separating perturbation was transformed including the ctrl, 
-        and if multiple cell type A perturbations are in the test conditions, we will calculate multiple DISTINCT projections 
-        of cell_type_A^perturbation_CTRL. 
-    lp_rank : bool, optional
-        rank to use for linear projection, by default that stored in the tf_adata_actual object (must be stored there)
-    ctrl_pert : str, optional
-        the control perturbation, by default 'DMSO_TF'. Only needed if using per_condition_models. 
-    counterfactual : Literal['perturbation', 'category'], optional
-        currently the counterfactual will only cross between perturbations or category, keeping the 
-        other constant (e.g., within a cell type b/w perturbations or within a perturbation b/w cell types)
-        by default 'perturbation'
-        - 'perturbation': predicts the test condition from the control pertrubation + same category in train
-        - 'category': predicts the test condition from a different cell line + the same perturbation in train.
-                      the different cell line is specified by `cat_counterfactual_map`
-        only needed if using per_condition_models
-    cat_counterfactual_map : dict, optional
-        a dictionary mapping each test condition to a  different cell line in 
-        the train data that has the same perturbation from which to ask the 'category' counterfactual
-        only needed when setting `counterfactual`  = 'category', by default None
-    project_umap : bool, optional
-        whether to run umap on the linear embedding output, by default True
-    merge: bool, optional
-        whether to combine the predicted AnnData object with the actual, by default True
-        
-    Returns
-    ----------
-    tf_adata_merged 
-        if merge is True, has both actual and predicted in one object
-        additional `obs` columns include:
-            - batch: whether it is a model prediction or the actual data ('predicted' or 'actual')
-            - counterfactual_condition: the condition from which gene expression inputs were drawn (e.g., typically, if predicted cell_typeA^perturbation1, the input condition is cell_typeA^ctrl_perturbation). 
-            - control_for: only if using `per_condition_models`, specifies the perturbation the control data is with respect to for the embedding fit (`adata.X` should be the same, but `adata.uns[embedding]` will be different. only relevante when batch == 'predicted' and only for the control conditions (NaN for non-control conditions)
-            
-        **Note, given the control_for column, this will expand the predictions to account for the different embeddings, which is important to keep in mind when filtering for specific predictions. 
-    """
-
     
-    for tf_adata_ in [tf_adata_predicted, tf_adata_actual]:
-        if 'condition' not in tf_adata_.obs.columns:
-            tf_adata_.obs['condition'] = tf_adata.obs[cat_col].astype(str) + '^' + tf_adata.obs[pert_col].astype(str)
-            
-    
-    # filter to predicted conditions -- only necessary for using per_condition_models, but set here for consistency in output
-    predicted_conds = tf_adata_predicted.obs.condition.unique().tolist()
-    tf_adata_actual = tf_adata_actual[tf_adata_actual.obs.condition.isin(predicted_conds),:].copy()
+    tf_adata.obsm['X_pls'] = X_lp
+    if umap_models is not None:
+        tf_adata.obsm['X_umap_pls'] = np.vstack(X_umap)
 
-    if linear_projection == 'pca':
-        X_in_pred = tf_adata_predicted.to_df().values
-    elif linear_projection == 'pls':
-
-        # check that X covariates were not including in embedding
-        has_x_encoding = False
-        if per_condition_models is not None:
-            for k,v in per_condition_models.items(): 
-                if 'encoder_x' in v:
-                    has_x_encoding = True
-        elif tf_adata_actual.uns['pls']['encoder_x'] is not None:
-            has_x_encoding = True
-        if has_x_encoding:
-            msg = 'Internal: Need to account for confounder controlling -- store params in tf_adata_actual to run '
-            msg += 'prepar_input_matrix_plsda in an automated manner'
-            raise ValueError(msg)
-        
-
-        X_in_pred, _ = ls.prepare_input_matrix_plsda(adata = tf_adata_predicted,
-                            control_confounders = [],
-                            enc_X = None)
-
-    if project_umap:
-        umap_key = 'umap' if linear_projection == 'pca' else 'umap_pls'
-
-    if lp_rank is None:
-        lp_rank = tf_adata_actual.uns[linear_projection][linear_projection + '_rank']
-
-    if per_condition_models is None:
-        lp_mod = tf_adata_actual.uns[linear_projection][linear_projection + '_mod']
-        X_lp_pred = lp_mod.transform(X_in_pred)
-        X_lp_actual = tf_adata_actual.obsm['X_' + linear_projection]
-
-        if project_umap:
-            umap_mod = tf_adata_actual.uns[umap_key][umap_key + '_mod']
-            X_umap_pred = umap_mod.transform(X_lp_pred[:, :lp_rank])
-            X_umap_actual = tf_adata_actual.obsm['X_' + umap_key]
-
-    else:
-        if counterfactual == 'category':
-            raise ValueError('Internal: This needs to be checked')
-        
-        # clear slots for condition - specific fits
-        for tf_adata_ in [tf_adata_actual, tf_adata_predicted]:
-            if linear_projection in tf_adata_.uns and linear_projection + '_mod' in  tf_adata_.uns[linear_projection]:
-                del tf_adata_.uns[linear_projection][linear_projection + '_mod']
-            if 'X_' + linear_projection in tf_adata_.obsm:
-                del tf_adata_.obsm['X_' + linear_projection]
-            if project_umap and 'X_' + umap_key in tf_adata_.obsm:
-                del tf_adata_.obsm['X_' + umap_key]
-            
-        tf_adata_predicted, X_lp_pred, X_umap_pred = _per_condition_projection(tf_adata = tf_adata_predicted, 
-                                                      X_in = X_in_pred,
-                                                                               linear_projection = linear_projection,
-                                                      per_condition_models = per_condition_models,
-                                                      ctrl_pert = ctrl_pert, 
-                                                      counterfactual = counterfactual, 
-                                                      cat_counterfactual_map = cat_counterfactual_map, 
-                                                      project_umap = project_umap,
-                                                      )
-        tf_adata_actual, X_lp_actual, X_umap_actual  = _per_condition_projection(tf_adata = tf_adata_actual, 
-                                                   X_in = tf_adata_actual.X,
-                                                                                 linear_projection = linear_projection,
-                                                   per_condition_models = per_condition_models,
-                                                      ctrl_pert = ctrl_pert, 
-                                                      counterfactual = counterfactual, 
-                                                      cat_counterfactual_map = cat_counterfactual_map, 
-                                                      project_umap = project_umap,
-                                                      )
-        
-
-    tf_adata_predicted.obs['batch'] = 'predicted'
-    if merge:
-        tf_adata_actual.obs['batch'] = 'actual'
-        tf_adata_actual.obs['counterfactual_condition'] = None # to retain this column in the predicted object
-
-        tf_adata_merged = sc.concat([tf_adata_actual, tf_adata_predicted])
-        tf_adata_merged.obs['barcode'] = tf_adata_merged.obs.index.tolist()
-
-        tf_adata_merged.obs_names_make_unique()
-
-        tf_adata_merged.obsm['X_' + linear_projection] = np.concatenate(
-            [X_lp_actual, X_lp_pred],
-            axis = 0
-        )
-
-        if project_umap:
-            tf_adata_merged.obsm['X_' + umap_key] = np.concatenate(
-                    [X_umap_actual, X_umap_pred],
-                    axis = 0
-                )
-
-        del tf_adata_actual
-
-        return tf_adata_merged
-    else:
-        tf_adata_predicted.obsm['X_' + linear_projection] = X_lp_pred
-
-        if project_umap:
-            tf_adata_predicted.obsm['X_' + umap_key] = X_umap_pred
-
-        return tf_adata_predicted
+    return tf_adata

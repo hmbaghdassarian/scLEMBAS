@@ -27,7 +27,9 @@ class SignalingModel(torch.nn.Module):
                  bionet_params: Dict[str, float] = None, 
                  activation_function: str='MML',                 
                  dtype: torch.dtype=torch.float32, device: str = 'cpu', seed: int = 888,
-                rand_y: bool = False):
+                rand_y_features: bool = False,
+                rand_y_samples: bool = False
+                ):
         """Parse the signaling network and build the model layers.
 
         Parameters
@@ -95,8 +97,10 @@ class SignalingModel(torch.nn.Module):
             whether to use gpu ("cuda") or cpu ("cpu"), by default "cpu"
         seed : int
             random seed for torch and numpy operations, by default 888
-        rand_y : bool
+        rand_y_features : bool
             if True, won't reorder the output feature labels alphabetically as is standardly done, allows for testing against baseline random models when True, by default False
+        rand_y_samples : bool
+            if True, won't check that y_out indices match expr and X_in. Enables random baseline models. 
         """
         super().__init__()
         self.dtype = dtype
@@ -105,7 +109,7 @@ class SignalingModel(torch.nn.Module):
         self._gradient_seed_counter = 0
         self.projection_amplitude_out = projection_amplitude_out
         
-        input_combs = itertools.combinations([X_in, y_out, expr], 2)
+        input_combs = itertools.combinations([X_in, y_out, expr], 2) if not rand_y_samples else [(X_in, expr)]
         for comb in input_combs:
             if (comb[0].index != comb[1].index).any():
                 raise ValueError('The X, y, and expr inputs do not have the same samples')
@@ -116,10 +120,9 @@ class SignalingModel(torch.nn.Module):
 
         # filter for nodes in the network, sorting in order of the node_idx_map
         self.X_in = X_in[sorted([col for col in self.node_idx_map if col in X_in.columns], key=self.node_idx_map.get)]
-        if not rand_y: 
+        if not rand_y_features: 
             self.y_out = y_out[sorted([col for col in self.node_idx_map if col in y_out.columns], key=self.node_idx_map.get)]
         else:
-            raise ValueError('make sure this is functioning as expected')
             self.y_out = y_out
         self.expr = expr     
 
