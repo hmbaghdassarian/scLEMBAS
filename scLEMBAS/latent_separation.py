@@ -3,14 +3,15 @@
 from typing import Literal, List
 import math
 import warnings
+from joblib import Parallel, delayed
 
 from tqdm import trange, tqdm
+from tqdm_joblib import tqdm_joblib
 
 import numpy as np
 import pandas as pd
 import scanpy as sc
 from anndata import AnnData
-from sklearn.metrics import normalized_mutual_info_score
 
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -24,13 +25,24 @@ import umap
 
 from cliffs_delta import cliffs_delta
 
-from sklearn.model_selection import StratifiedKFold, cross_val_score
+from sklearn.model_selection import StratifiedKFold, cross_val_score, KFold, cross_val_predict, cross_validate
 from sklearn.linear_model import LogisticRegression, LinearRegression
-from sklearn.ensemble import RandomForestRegressor
+from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
 from sklearn.cross_decomposition import PLSRegression
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
-from sklearn.pipeline import make_pipeline
-from sklearn.metrics import normalized_mutual_info_score
+from sklearn.base import clone
+from sklearn.utils import check_random_state
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import Pipeline
+from sklearn.metrics import accuracy_score
+from sklearn.model_selection import KFold, StratifiedKFold, cross_validate
+from sklearn.metrics import (
+    accuracy_score,
+    balanced_accuracy_score,
+    make_scorer,
+    r2_score,
+    normalized_mutual_info_score
+)
 
 import scipy
 from scipy import sparse, stats
@@ -364,18 +376,6 @@ def prepare_input_matrix_plsda(adata,
 #         X = np.concatenate([X, covariates, cell_cycle_scaled], axis=1)
     return X, enc_X
 
-
-import numpy as np
-from sklearn.base import clone
-from sklearn.utils import check_random_state
-
-import numpy as np
-from sklearn.base import clone
-from sklearn.model_selection import KFold
-from sklearn.utils import check_random_state
-from sklearn.metrics import accuracy_score
-
-
 def calculate_pls_explained_variance_ratio(
     pls_model, X, y
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -690,6 +690,29 @@ def calculate_pls_accuracy(pls_model, X, y, n_folds=5, seed=888):
 
     return np.mean(accuracy)
 
+def _single_pls_assess_perm(ir, pls_model, X, y, seed, n_folds, 
+                 get_q2_pval, get_r2_pval, get_accuracy_pval):
+
+    rng = check_random_state(seed + ir + 1)
+    perm_idx = rng.permutation(len(y))
+    y_perm = y[perm_idx]
+
+    q2 = r2 = acc = None
+
+    if get_q2_pval:
+        pls_q = clone(pls_model)
+        q2 = calculate_pls_q2y(pls_q, X, y_perm, n_folds=n_folds, seed=seed + ir + 1)
+
+    if get_r2_pval:
+        pls_r = clone(pls_model)
+        pls_r.fit(X, y_perm)
+        r2 = calculate_pls_reconstruction_r2(pls_r, X, y_perm)[1]
+
+    if get_accuracy_pval:
+        pls_a = clone(pls_model)
+        acc = calculate_pls_accuracy(pls_a, X, y_perm, n_folds=n_folds, seed=seed + ir + 1)
+
+    return q2, r2, acc
 
 def assess_pls_model(pls_model, X, y, 
                      n_perm: int = 100,
@@ -697,6 +720,7 @@ def assess_pls_model(pls_model, X, y,
                      get_r2_pval: bool = False, 
                      get_accuracy_pval: bool = False,
                      n_folds=5, 
+                     n_cores: int = None,
                      seed=888):
     """
     Assess a fitted PLSRegression model and optionally compute permutation
@@ -770,29 +794,42 @@ def assess_pls_model(pls_model, X, y,
         
     
     if permute:
-        
-        rng = check_random_state(seed)
+        if n_cores is None or n_cores <= 1:
+            rng = check_random_state(seed)
+            q2_perm = np.zeros(n_perm, float)
+            r2_perm = np.zeros(n_perm, float)
+            accuracy_perm = np.zeros(n_perm, float)
+            for ir in trange(n_perm):
+                # Permute Y *rows*  (ropls permutes class labels)
+                perm_idx = rng.permutation(len(y))
+                y_perm = y[perm_idx]
 
-        q2_perm = np.zeros(n_perm, float)
-        r2_perm = np.zeros(n_perm, float)
-        accuracy_perm = np.zeros(n_perm, float)
-        for ir in trange(n_perm):
-            # Permute Y *rows*  (ropls permutes class labels)
-            perm_idx = rng.permutation(len(y))
-            y_perm = y[perm_idx]
-
-            if get_q2_pval:
-                pls_perm_q2 = clone(pls_model)
-                q2_perm[ir] = calculate_pls_q2y(pls_perm_q2, X, y_perm, n_folds=n_folds, seed=seed + ir + 1)
-            
-            if get_r2_pval:
-                pls_perm_r2 = clone(pls_model)
-                pls_perm_r2.fit(X, y_perm)
-                r2_perm[ir] = calculate_pls_reconstruction_r2(pls_perm_r2, X, y_perm)[1]
+                if get_q2_pval:
+                    pls_perm_q2 = clone(pls_model)
+                    q2_perm[ir] = calculate_pls_q2y(pls_perm_q2, X, y_perm, n_folds=n_folds, seed=seed + ir + 1)
                 
-            if get_accuracy_pval:
-                pls_perm_accuracy = clone(pls_model)
-                accuracy_perm[ir] = calculate_pls_accuracy(pls_perm_accuracy, X, y_perm, n_folds=n_folds, seed=seed + ir + 1)
+                if get_r2_pval:
+                    pls_perm_r2 = clone(pls_model)
+                    pls_perm_r2.fit(X, y_perm)
+                    r2_perm[ir] = calculate_pls_reconstruction_r2(pls_perm_r2, X, y_perm)[1]
+                    
+                if get_accuracy_pval:
+                    pls_perm_accuracy = clone(pls_model)
+                    accuracy_perm[ir] = calculate_pls_accuracy(pls_perm_accuracy, X, y_perm, n_folds=n_folds, seed=seed + ir + 1)
+        else:
+            with tqdm_joblib(tqdm(total=n_perm, desc="PLS Assessment Permutations")):
+                results = Parallel(n_jobs=n_cores, backend="loky")(
+                    delayed(_single_pls_assess_perm)(
+                        ir, pls_model, X, y, seed, n_folds,
+                        get_q2_pval, get_r2_pval, get_accuracy_pval
+                    )
+                    for ir in range(n_perm)
+                )
+
+            # Unpack
+            q2_perm   = np.array([r[0] for r in results])
+            r2_perm   = np.array([r[1] for r in results])
+            accuracy_perm  = np.array([r[2] for r in results])
         
         if get_q2_pval:
             p_Q2Y = (np.sum(q2_perm >= Q2Y) + 1) / (n_perm + 1)
@@ -810,6 +847,7 @@ def select_pls_components(
     metric: Literal['Q2Y', 'R2Y', 'accuracy'] = 'accuracy', 
     method: Literal['maximize', 'elbow'] = 'elbow', 
     n_folds=5,
+    verbose: bool = False,
     seed=888,
 ):
     """Determine the number of components for the PLS model. 
@@ -844,16 +882,18 @@ def select_pls_components(
     metric_per_rank: list
         the metric value at each component (e.g., at index 4, the metric value of the PLS model with 5 components)
     """
-    
+    range_ = trange if verbose else range
     if metric == 'R2Y':
         pls_model_ranking = clone(pls_model)
         pls_model_ranking.n_components = max_components
         pls_model_ranking.fit(X, y)
         explained_var_x, explained_var_y = calculate_pls_explained_variance_ratio(pls_model_ranking, X, y)
         metric_per_rank = list(np.cumsum(explained_var_y))
-    else:    
+    else: 
+        if verbose:
+            print('Iterate through components for PLS selection of number of components')   
         metric_per_rank = [np.nan]*max_components
-        for r in range(1, max_components+1):
+        for r in range_(1, max_components+1):
             pls_model_ranking = clone(pls_model)
             pls_model_ranking.n_components = r
 
@@ -867,8 +907,7 @@ def select_pls_components(
         kneedle = KneeLocator(x = range(1, max_components + 1), y = metric_per_rank, curve='concave', direction='increasing')
         rank = kneedle.elbow
     elif method == 'maximize':
-        rank = np.argmax(metric_per_rank) + 1
-        
+        rank = np.argmax(metric_per_rank) + 1  
     return rank, metric_per_rank
     
 
@@ -902,7 +941,9 @@ def pls_da(
     cat_col: str = 'cell_line', 
     pls_kwargs = None, 
     component_selection_kwargs = None,
-    assessment_kwargs = None
+    assessment_kwargs = None, 
+    n_cores: int = 1,
+    verbose: bool = False
           ):
     """Creates a PLS-DA model (e.g., drug ~ TF activity) given an input AnnData object.
 
@@ -982,6 +1023,7 @@ def pls_da(
         n_components, metric_per_component = select_pls_components(
             pls_model = PLSRegression(**pls_kwargs), 
             X = X, y = y_encoded,
+            verbose = verbose,
             **component_selection_kwargs
         )
         
@@ -990,6 +1032,8 @@ def pls_da(
     pls_model.metric_per_component = metric_per_component
 
     if assess:
+        if verbose:
+            print('Begin assessment of final model fit')
         # get explained variance from model
         explained_x, explained_y = calculate_pls_explained_variance_ratio(pls_model = pls_model, X = X, y = y_encoded)
         pls_model.explained_x_variance_ratio_ = explained_x
@@ -998,6 +1042,7 @@ def pls_da(
         assessment_kwargs = {**default_pls_assessment_kwargs, **assessment_kwargs}
         R2X, R2Y, Q2Y, accuracy, p_R2Y, p_Q2Y, p_accuracy = assess_pls_model(
             pls_model, X, y_encoded, 
+            n_cores = n_cores,
             **assessment_kwargs
         )
         pls_model.assessment_metrics = {
@@ -1218,6 +1263,8 @@ def pls_da_pipeline(
     component_selection_kwargs = None,
     assessment_kwargs = None,
     covariate_associations: list | None = None,
+    per_component_association: bool = False, 
+    global_component_association: bool = True, 
     run_umap: bool = True,
     file_prefix: str | None = None,
     verbose: bool = False,
@@ -1252,8 +1299,11 @@ def pls_da_pipeline(
     separate_by : Literal[perturbation, category], optional
         whether to fit the PLS model to separate by the `pert_col` ('perturbation') or `cat_col` ('category'), by default 'perturbation'
     covariate_associations : list, optional
-        calculates univariate statistical associations between each PLS component and a covariate in `adata.obs`
-        see `latent_association` for details
+        calculates statistical associations between PLS space and a covariate in `adata.obs`
+    per_component_association : bool, optional
+        whether to calculate the `covariate_associations` univariately per PLS component, see `latent_association_per_component` for details, by default False
+    global_component_association : bool, optional
+        whether to calculate the `covariate_associations` globally across all PLS components, see `latent_association_global` for details, by default True 
     run_umap: bool, optional
         whether to run umap (True) or not (False), by default True
     file_prefix : str | None, optional
@@ -1292,35 +1342,50 @@ def pls_da_pipeline(
         cat_col = cat_col,
         pls_kwargs = pls_kwargs, 
         component_selection_kwargs = component_selection_kwargs,
-        assessment_kwargs = assessment_kwargs
+        assessment_kwargs = assessment_kwargs, 
+        n_cores = n_cores,
+        verbose = verbose
     )
     adata_sub.obsm['X_pls'] = X_pls
 
-    r2_df = None
+    r2_df_per_component = None
+    cv_df_global = None
     if covariate_associations is not None and len(covariate_associations) != 0:
+        latent_association_functions = {}
+        if per_component_association:
+            latent_association_functions['per_component'] = latent_association_per_component
+        if global_component_association:
+            latent_association_functions['global'] = latent_association_global
+
         print("Calculate covariate - PLS associations") if verbose else None
-        
-        r2_df_linear = latent_association(
-            adata = adata_sub,
-            covariates = covariate_associations,
-            model_type = 'linear',
-            latent_label = 'pls',
-            n_cores = n_cores,
-            seed = seed
-        )
+        for calc_type, latent_association_function in latent_association_functions.items():
+            
+            la_df_linear = latent_association_function(
+                adata = adata_sub,
+                covariates = covariate_associations,
+                model_type = 'linear',
+                latent_label = 'pls',
+                n_cores = n_cores,
+                seed = seed
+            )
 
-        r2_df_nl = latent_association(
-            adata = adata_sub,
-            covariates = covariate_associations,
-            model_type = 'nonlinear',
-            latent_label = 'pls',
-            n_cores = n_cores,
-            seed = seed
-        )
+            la_df_nl = latent_association_function(
+                adata = adata_sub,
+                covariates = covariate_associations,
+                model_type = 'nonlinear',
+                latent_label = 'pls',
+                n_cores = n_cores,
+                seed = seed
+            )
 
-        r2_df = pd.concat([r2_df_linear, r2_df_nl])
-        if file_prefix is not None:
-            r2_df.to_csv(file_prefix + '_pls_associations.csv')
+            la_df = pd.concat([la_df_linear, la_df_nl])
+            if file_prefix is not None:
+                la_df.to_csv(file_prefix + '{}_pls_associations.csv'.format(calc_type))
+
+            if calc_type == 'per_component':
+                r2_df_per_component = la_df
+            elif calc_type == 'global':
+                cv_df_global = la_df
 
     X_umap = None
     if run_umap:
@@ -1353,7 +1418,7 @@ def pls_da_pipeline(
         adata_sub.uns['umap_pls'] = {'umap_pls_mod': umap_model}
         adata_sub.obsm['X_umap_pls'] = X_umap
 
-    return adata_sub, r2_df
+    return adata_sub, r2_df_per_component, cv_df_global
 
 
 def pc_pipeline(
@@ -1366,6 +1431,8 @@ def pc_pipeline(
     get_hvgs: bool = False, 
     run_umap: bool = True,
     covariate_associations: list = ['cell_line', 'drug', 'plate', 'phase', 'S_score', 'G2M_score', 'pcnt_mito'],
+    per_component_association: bool = False, 
+    global_component_association: bool = True, 
     file_prefix: str | None = None,
     verbose: bool = False,
     n_cores: int = -1,
@@ -1404,8 +1471,11 @@ def pc_pipeline(
     run_umap: bool, optional
         whether to run umap (True) or not (False), by default True
     covariate_associations : list, optional
-        calculates univariate statistical associations between each PC component and a covariate in `adata.obs`, by default['cell_line', 'drug', 'plate', 'phase', 'S_score', 'G2M_score', 'pcnt_mito']
-        see `latent_association` for details
+        calculates statistical associations between PC space and a covariate in `adata.obs`
+    per_component_association : bool, optional
+        whether to calculate the `covariate_associations` univariately per PCA component, see `latent_association_per_component` for details, by default False
+    global_component_association : bool, optional
+        whether to calculate the `covariate_associations` globally across all PCA components, see `latent_association_global` for details, by default True 
     file_prefix : str | None, optional
         saves assessment metrics to this file_prefix, by default None
     verbose : bool, optional
@@ -1444,33 +1514,46 @@ def pc_pipeline(
         **embkwrgs
     )
 
-    print("Calculate covariate - PC associations") if verbose else None
-    r2_df = None
-    if len(covariate_associations) != 0:
+    r2_df_per_component = None
+    cv_df_global = None
+    if covariate_associations is not None and len(covariate_associations) != 0:
+        latent_association_functions = {}
+        if per_component_association:
+            latent_association_functions['per_component'] = latent_association_per_component
+        if global_component_association:
+            latent_association_functions['global'] = latent_association_global
 
-        r2_df_linear = latent_association(
-            adata = adata_sub,
-            covariates = covariate_associations,
-            model_type = 'linear',
-            latent_label = 'pca',
-            n_cores = n_cores,
-            seed = seed
-        )
+        print("Calculate covariate - PC associations") if verbose else None
+        for calc_type, latent_association_function in latent_association_functions.items():
+            
+            la_df_linear = latent_association_function(
+                adata = adata_sub,
+                covariates = covariate_associations,
+                model_type = 'linear',
+                latent_label = 'pca',
+                n_cores = n_cores,
+                seed = seed
+            )
 
-        r2_df_nl = latent_association(
-            adata = adata_sub,
-            covariates = covariate_associations,
-            model_type = 'nonlinear',
-            latent_label = 'pca',
-            n_cores = n_cores,
-            seed = seed
-        )
+            la_df_nl = latent_association_function(
+                adata = adata_sub,
+                covariates = covariate_associations,
+                model_type = 'nonlinear',
+                latent_label = 'pca',
+                n_cores = n_cores,
+                seed = seed
+            )
 
-        r2_df = pd.concat([r2_df_linear, r2_df_nl])
-        if file_prefix is not None:
-            r2_df.to_csv(file_prefix + '_pc_associations.csv')
+            la_df = pd.concat([la_df_linear, la_df_nl])
+            if file_prefix is not None:
+                la_df.to_csv(file_prefix + '{}_pc_associations.csv'.format(calc_type))
 
-    return adata_sub, r2_df
+            if calc_type == 'per_component':
+                r2_df_per_component = la_df
+            elif calc_type == 'global':
+                cv_df_global = la_df
+
+    return adata_sub, r2_df_per_component, cv_df_global
 
 
 ############################ VISUALIZATION AND QUANTIFICATION ############################
@@ -1496,7 +1579,7 @@ def calc_nmi(y,cov):
     
     return nmi
 
-def latent_association(
+def latent_association_per_component(
     adata,
     covariates: List[str],
     model_type: Literal['linear', 'nonlinear'],
@@ -1505,6 +1588,9 @@ def latent_association(
     seed: int = 888):
     """Gets the linear association between a set of latent variables stored in the AnnData object
     and covariates in the `adata.obs`, returning the R^2. 
+    
+    LV_i ~ covariate_j. This answers how much each latent variable can be explained by a given covariate. 
+    Gives an indication of, visually, the extent of separation we expect to see.
 
     Parameters
     ----------
@@ -1577,6 +1663,136 @@ def latent_association(
     r2_df['model_type'] = model_type
     
     return r2_df
+
+
+## cv scorers for latent_association_global
+def adjusted_r2_score_cv(y_true, y_pred, p):
+    r2 = r2_score(y_true, y_pred)
+    n = len(y_true)
+    return 1 - (1 - r2) * (n - 1) / (n - p - 1)
+
+def make_adjusted_r2_scorer(p):
+    return make_scorer(lambda yt, yp: adjusted_r2_score_cv(yt, yp, p))
+
+def chance_adjusted_acc(y_true, y_pred):
+    K = len(np.unique(y_true))
+    chance = 1.0 / K
+    acc = accuracy_score(y_true, y_pred)
+    return (acc - chance) / (1 - chance)
+chance_adj_scorer = make_scorer(chance_adjusted_acc)
+
+def nmi_scorer_func(y_true, y_pred):
+    return normalized_mutual_info_score(y_true, y_pred)
+nmi_scorer = make_scorer(nmi_scorer_func)
+
+
+def latent_association_global(
+    adata,
+    covariates: List[str],
+    model_type: Literal['linear', 'nonlinear'],
+    n_cores: int,
+    latent_label: str = 'pca',
+    seed: int = 888):
+    """Determines how well the latent space informs covariates of interest. Separately regresses each covariate.
+    
+    Multivariately runs Cov_j ~ LVs. Contrast to `latent_association_per_component`, which runs per component
+    individually, with the covariate as the independent variable. 
+    
+    Parameters
+    ----------
+    adata : _type_
+        anndata object
+    covariates : List[str]
+        categorical covariates asssociated to test for
+    model_type : Literal['linear', 'nonlinear']
+        uses LinearRegression if linear and RandomForest if nonlinear
+    latent_label : str, optional
+        name of latent space stored in ``adata.obsm`` as 'X_<latent_label>' 
+    """
+
+
+    n_lvs = adata.obsm['X_' + latent_label].shape[1]
+    if latent_label == 'pca' and 'pca_rank' in adata.uns['pca']:
+        n_lvs = adata.uns['pca']['pca_rank']
+
+    _label_name = latent_label.upper() if latent_label != 'pca' else 'PC'
+
+    lvs = adata.obsm['X_' + latent_label][:, :n_lvs]
+    p = lvs.shape[1]
+
+
+    cv_res = None #{}
+    for cov_ in covariates:
+        print(cov_)
+        cov = adata.obs[cov_]
+
+        if pd.api.types.is_numeric_dtype(cov):
+            y = cov.values
+            cv = KFold(n_splits=5, shuffle=True, random_state=seed)
+            scoring = {
+                'r2': 'r2',
+                'adj_r2': make_adjusted_r2_scorer(p),
+            }
+            
+            if model_type == 'linear':
+                model_general = LinearRegression(n_jobs = 1)
+            elif model_type == 'nonlinear':
+                model_general = RandomForestRegressor(random_state=seed,
+                        n_jobs=n_cores,                 
+                        verbose=False )
+        else:
+            y = cov.astype(str).values
+            cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=seed)
+            scoring = {
+                'accuracy': 'accuracy',
+                'balanced_accuracy': make_scorer(balanced_accuracy_score),
+                'chance_adjusted_accuracy': chance_adj_scorer,
+                'NMI': nmi_scorer,
+            }
+
+
+            if model_type == 'linear':
+                model_general = Pipeline([
+                    ('scaler', StandardScaler()),
+                    ('clf', LogisticRegression(
+                        solver='saga',
+                        penalty='l2',
+                        max_iter=1000,
+                        n_jobs=1,
+                        random_state=seed
+                    ))
+                ])
+            elif model_type == 'nonlinear':
+                model_general = RandomForestClassifier(random_state=seed,
+                        n_jobs=n_cores,                 
+                        verbose=False )
+                
+
+        cv_out = cross_validate(
+            estimator=model_general,
+            X=lvs,
+            y=y,
+            cv=cv,
+            scoring=scoring,
+            n_jobs=n_cores if model_type == 'linear' else 1,
+            return_train_score=False
+        )
+
+        tmp = pd.DataFrame({
+            "{}_{}".format(cov_, metric): cv_out["test_{}".format(metric)]
+            for metric in scoring.keys()
+        })
+
+        tmp.insert(0, "fold", range(1, tmp.shape[0] + 1))
+        tmp.insert(1, "model_type", model_type)
+
+        # Merge into final DF
+        if cv_res is None:
+            cv_res = tmp
+        else:
+            cv_res = cv_res.merge(tmp, on=["fold", "model_type"], how="left")
+    
+    return cv_res
 
 def visualize_latent_space(
     adata, 
@@ -1705,7 +1921,7 @@ def visualize_latent_space(
         
         
         
-def visualize_latent_association(
+def visualize_latent_association_per_component(
     metric_df,
     fig_title: str | None = None, 
     metric_label = 'Fraction of Variance Explained',
@@ -1740,7 +1956,7 @@ def visualize_latent_association(
     if file_name is not None:
         plt.savefig(file_name, dpi=300, bbox_inches="tight")
         
-# def visualize_latent_association(
+# def visualize_latent_association_per_component(
 #     r2_df,
 #     fig_title: str | None = None, 
 #     file_name: str | None = None,

@@ -485,7 +485,7 @@ class GaussianVariationalEncoder(nn.Module):
         l2_loss : torch.Tensor
             the regularization term
         """
-        regularization_loss = 0
+        regularization_loss = torch.tensor(0.0, device=self.device, dtype=self.dtype)
         if lambda_L2 != 0:
             for layer in self.modules():
                 if isinstance(layer, nn.Linear):
