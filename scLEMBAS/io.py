@@ -59,6 +59,8 @@ def write_tfad(tf_adata: anndata.AnnData, file_name: str):
     file_name : str
         full path and file name to write tf_adata
     """
+    
+    tf_adata = tf_adata.copy()
     for embedding in ['pca', 'umap', 'pls', 'umap_pls']:
         if embedding in tf_adata.uns:
             if embedding + '_mod' in tf_adata.uns[embedding]:

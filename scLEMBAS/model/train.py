@@ -90,7 +90,7 @@ class TrainBase:
     LR_PARAMS = {'max_epochs': 5000, 'maximum_learning_rate': 2e-3, 'minimum_learning_rate': 2e-4,
                  'lr_restart_epoch': 1000, 'n_optimizer_resets': 0, 
                 'lr_decay': 0.9, 'lr_restart_factor': 1, 'warmup_epochs': 500}
-    BATCH_PARAMS = {'train_batch_size': 512, 'test_batch_size': 512, 'validation_batch_size': 512}
+    BATCH_PARAMS = {'train_batch_size': 512, 'test_batch_size': 512, 'validation_batch_size': 512, 'drop_last_batch': True}
     NOISE_PARAMS = {'network_noise_scale': 0.01, # adjust according to projection_amplitude_in, this assumes default projection_amplitude_in = 3
                    'min_network_noise': 0.0025, # 1/4 of the network noise_scaler (in case LR range is larger than 4x, which by default it is 10x)
                    'gradient_noise_scale': 1e-9}
@@ -145,6 +145,7 @@ class TrainBase:
                 - 'train_batch_size' : number of samples/cells per batch for training data, by default 512
                 - 'test_batch_size' : number of samples/cells per batch for test data, by default 512
                 - 'validation_batch_size' : number of samples/cells per batch for test data, by default 512
+                - 'drop_last_batch': `drop_last` argument in `DataLoader.__init__`
                 - 'network_noise_scale' : noise added to signaling network input, by default 0.01. Value should change in accordance to `projections_amplitude_in` argument used for the `SignalingModel`. Noise scale is network_noise_scale * cur_lr Set to 0 for no noise. Makes model more robust. 
                 - 'min_network_noise' : minimum noise to add per epoch (since a function of LR), by default 0.0025
                 - 'gradient_noise_scale' : noise added to gradient after backward pass. Makes model more robust. 
@@ -283,7 +284,7 @@ class TrainBase:
         if self.track_validation:
             self.stats['validation'] = np.empty((0, 4))
 
-    def create_data_loader(self, include_covariates = True, include_expr = True):
+    def create_data_loader(self, include_covariates = True, include_expr = True, drop_last = True):
         covariates_idx = None
         expr = None
         for data_type in ['train', 'test', 'validation']:
@@ -300,7 +301,7 @@ class TrainBase:
                                        expr = expr)
                 self.__dict__[data_type + '_dataloader'] = DataLoader(dataset=model_data,
                                                                       batch_size=self.hyper_params[data_type + '_batch_size'],
-                                                                      drop_last = False,
+                                                                      drop_last = drop_last,
                                                                       pin_memory = False,#pin_memory,
                                                                       shuffle=True if data_type == 'train' else False) 
  
@@ -461,7 +462,7 @@ class TrainSimple(TrainBase):
                            train_seed = train_seed, 
                         track_test = track_test, 
                         track_validation = track_validation)
-        self.create_data_loader(include_covariates = False, include_expr = False)
+        self.create_data_loader(include_covariates = False, include_expr = False, drop_last = self.hyper_params['drop_last_batch'])
   
     def train_model(self,
                     verbose: bool = True):
@@ -703,7 +704,7 @@ class TrainCat(TrainBase):
                                 'sn_param_reg_cat_bias_orthogonality')
         self.stats['train'] = np.empty((0, len(self._stats_cols)))
 
-        self.create_data_loader(include_covariates = True, include_expr = False)
+        self.create_data_loader(include_covariates = True, include_expr = False, drop_last = self.hyper_params['drop_last_batch'])
 
 
     def train_model(self, verbose: bool = True):
@@ -1113,7 +1114,7 @@ class TrainSC(TrainBase):
         self.n_eval_cells = n_eval_cells
         self.n_eval_bootstrap = n_eval_bootstrap
         
-        self.create_data_loader(include_covariates = True, include_expr = True)
+        self.create_data_loader(include_covariates = True, include_expr = True, drop_last = self.hyper_params['drop_last_batch'])
         self.gradient_ascent = gradient_ascent
         self.initialize_cat_discriminator(cat_discriminator_params)
         self.initialize_pert_discriminator(pert_discriminator_params) 

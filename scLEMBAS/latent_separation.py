@@ -1465,9 +1465,6 @@ def pc_pipeline(
     get_hvgs: bool, optional
         whether to calculate HVGs on the anndata subset (True) or use those in the passed object (False)
         only relevant if `use_highly_variable` = True in embkwrgs (which is the default in PCA)
-    scanpy_pca: bool, optional
-        whether to use the scanpy PCA (whcih won't store the PCA model) (True) or a similar re-implementation (False), be default True
-        scanpy version is probably faster
     run_umap: bool, optional
         whether to run umap (True) or not (False), by default True
     covariate_associations : list, optional

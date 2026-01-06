@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[75]:
+# In[2]:
 
 
 import argparse
@@ -26,7 +26,7 @@ def int_or_str(val):
 parser = argparse.ArgumentParser()
 parser.add_argument("--index", type=int_or_str, required=True, help="Filename index")
 parser.add_argument("--retrain", type=str_to_bool, required = False, default = True)
-parser.add_argument("--separation_subset", type=str_to_bool, required = False, default = False)
+# parser.add_argument("--separation_subset", type=str_to_bool, required = False, default = False)
 
 parser.add_argument("--n_batches", type=int, required=True)
 
@@ -34,6 +34,9 @@ parser.add_argument("--n_batches", type=int, required=True)
 parser.add_argument("--max_epochs", type=int, required=True)
 parser.add_argument("--per_condition_reconstruction_loss", type=str_to_bool, required=True)
 
+
+
+parser.add_argument("--vae_param_reg", type=float, required=True)
 parser.add_argument("--vae_scaling_KL", type=float, required=True)
 parser.add_argument("--n_cat_discriminator_train", type=int, required=True)
 parser.add_argument("--n_pert_discriminator_train", type = int, required = True)
@@ -47,6 +50,7 @@ parser.add_argument("--pert_dropout", type=float, required=True)
 
 parser.add_argument("--generator_dropout_rate", type=float, required=True)
 parser.add_argument("--n_layers_vae", type=int, required=True)
+parser.add_argument("--start_layers_pert", type = str_to_bool, required = True) # DELETE THIS
 
 parser.add_argument("--main_max_lr", type=float, required=True)
 parser.add_argument("--gen_max_lr", type=float, required=True)
@@ -58,6 +62,10 @@ parser.add_argument("--cat_max_penalty_weight", type=float, required=True)
 parser.add_argument("--cat_b_adv", type=float, required=True)
 parser.add_argument("--pert_max_penalty_weight", type=float, required=True)
 parser.add_argument("--pert_b_adv", type=float, required=True)
+
+parser.add_argument("--cat_epsilon_smooth", type=float, required=True)
+parser.add_argument("--pert_epsilon_smooth", type=float, required=True)
+
 
 
 parser.add_argument("--cat_bias_pert_scaler", type=float, required=True)
@@ -74,12 +82,13 @@ fn = str(args.index)
 
 retrain = args.retrain
 
-separation_subset = args.separation_subset 
+# separation_subset = args.separation_subset 
 
 max_epochs = args.max_epochs
 per_condition_reconstruction_loss = args.per_condition_reconstruction_loss
 n_batches = args.n_batches
 
+vae_param_reg = args.vae_param_reg
 vae_scaling_KL = args.vae_scaling_KL
 n_cat_discriminator_train = args.n_cat_discriminator_train
 n_pert_discriminator_train = args.n_pert_discriminator_train
@@ -97,12 +106,18 @@ pert_dropout = args.pert_dropout
 
 generator_dropout_rate = args.generator_dropout_rate
 n_layers_vae = args.n_layers_vae
+start_layers_pert = args.start_layers_pert
 
 
 cat_max_penalty_weight = args.cat_max_penalty_weight
 cat_b_adv = args.cat_b_adv
 pert_max_penalty_weight = args.pert_max_penalty_weight
 pert_b_adv = args.pert_b_adv
+
+cat_epsilon_smooth = args.cat_epsilon_smooth
+pert_epsilon_smooth = args.pert_epsilon_smooth
+
+
 
 cat_bias_pert_scaler = args.cat_bias_pert_scaler
 cat_pert_pert_label = args.cat_pert_pert_label
@@ -112,63 +127,10 @@ spectral_loss_factor = args.spectral_loss_factor
 uniform_lambda_L2 = args.uniform_lambda_L2
 
 
-#python test_run.py --index 7 --retrain false --separation_subset false --max_epochs 600 --per_condition_reconstruction_loss true --n_batches 10 --vae_scaling_KL 5e-3 --n_cat_discriminator_train 10 --n_pert_discriminator_train 10 --cat_dropout 0.1 --pert_dropout 0.3 --n_adversarial_start 200 --main_max_lr 2e-3 --gen_max_lr 5e-4 --cat_max_lr 1e-3 --pert_max_lr 1e-3 --cat_max_penalty_weight 11 --cat_b_adv 2.5 --pert_max_penalty_weight 10 --pert_b_adv 2.75 --generator_dropout_rate 0.7 --n_layers_vae 3 --cat_bias_pert_scaler 100 --cat_pert_pert_label false --cat_bias_lambda_L2 1e-4 --spectral_loss_factor 0 --uniform_lambda_L2 0 --cat_spectral_norm true --pert_spectral_norm true
+# python test_run.py --index 21_2 --retrain false --max_epochs 600 --per_condition_reconstruction_loss true --n_batches 15 --vae_param_reg 1e-5 --vae_scaling_KL 5e-3 --n_cat_discriminator_train 10 --n_pert_discriminator_train 10 --cat_dropout 0.1 --pert_dropout 0.3 --n_adversarial_start 200 --main_max_lr 2e-3 --gen_max_lr 5e-4 --cat_max_lr 1e-3 --pert_max_lr 1e-3 --cat_max_penalty_weight 11 --cat_b_adv 2.5 --pert_max_penalty_weight 10 --pert_b_adv 2.75 --generator_dropout_rate 0.7 --cat_epsilon_smooth 0.1 --pert_epsilon_smooth 0.1 --n_layers_vae 3 --start_layers_pert true --cat_bias_pert_scaler 100 --cat_pert_pert_label false --cat_bias_lambda_L2 2.5e-4 --spectral_loss_factor 0 --uniform_lambda_L2 0 --cat_spectral_norm true --pert_spectral_norm true
 
 
-# In[1]:
-
-
-index = 7
-fn = str(index)
-retrain = True
-separation_subset = True
-
-max_epochs = 600
-per_condition_reconstruction_loss = False
-n_batches = 10 # 20 is like kang
-
-n_cat_discriminator_train = 5
-n_pert_discriminator_train = 5
-cat_dropout = 0.1
-pert_dropout = 0.1
-n_adversarial_start = 200
-main_max_lr = 2e-3
-gen_max_lr = 5e-4 #2.75e-4
-cat_max_lr = 1e-3
-pert_max_lr = 1e-3
-
-# adversarial params
-cat_b_adv = 2.5 # 2 in kang
-cat_max_penalty_weight = 10
-pert_b_adv = 2.75 #2 
-pert_max_penalty_weight = 10 #15
-
-
-generator_dropout_rate = 0.7
-
-n_layers_vae = 3 # 2 in Kang
-cat_bias_pert_scaler = 100
-cat_pert_pert_label = False
-cat_bias_lambda_L2 = 1e-4
-spectral_loss_factor = 0
-uniform_lambda_L2 = 0
-
-batch_scaler_mem = 1
-
-vae_scaling_KL = 1e-3
-
-# Contrastive loss parameters
-# contrastive_loss_scaler = [1, 0.2]
-# contrastive_loss_type = ["sc_actual", "sc_predicted"]
-# contrastive_percentile = 0.3
-# contrastive_triplet_margin_frac = 0.1
-
-# Spectral norm flags
-cat_spectral_norm = True
-pert_spectral_norm = True
-
-
-# In[2]:
+# In[4]:
 
 
 import os
@@ -202,7 +164,7 @@ sys.path.insert(1, '../.')
 import McCauley_utils as Mu
 
 
-# In[3]:
+# In[5]:
 
 
 n_cores = 30
@@ -220,21 +182,15 @@ author = 'McCauley'
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 
-# In[4]:
+# In[6]:
 
+
+sn_ppis = pd.read_csv(os.path.join(data_path, 'processed', author + '_sn_ppis.csv'), 
+                 index_col = 0)
+tf_adata = io.read_tfad(os.path.join(data_path, 'processed', author + '_consensus_tf_activity.h5ad'))
 
 adata = sc.read_h5ad(os.path.join(data_path, 'processed', author + '_normalized_counts.h5ad'))
-adata = adata[:, adata.var['highly_variable']].copy() # filter for HVGs
-
-if separation_subset:
-    sn_ppis = pd.read_csv(os.path.join(data_path, 'trash', author + 'sepsubset_sn_ppis.csv'), 
-                     index_col = 0)
-    tf_adata = io.read_tfad(os.path.join(data_path, 'trash', author + 'sepsubset_consensus_tf_activity.h5ad'))
-    adata = adata[tf_adata.obs_names, :].copy()
-else:
-    sn_ppis = pd.read_csv(os.path.join(data_path, 'processed', author + '_sn_ppis.csv'), 
-                     index_col = 0)
-    tf_adata = io.read_tfad(os.path.join(data_path, 'processed', author + '_consensus_tf_activity.h5ad'))
+adata = adata[tf_adata.obs_names, adata.var['highly_variable']].copy() # filter for HVGs and filtered perts
 
 
 source_label = 'source_genesymbol'
@@ -246,8 +202,6 @@ inhibition_label = 'consensus_inhibition'
 cat_col = 'cell_type'
 pert_col = 'ligand'
 ctrl_pert = 'CTRL'
-
-
 
 expr = adata.to_df().copy()
 
@@ -267,14 +221,14 @@ if len(set(tf_adata.obs[cat_col])) != len(tf_adata.obs[cat_col].cat.categories):
 
 # # Train/test split:
 
-# In[22]:
+# In[7]:
 
 
 split = Mu.split_data(
     tf_adata = tf_adata, 
-    train_frac = 0.8 if not separation_subset else 0.75,
+    train_frac = 0.8, #if not separation_subset else 0.75,
     min_cat_frac = 1, 
-    min_pert_frac = 0.6 if not separation_subset else 0.5, 
+    min_pert_frac = 0.6, #if not separation_subset else 0.5, 
     deviation_thresh = 0.025, 
     max_attempts = 1000, 
     exclude_pert_control = True, 
@@ -284,7 +238,7 @@ split = Mu.split_data(
 )
 
 
-# In[23]:
+# In[8]:
 
 
 assert len({cond.split('^')[1] for cond in split['test_conds']}.difference({cond.split('^')[1] for cond in split['train_conds']})) == 0, 'Missing perturbations in split'
@@ -299,7 +253,7 @@ test_counts = tf_adata.obs.loc[test_mask, 'condition'].value_counts()
 test_counts[test_counts != 0]
 
 
-# In[24]:
+# In[9]:
 
 
 train_counts = tf_adata.obs.loc[train_mask, 'condition'].value_counts()
@@ -308,7 +262,7 @@ train_counts[train_counts != 0]
 
 # # Hyperparameters
 
-# In[59]:
+# In[10]:
 
 
 def generate_lr_params(n_epochs, 
@@ -367,7 +321,7 @@ def generate_lr_params(n_epochs,
     }
 
 
-# In[60]:
+# In[11]:
 
 
 projection_amplitude_in = 10
@@ -396,7 +350,7 @@ noise_params = {
 }
 
 
-# In[61]:
+# In[12]:
 
 
 loss_scaler = 100
@@ -405,7 +359,8 @@ prediction_loss_fn = torch.nn.MSELoss(reduction='mean')
 batch_params = {
     'train_batch_size': int(np.round(n_train_cells/n_batches)), 
     'test_batch_size': int(np.round(n_test_cells/n_batches)), 
-    'validation_batch_size': np.nan
+    'validation_batch_size': np.nan, 
+    'drop_last_batch': True
 }
 
 
@@ -423,7 +378,7 @@ lr_params = generate_lr_params(n_epochs = max_epochs,
                                role = 'scl')
 
 
-# In[62]:
+# In[13]:
 
 
 bionet_params['cat_max_norm'] = 100
@@ -472,7 +427,7 @@ cat_pert_params = {
 
 
 
-# In[63]:
+# In[14]:
 
 
 training_params = {
@@ -488,7 +443,7 @@ training_params['prediction_loss_fn_scaler'] = loss_scaler
 
 # ## VAE:
 
-# In[64]:
+# In[15]:
 
 
 # building
@@ -512,7 +467,7 @@ vae_params = {
     'prior_mu': 0, 
     'prior_sigma': 1,
     'scaling_KL': vae_scaling_KL, #1e-2, 
-    'lambda_l2': 1e-5, 
+    'lambda_l2': vae_param_reg, #1e-5
     'optimizer': torch.optim.Adam
 }
 
@@ -533,7 +488,7 @@ del vae_params['max_epochs']
 
 # ## Discriminator
 
-# In[65]:
+# In[16]:
 
 
 discriminator_params = {
@@ -553,7 +508,7 @@ discriminator_params = {
 }
 
 
-# In[66]:
+# In[17]:
 
 
 cat_n_layers_disc = 3
@@ -575,7 +530,8 @@ pert_disc_n_hidden_nodes = list(np.round(np.linspace(n_nodes,
                                                     pert_n_layers_disc + 2)).astype(int)[1:-1])
 
 # add 3 additional "starting" layers since classifying perturbation is difficult
-pert_disc_n_hidden_nodes = [pert_disc_n_hidden_nodes[0]]*3 + pert_disc_n_hidden_nodes
+if start_layers_pert:
+    pert_disc_n_hidden_nodes = [pert_disc_n_hidden_nodes[0]]*3 + pert_disc_n_hidden_nodes
 
 pert_discriminator_params = discriminator_params.copy()
 pert_discriminator_params['n_hidden_nodes'] = pert_disc_n_hidden_nodes
@@ -585,13 +541,13 @@ pert_discriminator_params['spectral_norm'] = pert_spectral_norm
 if pert_spectral_norm:
     pert_discriminator_params['discriminator_lambda_L2'] = 0
 
-cat_discriminator_params['epsilon_smooth'] = min(0.1, 1/tf_adata.obs[cat_col].nunique())
-pert_discriminator_params['epsilon_smooth'] = min(0.1, 1/tf_adata.obs[pert_col].nunique())
+cat_discriminator_params['epsilon_smooth'] = cat_epsilon_smooth #min(0.1, 1/tf_adata.obs[cat_col].nunique())
+pert_discriminator_params['epsilon_smooth'] = pert_epsilon_smooth #min(0.1, 1/tf_adata.obs[pert_col].nunique())
 
 
 # Adversarial weights:
 
-# In[67]:
+# In[18]:
 
 
 # adverserial penalty curve
@@ -629,7 +585,7 @@ else:
 
 
 
-# In[68]:
+# In[19]:
 
 
 # discriminator LRs
@@ -667,7 +623,7 @@ pert_discriminator_params = {**pert_discriminator_params, **discriminator_lr_par
 
 # Visualize hyperparameters:
 
-# In[69]:
+# In[20]:
 
 
 fig, ax = plt.subplots(ncols = 2, figsize = (13,5))
@@ -686,7 +642,7 @@ fig.tight_layout();
 
 # # Build model and trainer
 
-# In[70]:
+# In[21]:
 
 
 # input stimulation
@@ -694,7 +650,7 @@ X_in = pd.get_dummies(tf_adata.obs[pert_col]).astype(int)
 X_in.drop(columns = ctrl_pert, inplace = True) # all 0s
 
 
-# In[71]:
+# In[22]:
 
 
 mod = SignalingModel(
@@ -763,7 +719,7 @@ output_html = os.path.join(data_path, 'trash', fn + '_' + author + '.html')
 pm.execute_notebook(
     input_path=input_notebook,
     output_path=output_notebook,
-    parameters={"fn": fn, 'separation_subset': separation_subset},
+    parameters={"fn": fn}, # 'separation_subset': separation_subset},
     kernel_name='python3'
 )
 

@@ -4,6 +4,7 @@ from typing import Literal
 
 import pandas as pd
 import scanpy as sc
+import numpy as np
 
 import sklearn
 
@@ -34,6 +35,9 @@ def get_EMD_loss(tf_adata_actual, tf_adata_predicted, device = device):
     
     return {k: float(v.cpu().numpy()) for k,v in loss.items()}
 
+def rmse(u, v):
+    return np.sqrt(np.mean((u - v) ** 2))
+
 def rank_score(
     tf_adata_actual, 
     tf_adata_predicted, 
@@ -61,7 +65,7 @@ def rank_score(
         column in `tf_adata_predicted.obs` containing perturbation information
     distance_metric : str, optional
         how to calculate the distance between psuedobulked perturbations, by default 'manhattan' (as in virtual cel challenge)
-        options include any metric included in available to sklearn.metrics.pairwise_distances
+        options include any metric included in available to sklearn.metrics.pairwise_distances as well as rmse
     method : str, optional
         DEPRECATED: only difference is whether individual rank denominator is subtracted by 1
         whether to use the scoring based on the description in PerturBench (https://arxiv.org/html/2408.10609v3)
@@ -78,11 +82,9 @@ def rank_score(
         A dictionary mapping the rank score of each modelled perturbation
     """
 
-    # filter to only test perturbations 
-    # PerturBench normalizes only to predicted perturbations:
     pred_pert_mask = tf_adata_actual.obs[pert_col].isin(tf_adata_predicted.obs[pert_col])
     tf_adata_actual = tf_adata_actual[pred_pert_mask, :].copy()
-    
+
     n_pert_predicted = tf_adata_predicted.obs[pert_col].nunique()
     if tf_adata_actual.obs[pert_col].nunique() != n_pert_predicted:
         raise ValueError('Not all perturbations present in actual data')
@@ -90,15 +92,17 @@ def rank_score(
     psuedobulked_perts_actual = sc.get.aggregate(tf_adata_actual, by = pert_col, axis = 0, func = 'mean')
     psuedobulked_perts_predicted = sc.get.aggregate(tf_adata_predicted, by = pert_col, axis = 0, func = 'mean')
 
-    n_pert_predicted = psuedobulked_perts_predicted.n_obs
-
     # get pairwise distances as in virtual cell challenge
+    if distance_metric == 'rmse':
+        distance_metric = rmse
+    
     distances = sklearn.metrics.pairwise_distances(
         psuedobulked_perts_actual.layers['mean'],
         psuedobulked_perts_predicted.layers['mean'],
         metric=distance_metric, 
-        **kwargs
+    #     **kwargs
     )
+
 
     distances = pd.DataFrame(distances, 
                  index = psuedobulked_perts_actual.obs_names, 
@@ -106,13 +110,19 @@ def rank_score(
 
     rank_scores = {}
     for pred_pert in distances.columns:
-        corresponding_distance = distances.loc[pred_pert, pred_pert] # distance to actual true perturbation
-        all_distances = distances.loc[:, pred_pert].sort_values(ascending = True)
-        rank = (all_distances <= corresponding_distance).sum() - 1 # subtracting rank by 1 allows for zero values
-        rank_scores[pred_pert] = 1 - (rank/n_pert_predicted) # Perturbench subtracts 1 from n_pert_prediced, VCC does not
-            
+        corresponding_distance = distances.loc[pred_pert, pred_pert] # self distance
+
+        all_distances = distances.loc[:, pred_pert]
+        pred_mask = (all_distances.index != pred_pert) # exclude self
+        rank = (all_distances[pred_mask] <= corresponding_distance).sum()
+
+        rank /= (n_pert_predicted - 1) # since excluding self
+
+        rank_scores[pred_pert] = 1 - rank 
+
     rank_score_average = sum(rank_scores.values())/len(rank_scores)
-        
     
     return rank_score_average, rank_scores
+
+
 
