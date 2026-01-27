@@ -75,6 +75,10 @@ parser.add_argument("--cat_bias_lambda_L2", type=float, required=True)
 parser.add_argument("--spectral_loss_factor", type=float, required=True)
 parser.add_argument("--uniform_lambda_L2", type=float, required=True)
 
+parser.add_argument("--bn_weights_lambda_L2", type=float, required=True)
+
+
+
 
 ########################################################################
 args = parser.parse_args()
@@ -126,8 +130,15 @@ cat_bias_lambda_L2 = args.cat_bias_lambda_L2
 spectral_loss_factor = args.spectral_loss_factor
 uniform_lambda_L2 = args.uniform_lambda_L2
 
+bn_weights_lambda_L2 = args.bn_weights_lambda_L2
 
-# python test_run.py --index 21_2 --retrain false --max_epochs 600 --per_condition_reconstruction_loss true --n_batches 15 --vae_param_reg 1e-5 --vae_scaling_KL 5e-3 --n_cat_discriminator_train 10 --n_pert_discriminator_train 10 --cat_dropout 0.1 --pert_dropout 0.3 --n_adversarial_start 200 --main_max_lr 2e-3 --gen_max_lr 5e-4 --cat_max_lr 1e-3 --pert_max_lr 1e-3 --cat_max_penalty_weight 11 --cat_b_adv 2.5 --pert_max_penalty_weight 10 --pert_b_adv 2.75 --generator_dropout_rate 0.7 --cat_epsilon_smooth 0.1 --pert_epsilon_smooth 0.1 --n_layers_vae 3 --start_layers_pert true --cat_bias_pert_scaler 100 --cat_pert_pert_label false --cat_bias_lambda_L2 2.5e-4 --spectral_loss_factor 0 --uniform_lambda_L2 0 --cat_spectral_norm true --pert_spectral_norm true
+
+#python test_run.py --index 29_2 --retrain false --max_epochs 1200 --per_condition_reconstruction_loss true --n_batches 20 --vae_param_reg 1e-5 --vae_scaling_KL 5e-3 --n_cat_discriminator_train 10 --n_pert_discriminator_train 10 --cat_dropout 0.1 --pert_dropout 0.3 --n_adversarial_start 200 --main_max_lr 2e-3 --gen_max_lr 5e-4 --cat_max_lr 1e-3 --pert_max_lr 1e-3 --cat_max_penalty_weight 11 --cat_b_adv 2.5 --pert_max_penalty_weight 10 --pert_b_adv 2.75 --generator_dropout_rate 0.7 --cat_epsilon_smooth 0.1 --pert_epsilon_smooth 0.1 --n_layers_vae 3 --start_layers_pert true --cat_bias_pert_scaler 100 --cat_pert_pert_label false --cat_bias_lambda_L2 2.5e-4 --spectral_loss_factor 0 --uniform_lambda_L2 0 --cat_spectral_norm true --pert_spectral_norm true --bn_weights_lambda_L2
+
+#python test_run.py --index 21_4 --retrain false --max_epochs 600 --per_condition_reconstruction_loss true --n_batches 15 --vae_param_reg 1e-5 --vae_scaling_KL 5e-3 --n_cat_discriminator_train 10 --n_pert_discriminator_train 10 --cat_dropout 0.1 --pert_dropout 0.3 --n_adversarial_start 200 --main_max_lr 2e-3 --gen_max_lr 5e-4 --cat_max_lr 1e-3 --pert_max_lr 1e-3 --cat_max_penalty_weight 11 --cat_b_adv 2.5 --pert_max_penalty_weight 10 --pert_b_adv 2.75 --generator_dropout_rate 0.7 --cat_epsilon_smooth 0.1 --pert_epsilon_smooth 0.1 --n_layers_vae 3 --start_layers_pert true --cat_bias_pert_scaler 100 --cat_pert_pert_label false --cat_bias_lambda_L2 5e-4 --spectral_loss_factor 0 --uniform_lambda_L2 0 --cat_spectral_norm true --pert_spectral_norm true --bn_weights_lambda_L2 1e-7
+
+#python test_run.py --index 2B --retrain false --max_epochs 600 --per_condition_reconstruction_loss true --n_batches 15 --vae_param_reg 1e-7 --vae_scaling_KL 5e-3 --n_cat_discriminator_train 10 --n_pert_discriminator_train 10 --cat_dropout 0.1 --pert_dropout 0.3 --n_adversarial_start 200 --main_max_lr 2e-3 --gen_max_lr 5e-4 --cat_max_lr 1e-3 --pert_max_lr 1e-3 --cat_max_penalty_weight 11 --cat_b_adv 2.5 --pert_max_penalty_weight 10 --pert_b_adv 2.75 --generator_dropout_rate 0.7 --cat_epsilon_smooth 0.1 --pert_epsilon_smooth 0.1 --n_layers_vae 3 --start_layers_pert true --cat_bias_pert_scaler 100 --cat_pert_pert_label false --cat_bias_lambda_L2 5e-4 --spectral_loss_factor 0 --uniform_lambda_L2 0 --cat_spectral_norm true --pert_spectral_norm true --bn_weights_lambda_L2 1e-7
+
 
 
 # In[4]:
@@ -385,7 +396,7 @@ bionet_params['cat_max_norm'] = 100
 regularization_params = {
     'input_lambda_L2': 0, # irrelevant because setting the requires grad to False
 
-    'bn_weights_lambda_L2': 1e-7,
+    'bn_weights_lambda_L2': bn_weights_lambda_L2,# 1e-7
     'moa_lambda_L1': 1e2,
     'uniform_lambda_L2': uniform_lambda_L2, #0, #1e-7, 
     'uniform_min': -1/projection_amplitude_out,
