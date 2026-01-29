@@ -1469,8 +1469,8 @@ def pc_pipeline(
         whether to run umap (True) or not (False), by default True
     covariate_associations : list, optional
         calculates statistical associations between PC space and a covariate in `adata.obs`
-    per_component_association : bool, optional
-        whether to calculate the `covariate_associations` univariately per PCA component, see `latent_association_per_component` for details, by default False
+    per_component_association : bool, optionalde
+        whether to calculate the `covariate_associations` univariately per PCA component, see `latent_association_per_component` for details, by default Falsede
     global_component_association : bool, optional
         whether to calculate the `covariate_associations` globally across all PCA components, see `latent_association_global` for details, by default True 
     file_prefix : str | None, optional
