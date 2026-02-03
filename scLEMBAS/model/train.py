@@ -1805,40 +1805,47 @@ class TrainSC(TrainBase):
                 if self._run_adv:
                     for discriminator in self.cat_discriminator['discriminators'].values():
                             unfreeze_model(model = discriminator)
-                    for nd in range(self.n_cat_discriminator_train):
-                        self.cat_discriminator['optimizer'].zero_grad()
-                        # discriminator prediction and loss
+
+                    if self.n_cat_discriminator_train > 0:
+                        for nd in range(self.n_cat_discriminator_train):
+                            self.cat_discriminator['optimizer'].zero_grad()
+                            # discriminator prediction and loss
+                            cat_discriminator_loss_accuracy = self._zero.clone()
+                            for cat_group_idx, (cat, discriminator) in enumerate(self.cat_discriminator['discriminators'].items()):
+                                bias_global_prediction = discriminator(bias_global.detach()) # predicted logits
+                                # if don't use retain_graph = True, then use bias_global.detach() here
+
+                                target = covariates_idx_[:, cat_group_idx]
+                                if discriminator.n_labels == 2:
+                                    target = target.to(self.mod.dtype).unsqueeze(1)
+
+                                cat_discriminator_loss_accuracy += discriminator.loss_fn(bias_global_prediction, target)   
+
+                            # discriminator regularization
+                            cat_discriminator_reg = self._zero.clone()
+                            for discriminator in self.cat_discriminator['discriminators'].values():
+                                cat_discriminator_reg += discriminator.L2_reg(self.cat_discriminator['params']['discriminator_lambda_L2'])
+                            cat_discriminator_loss = cat_discriminator_loss_accuracy + cat_discriminator_reg
+
+                            # discriminator optimization
+                            # NOTE: discriminator is optimized prior to adverserial training (and loss re-calculated)
+                            cat_discriminator_loss.backward() # if bias global is not detached, need to set retain_graph = True here
+                            for discriminator in self.cat_discriminator['discriminators'].values():
+                                nn.utils.clip_grad_norm_(discriminator.parameters(), max_norm=100.0)
+                            
+                            if nd == self.n_cat_discriminator_train - 1: # tracking only
+                                cat_grad_l2s = [self.get_global_l2_norm(mod_discriminator) for mod_discriminator in self.cat_discriminator['discriminators'].values()]
+                            self.cat_discriminator['optimizer'].step()
+
+                        # freeze discriminator (to prevent updating discriminator gradients when calling discriminator while 
+                        # training generator adverserially below)
+                        for discriminator in self.cat_discriminator['discriminators'].values():
+                            freeze_model(model = discriminator)
+                    else:
+                        cat_discriminator_loss  = self._zero.clone()
                         cat_discriminator_loss_accuracy = self._zero.clone()
-                        for cat_group_idx, (cat, discriminator) in enumerate(self.cat_discriminator['discriminators'].items()):
-                            bias_global_prediction = discriminator(bias_global.detach()) # predicted logits
-                            # if don't use retain_graph = True, then use bias_global.detach() here
-
-                            target = covariates_idx_[:, cat_group_idx]
-                            if discriminator.n_labels == 2:
-                                target = target.to(self.mod.dtype).unsqueeze(1)
-
-                            cat_discriminator_loss_accuracy += discriminator.loss_fn(bias_global_prediction, target)   
-
-                        # discriminator regularization
                         cat_discriminator_reg = self._zero.clone()
-                        for discriminator in self.cat_discriminator['discriminators'].values():
-                            cat_discriminator_reg += discriminator.L2_reg(self.cat_discriminator['params']['discriminator_lambda_L2'])
-                        cat_discriminator_loss = cat_discriminator_loss_accuracy + cat_discriminator_reg
-
-                        # discriminator optimization
-                        # NOTE: discriminator is optimized prior to adverserial training (and loss re-calculated)
-                        cat_discriminator_loss.backward() # if bias global is not detached, need to set retain_graph = True here
-                        for discriminator in self.cat_discriminator['discriminators'].values():
-                            nn.utils.clip_grad_norm_(discriminator.parameters(), max_norm=100.0)
-                        
-                        if nd == self.n_cat_discriminator_train - 1: # tracking only
-                            cat_grad_l2s = [self.get_global_l2_norm(mod_discriminator) for mod_discriminator in self.cat_discriminator['discriminators'].values()]
-                        self.cat_discriminator['optimizer'].step()
-
-                    # freeze discriminator (to prevent updating discriminator gradients when calling discriminator while 
-                    # training generator adverserially below)
-                    for discriminator in self.cat_discriminator['discriminators'].values():
-                        freeze_model(model = discriminator)
+                        cat_grad_l2s = [0.0]*len(self.cat_discriminator['discriminators'])
 
                     # NOTE: 
                     # a good adverserial check here is to see if the vae (and all self.mod) param gradients are still 0, 
@@ -1849,34 +1856,40 @@ class TrainSC(TrainBase):
                     ######################## Perturbation DISCRIMINATOR ########################
                     # same implementation as categorical discriminator currently
                     # discriminator prediction and loss
-                    unfreeze_model(model = self.pert_discriminator['discriminator'])
-                    for nd in range(self.n_pert_discriminator_train):
-                        self.pert_discriminator['optimizer'].zero_grad()
-                        bias_global_prediction = self.pert_discriminator['discriminator'](bias_global.detach()) # predicted logits
+                    if self.n_pert_discriminator_train > 0:
+                        unfreeze_model(model = self.pert_discriminator['discriminator'])
+                        for nd in range(self.n_pert_discriminator_train):
+                            self.pert_discriminator['optimizer'].zero_grad()
+                            bias_global_prediction = self.pert_discriminator['discriminator'](bias_global.detach()) # predicted logits
 
-                        if self.pert_discriminator['discriminator'].n_labels != 2:
-                            target = X_in_.argmax(dim=1)
-                            # differentiate between rows with no perturbation and rows with perturbation at column 1 (index 0)
-                            no_pert = X_in_.sum(dim=1) == 0  
-                            target[no_pert] = self.pert_discriminator['discriminator'].n_labels - 1 # -1 for indexing
-                        else:
-                            target = X_in_#.long().reshape(-1)
+                            if self.pert_discriminator['discriminator'].n_labels != 2:
+                                target = X_in_.argmax(dim=1)
+                                # differentiate between rows with no perturbation and rows with perturbation at column 1 (index 0)
+                                no_pert = X_in_.sum(dim=1) == 0  
+                                target[no_pert] = self.pert_discriminator['discriminator'].n_labels - 1 # -1 for indexing
+                            else:
+                                target = X_in_#.long().reshape(-1)
 
 
-                        pert_discriminator_loss_accuracy = self.pert_discriminator['discriminator'].loss_fn(bias_global_prediction, target)   
+                            pert_discriminator_loss_accuracy = self.pert_discriminator['discriminator'].loss_fn(bias_global_prediction, target)   
 
-                        # discriminator regularization
-                        pert_discriminator_reg = self.pert_discriminator['discriminator'].L2_reg(self.pert_discriminator['params']['discriminator_lambda_L2'])
-                        pert_discriminator_loss = pert_discriminator_loss_accuracy + pert_discriminator_reg
+                            # discriminator regularization
+                            pert_discriminator_reg = self.pert_discriminator['discriminator'].L2_reg(self.pert_discriminator['params']['discriminator_lambda_L2'])
+                            pert_discriminator_loss = pert_discriminator_loss_accuracy + pert_discriminator_reg
 
-                        # discriminator optimization
-                        pert_discriminator_loss.backward()
-                        nn.utils.clip_grad_norm_(self.pert_discriminator['discriminator'].parameters(), max_norm=100.0)
-                        if nd == self.n_pert_discriminator_train - 1: # tracking only
-                            pert_grad_l2 = self.get_global_l2_norm(self.pert_discriminator['discriminator']) # tracking
-                        
-                        self.pert_discriminator['optimizer'].step()
-                    freeze_model(model = self.pert_discriminator['discriminator'])
+                            # discriminator optimization
+                            pert_discriminator_loss.backward()
+                            nn.utils.clip_grad_norm_(self.pert_discriminator['discriminator'].parameters(), max_norm=100.0)
+                            if nd == self.n_pert_discriminator_train - 1: # tracking only
+                                pert_grad_l2 = self.get_global_l2_norm(self.pert_discriminator['discriminator']) # tracking
+                            
+                            self.pert_discriminator['optimizer'].step()
+                        freeze_model(model = self.pert_discriminator['discriminator'])
+                    else:
+                        pert_discriminator_loss = self._zero.clone()
+                        pert_discriminator_loss_accuracy = self._zero.clone()
+                        pert_discriminator_reg = self._zero.clone()
+                        pert_grad_l2 = 0.0
                 else:
                     cat_discriminator_loss  = self._zero.clone()
                     cat_discriminator_loss_accuracy = self._zero.clone()
