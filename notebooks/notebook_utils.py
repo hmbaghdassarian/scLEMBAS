@@ -7,6 +7,8 @@ import numpy as np
 from sklearn.decomposition import PCA
 from sklearn.ensemble import RandomForestRegressor
 
+import torch
+
 data_path = '/home/hmbaghda/orcd/pool/scLEMBAS/analysis'
 
 def get_split(fold, author):
@@ -135,17 +137,26 @@ def linear_baseline(fold,
     # fit the linear model
     Y_train, b_train = pert_psuedobulked_mean(adata = adata, barcodes = split['train_barcodes'], pert_col = pert_col)
 
-    G = PCA(n_components=2, random_state = seed).fit_transform(Y_train)
+    # McCauley has 6 perturbations, Kang has 2
+    if author == 'McCauley':
+        author_n_components = 2 
+    elif author == 'Kang':
+        author_n_components = 1
+    G = PCA(n_components=author_n_components, random_state = seed).fit_transform(Y_train)
     G = pd.DataFrame(G, index = Y_train.index)
 
     go_pca = load_csendes_go_pert_embedding(seed = seed)
     
     # don't need to subset to train because all perturbations are present in training with the way we split
     if author == 'McCauley':
-        perts = adata.obs[pert_col].cat.rename_categories({'CTRL': 'perturbation_control'}).cat.categories.tolist()
+        pert_map = {'CTRL': 'perturbation_control'}
+        perts = adata.obs[pert_col].cat.rename_categories(pert_map).cat.categories.tolist()
     elif author == 'Kang':
         pert_map = {'CTRL': 'perturbation_control', 'STIM': 'IFNB1'}
         perts = adata.obs[pert_col].cat.rename_categories(pert_map).cat.categories.tolist()
+
+        
+    assert Y_train.columns.tolist() == pd.Series(perts).replace({v:k for k,v in pert_map.items()}).tolist(), 'Y and P must be in the same order'
 
     P_train = go_pca.loc[perts, :]
 
@@ -163,11 +174,12 @@ def linear_baseline(fold,
         test_perts = adata[split['test_barcodes'], :].obs[pert_col].cat.rename_categories({'CTRL': 'perturbation_control'}).cat.categories.tolist()
     elif author == 'Kang':
         pert_map = {'CTRL': 'perturbation_control', 'STIM': 'IFNB1'}
-        test_perts = adata[split['test_barcodes'], :].obs['stim'].cat.rename_categories(pert_map).astype(str).copy()
-        
+        test_perts = adata[split['test_barcodes'], :].obs['stim'].cat.rename_categories(pert_map).cat.categories.tolist()
+
     P_test = P_train.loc[test_perts, :]
     y_pred = (G_arr @ W @ P_test.T.values) +  b_train.values.reshape(-1,1)
     y_pred = pd.DataFrame(y_pred, index = Y_train.index, columns = P_test.index)
     
     return y_pred
+
 

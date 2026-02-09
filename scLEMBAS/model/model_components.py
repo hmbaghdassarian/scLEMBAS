@@ -731,7 +731,7 @@ class CatDiscriminator(nn.Module):
 
                     P = torch.tensor(smoothed, dtype=torch.float32) # label-smoothing adjusted true target
 
-                    kl = F.kl_div(log_Q, P, reduction='batchmean')
+                    kl = torch.sum(P * (torch.log(P + 1e-10) - log_Q)) #F.kl_div(log_Q, P, reduction='batchmean')
                     total_kl += class_probs[i] * kl.item() # gives a weighted average
                 return total_kl
             else: # cross entropy

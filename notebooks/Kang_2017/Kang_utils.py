@@ -376,7 +376,7 @@ def initialize_mod_and_trainer(
     
     # ------------------------------------- INITIALIZATION -------------------------------------
     # input stimulation
-    X_in = pd.DataFrame(tf_adata.obs.stim.cat.codes, columns = ['IFNB1'])
+    X_in = pd.DataFrame(tf_adata.obs.stim.cat.codes, columns = ['STIM'])
     
     y_out = tf_adata.to_df().copy()
     if randomize:

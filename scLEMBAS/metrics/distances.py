@@ -7,6 +7,8 @@ import scanpy as sc
 import numpy as np
 
 import sklearn
+from sklearn.metrics import root_mean_squared_error
+from scipy import stats
 
 from .. import utilities as utils
 
@@ -14,6 +16,96 @@ from geomloss import SamplesLoss
 import torch
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
+
+from sklearn.metrics import root_mean_squared_error
+
+def psuedobulk_adata(adata, groupby_col):
+    """Psuedobulks AnnData `.X` by mean of `groupby_col` in `.obs`.
+    
+    Same as `sc.get.aggregate` but returns the dataframe instead of an array in the `.layers` attribute.
+    """
+    y = adata.to_df()
+    y[groupby_col] = adata.obs[groupby_col]
+    y = y.groupby(groupby_col, observed = True).mean()
+    return y
+
+def get_rmse(tf_adata_actual, tf_adata_predicted, groupby_col):
+    """RMSE as calculated per psuedobulked `groupby_col` label, with the mean across labels returned."""
+    y_pred = psuedobulk_adata(adata = tf_adata_predicted, groupby_col = groupby_col)
+    y_actual = psuedobulk_adata(adata = tf_adata_actual, groupby_col = groupby_col)
+    y_actual = y_actual.loc[y_pred.index, :] # filter for conditions present in predicted
+
+    # l2_all = np.sqrt(np.mean((y_pred - y_actual) ** 2))
+    # l2_per_sample = np.sqrt(np.mean((y_pred - y_actual) ** 2, axis=1))
+    # mean_l2_per_sample = np.mean(l2_per_sample)
+
+    # same as the one above
+    mean_l2_per_sample = root_mean_squared_error(y_actual.T, y_pred.T, multioutput = 'uniform_average')
+    
+    return mean_l2_per_sample
+
+def get_pearson(tf_adata_actual, tf_adata_predicted, groupby_col):
+    """Pearson correlation calculated per psuedobulked `groupby_col` label, with the mean across labels returned."""
+    y_pred = psuedobulk_adata(adata = tf_adata_predicted, groupby_col = groupby_col)
+    y_actual = psuedobulk_adata(adata = tf_adata_actual, groupby_col = groupby_col)
+    y_actual = y_actual.loc[y_pred.index, :] # filter for conditions present in predicted
+
+    r = np.array([
+        stats.pearsonr(y_pred.values[i], y_actual.values[i])[0]
+        for i in range(y_actual.shape[0])
+    ])
+    return np.mean(r)
+
+def get_pearson_delta(tf_adata_actual, tf_adata_predicted, groupby_col: str, groupby_type: Literal['perturbation', 'condition'], 
+                  ctrl_pert: str):
+    """Pearson delta as calculated per psuedobulked `groupby_col` label, with the mean across labels returned.
+
+    As described in [Ahlmann-Eltze et al](https://doi.org/10.1038/s41592-025-02772-6).
+
+
+    Parameters
+    ----------
+    tf_adata_actual : _type_
+        actual data
+    tf_adata_predicted : _type_
+        predicted data
+    groupby_col : str
+        `adata.obs` column to psuedo-bulk by
+    groupby_type : Literal['perturbation', 'condition']
+        whether `groupby_col` represents the perturbation or condition (of the format `<categorical_covariate^perturbation>`)
+        effects the control vector in the delta term
+    ctrl_pert : 
+        label of the control perturbation
+
+    Returns
+    -------
+    r : float
+        mean Pearson correlation across psuedobulked `groupby_col` labels
+    """
+
+    y_pred = psuedobulk_adata(adata = tf_adata_predicted, groupby_col = groupby_col)
+    y_actual = psuedobulk_adata(adata = tf_adata_actual, groupby_col = groupby_col)
+
+    if groupby_type == 'perturbation':
+        assert ctrl_pert not in y_pred.index, 'PearsonDelta needs a control reference'
+        y_control = y_actual.loc[ctrl_pert, :]
+    elif groupby_type == 'condition':
+        assert ctrl_pert not in [cond.split('^')[1] for cond in y_pred.index], 'PearsonDelta needs a control reference'
+        y_control = y_actual.loc[[cond for cond in y_actual.index if cond.endswith('^{}'.format(ctrl_pert))], :]
+        y_control.index = [cond.split('^')[0] for cond in y_control.index] 
+        y_control = y_control.loc[[cond.split('^')[0] for cond in y_pred.index] , :]
+
+    y_actual = y_actual.loc[y_pred.index, :] # filter for conditions present in predicted
+
+    actual_delta = np.subtract(y_actual.values, y_control.values)
+    pred_delta = np.subtract(y_pred.values, y_control.values)
+
+    r = np.array([
+        stats.pearsonr(a, b)[0]
+        for a, b in zip(actual_delta, pred_delta)
+    ])
+    
+    return np.mean(r)
 
 
 def get_EMD_loss(tf_adata_actual, tf_adata_predicted, device = device):
@@ -94,6 +186,7 @@ def rank_score(
 
     # get pairwise distances as in virtual cell challenge
     if distance_metric == 'rmse':
+        raise ValueError("Consider whether this should be the `sklearn.metrics.root_mean_squared_error` (mean per sample) or `rmse` (global rmse) function")
         distance_metric = rmse
     
     distances = sklearn.metrics.pairwise_distances(
