@@ -1,5 +1,49 @@
 """Set of functions for latent space expression shifts of cells."""
 
+############################ Warning filters ############################
+import warnings
+
+warnings.resetwarnings()
+
+warnings.filterwarnings(
+    "ignore",
+    category=FutureWarning,
+    message=r".*__version__ is deprecated.*"
+)
+
+warnings.filterwarnings(
+    "ignore",
+    category=UserWarning,
+    message=r"Observation names are not unique.*"
+)
+
+warnings.filterwarnings(
+    "ignore",
+    module=r"scanpy(\..*)?$"
+)
+
+warnings.filterwarnings(
+    "ignore",
+    module=r"anndata(\..*)?$"
+)
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", module=r"scanpy(\..*)?$")
+warnings.filterwarnings("ignore", module=r"anndata(\..*)?$")
+warnings.filterwarnings("ignore", message="Observation names are not unique.*")
+warnings.filterwarnings("ignore", message="`__version__` is deprecated.*")
+warnings.filterwarnings('ignore', category=FutureWarning, module='scanpy')
+warnings.filterwarnings("ignore", category=ImportWarning)
+from anndata._warnings import ImplicitModificationWarning
+warnings.filterwarnings(
+    "ignore",
+    category=ImplicitModificationWarning
+)
+
+
+############################ ############## ############################
+
+
 from typing import Literal, List
 import math
 import warnings

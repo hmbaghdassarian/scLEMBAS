@@ -1,5 +1,13 @@
+import warnings
+from anndata._warnings import ImplicitModificationWarning
+warnings.filterwarnings(
+    "ignore",
+    category=ImplicitModificationWarning
+)
+
 import os
 import json
+from typing import Literal
 
 import pandas as pd
 import numpy as np
@@ -183,3 +191,60 @@ def linear_baseline(fold,
     return y_pred
 
 
+#---------------------------- baseline prediction formatting -------------------------
+def assert_rows_equal_within_type2(df: pd.DataFrame, sep="^", atol=1e-5, rtol=1e-8, equal_nan=True):
+    type2 = df.index.to_series().str.split(sep, n=1).str[1]
+    all_ok = True
+    for t2, idx in type2.groupby(type2).groups.items():
+        sub = df.loc[idx]
+        ref = sub.iloc[0].to_numpy()
+        arr = sub.to_numpy()
+        ok = np.allclose(arr, ref[None, :], atol=atol, rtol=rtol, equal_nan=equal_nan)
+        if not ok:
+            all_ok = False
+            break
+    return all_ok
+
+
+def pb_y_pred(fold, author, baseline_type: Literal['RF', 'linear', 'mean'], tf_adata, pert_col):
+    '''Gets the formatted y_predictions for the psuedobulk baselines.'''
+
+    split = get_split(fold, author)
+
+    fn_pb = os.path.join(data_path, 'interim', '{}_fold{}_{}baseline_prediction.csv'.format(author, fold, baseline_type))
+
+    y_pred_baseline = pd.read_csv(fn_pb, index_col = 0)
+    y_pred_baseline_pert = y_pred_baseline.copy()
+
+    if baseline_type == 'RF': # psueo-bulk post-hoc
+        y_pred_baseline_pert[pert_col] = tf_adata.obs.loc[y_pred_baseline.index, pert_col]
+        y_pred_baseline_pert = y_pred_baseline_pert.groupby(pert_col, observed = True).mean()
+
+        # will be the same across cell types, but this is for comparison with psuedo-bulk types
+        y_pred_baseline_condition = y_pred_baseline.copy()
+        y_pred_baseline_condition['condition'] = tf_adata.obs.loc[y_pred_baseline.index, 'condition']
+        y_pred_baseline_condition = y_pred_baseline_condition.groupby('condition', observed = True).mean()
+    elif baseline_type == 'linear':  # already psueo-bulked
+        y_pred_baseline_pert = y_pred_baseline_pert.T
+
+        # is the same across cell types, but this is for comparison with psuedo-bulk types
+        y_pred_baseline_condition = pd.DataFrame(index = split['test_conds'], columns = tf_adata.var_names)
+        for test_cond in y_pred_baseline_condition.index:
+            y_pred_baseline_condition.loc[test_cond, :] = y_pred_baseline_pert.loc[test_cond.split('^')[1], :].values
+            y_pred_baseline_condition = y_pred_baseline_condition.astype(np.float64)
+
+    elif baseline_type == 'mean':
+        test_perts = sorted({test_cond.split('^')[1] for test_cond in split['test_conds']})
+        y_pred_baseline_pert = pd.DataFrame(index = test_perts, columns = tf_adata.var_names)
+        for idx in y_pred_baseline_pert.index:
+            y_pred_baseline_pert.loc[idx, :] = y_pred_baseline['0'].values
+            y_pred_baseline_pert = y_pred_baseline_pert.astype(np.float64)
+
+        y_pred_baseline_condition = pd.DataFrame(index = split['test_conds'], columns = tf_adata.var_names)
+        for idx in y_pred_baseline_condition.index:
+            y_pred_baseline_condition.loc[idx, :] = y_pred_baseline['0'].values
+            y_pred_baseline_condition = y_pred_baseline_condition.astype(np.float64)
+
+    assert assert_rows_equal_within_type2(y_pred_baseline_condition, atol = 1e-5, rtol = 1e-8), 'Condition baselines should be the same across perturbations'
+    
+    return y_pred_baseline_pert, y_pred_baseline_condition

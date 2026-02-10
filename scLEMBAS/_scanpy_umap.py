@@ -1,16 +1,46 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[11]:
-
-
 """Reimplimentation of scanpy's umap functions (v1.10.1)"", but returning the umap model itself"""
 
-
-# In[26]:
-
-
 from __future__ import annotations
+
+############################ Warning filters ############################
+import warnings
+
+warnings.resetwarnings()
+
+warnings.filterwarnings(
+    "ignore",
+    category=FutureWarning,
+    message=r".*__version__ is deprecated.*"
+)
+
+warnings.filterwarnings(
+    "ignore",
+    category=UserWarning,
+    message=r"Observation names are not unique.*"
+)
+
+warnings.filterwarnings(
+    "ignore",
+    module=r"scanpy(\..*)?$"
+)
+
+warnings.filterwarnings(
+    "ignore",
+    module=r"anndata(\..*)?$"
+)
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", module=r"scanpy(\..*)?$")
+warnings.filterwarnings("ignore", module=r"anndata(\..*)?$")
+warnings.filterwarnings("ignore", message="Observation names are not unique.*")
+warnings.filterwarnings("ignore", message="`__version__` is deprecated.*")
+warnings.filterwarnings('ignore', category=FutureWarning, module='scanpy')
+warnings.filterwarnings("ignore", category=ImportWarning)
+
+############################ ############## ############################
 
 import warnings
 from typing import TYPE_CHECKING
