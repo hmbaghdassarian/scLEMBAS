@@ -121,7 +121,7 @@ def setup_prediction(mod,
             X_in.drop(columns = ctrl_pert, inplace = True)
         else:
             X_in = pd.DataFrame({non_control_pert: [pert_idx_map[pert]]*n_predictions})
-        assert X_in.columns == mod.X_in.columns, 'Assumes perturbations were sorted alphabetically prior to training'
+        assert list(X_in.columns) == list(mod.X_in.columns), 'Assumes perturbations were sorted alphabetically prior to training'
         X_in = mod.df_to_tensor(X_in)
 
         covariates_in = torch.tensor([cov_idx_map[ct]]*n_predictions,

@@ -19,46 +19,84 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 
 from sklearn.metrics import root_mean_squared_error
 
-def psuedobulk_adata(adata, groupby_col):
+def psuedobulk_adata(adata, groupby_col, embedding_model = None):
     """Psuedobulks AnnData `.X` by mean of `groupby_col` in `.obs`.
     
     Same as `sc.get.aggregate` but returns the dataframe instead of an array in the `.layers` attribute.
+    
+    If embedding_model is not None, will use that model to call `.transform` on the psuedobulked data. For PLS and PCA, 
+    it does not matter of psuedobulking is done before or after calling `.transform`.
     """
     y = adata.to_df()
     y[groupby_col] = adata.obs[groupby_col]
     y = y.groupby(groupby_col, observed = True).mean()
+    
+    if embedding_model is not None:
+        y = pd.DataFrame(embedding_model.transform(y.values), 
+             index = y.index)
+    
     return y
 
-def get_rmse(tf_adata_actual, tf_adata_predicted, groupby_col):
-    """RMSE as calculated per psuedobulked `groupby_col` label, with the mean across labels returned."""
-    y_pred = psuedobulk_adata(adata = tf_adata_predicted, groupby_col = groupby_col)
-    y_actual = psuedobulk_adata(adata = tf_adata_actual, groupby_col = groupby_col)
-    y_actual = y_actual.loc[y_pred.index, :] # filter for conditions present in predicted
-
-    # l2_all = np.sqrt(np.mean((y_pred - y_actual) ** 2))
-    # l2_per_sample = np.sqrt(np.mean((y_pred - y_actual) ** 2, axis=1))
-    # mean_l2_per_sample = np.mean(l2_per_sample)
-
-    # same as the one above
-    mean_l2_per_sample = root_mean_squared_error(y_actual.T, y_pred.T, multioutput = 'uniform_average')
+def get_rmse(tf_adata_actual, 
+             tf_adata_predicted, groupby_col, 
+             error_type: Literal['per_sample', 'per_feature'] = 'per_sample', 
+             embedding_model = None 
+            ):
+    """
+    RMSE as calculated per psuedobulked `groupby_col` label, with the mean across labels ('per_sample') or features ('per_feature') returned.
     
-    return mean_l2_per_sample
-
-def get_pearson(tf_adata_actual, tf_adata_predicted, groupby_col):
-    """Pearson correlation calculated per psuedobulked `groupby_col` label, with the mean across labels returned."""
-    y_pred = psuedobulk_adata(adata = tf_adata_predicted, groupby_col = groupby_col)
-    y_actual = psuedobulk_adata(adata = tf_adata_actual, groupby_col = groupby_col)
+    If embedding model is not None, must have a callable `.transform` method that will be used to calculate the metrics
+    in embedding space rather than full feature space. 
+    
+    
+    """
+    y_pred = psuedobulk_adata(adata = tf_adata_predicted, groupby_col = groupby_col, embedding_model = embedding_model)
+    y_actual = psuedobulk_adata(adata = tf_adata_actual, groupby_col = groupby_col, embedding_model = embedding_model)
     y_actual = y_actual.loc[y_pred.index, :] # filter for conditions present in predicted
 
+    if error_type == 'per_sample': # sklearn aveages across features by default
+        y_actual = y_actual.T
+        y_pred = y_pred.T
+    return root_mean_squared_error(y_actual, y_pred, multioutput = 'uniform_average')
+
+
+def get_pearson(tf_adata_actual, 
+                tf_adata_predicted, 
+                groupby_col, 
+                error_type: Literal['per_sample', 'per_feature'] = 'per_sample',
+                embedding_model = None
+               ):
+    """
+    Pearson correlation calculated per psuedobulked `groupby_col` label, with the mean across labels ('per_sample') or features ('per_feature') returned.
+    
+    If embedding model is not None, must have a callable `.transform` method that will be used to calculate the metrics
+    in embedding space rather than full feature space. 
+    
+    """
+    y_pred = psuedobulk_adata(adata = tf_adata_predicted, groupby_col = groupby_col, embedding_model = embedding_model)
+    y_actual = psuedobulk_adata(adata = tf_adata_actual, groupby_col = groupby_col, embedding_model = embedding_model)
+    y_actual = y_actual.loc[y_pred.index, :] # filter for conditions present in predicted
+
+    if error_type == 'per_feature':
+        y_actual = y_actual.T
+        y_pred = y_pred.T
+    
     r = np.array([
         stats.pearsonr(y_pred.values[i], y_actual.values[i])[0]
         for i in range(y_actual.shape[0])
     ])
     return np.mean(r)
 
-def get_pearson_delta(tf_adata_actual, tf_adata_predicted, groupby_col: str, groupby_type: Literal['perturbation', 'condition'], 
-                  ctrl_pert: str):
-    """Pearson delta as calculated per psuedobulked `groupby_col` label, with the mean across labels returned.
+def get_pearson_delta(tf_adata_actual, 
+                      tf_adata_predicted, 
+                      groupby_col: str, 
+                      groupby_type: Literal['perturbation', 'condition'],
+                      ctrl_pert: str, 
+                     error_type: Literal['per_sample', 'per_feature'] = 'per_sample',
+                      embedding_model = None
+                     ):
+    """
+    Pearson delta as calculated per psuedobulked `groupby_col` label.
 
     As described in [Ahlmann-Eltze et al](https://doi.org/10.1038/s41592-025-02772-6).
 
@@ -76,6 +114,10 @@ def get_pearson_delta(tf_adata_actual, tf_adata_predicted, groupby_col: str, gro
         effects the control vector in the delta term
     ctrl_pert : 
         label of the control perturbation
+    error_type : Literal['per_sample', 'per_feature'], optional
+        whether to calculate the mean across samples or features, by default 'per_sample'
+    embedding_model : None
+        must have a callable `.transform` method. If not None, will transform features prior to calculating metric.
 
     Returns
     -------
@@ -83,8 +125,8 @@ def get_pearson_delta(tf_adata_actual, tf_adata_predicted, groupby_col: str, gro
         mean Pearson correlation across psuedobulked `groupby_col` labels
     """
 
-    y_pred = psuedobulk_adata(adata = tf_adata_predicted, groupby_col = groupby_col)
-    y_actual = psuedobulk_adata(adata = tf_adata_actual, groupby_col = groupby_col)
+    y_pred = psuedobulk_adata(adata = tf_adata_predicted, groupby_col = groupby_col, embedding_model = embedding_model)
+    y_actual = psuedobulk_adata(adata = tf_adata_actual, groupby_col = groupby_col, embedding_model = embedding_model)
 
     if groupby_type == 'perturbation':
         assert ctrl_pert not in y_pred.index, 'PearsonDelta needs a control reference'
@@ -99,6 +141,10 @@ def get_pearson_delta(tf_adata_actual, tf_adata_predicted, groupby_col: str, gro
 
     actual_delta = np.subtract(y_actual.values, y_control.values)
     pred_delta = np.subtract(y_pred.values, y_control.values)
+    
+    if error_type == 'per_feature':
+        actual_delta = actual_delta.T
+        pred_delta = pred_delta.T
 
     r = np.array([
         stats.pearsonr(a, b)[0]
