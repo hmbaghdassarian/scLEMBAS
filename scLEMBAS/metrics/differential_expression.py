@@ -1,6 +1,8 @@
 """Pipeline to calculate concordance of DE between actual and predicted data. See `concordance_pipeline` function for all details."""
 
 from typing import Literal
+from joblib import Parallel, delayed
+
 
 from tqdm.auto import tqdm as _tqdm
 
@@ -121,12 +123,13 @@ def concordance_subpipeline(test_data, predicted_data, ctrl_data,
     pos_concordance = calculate_concordance(de_actual_pos, de_predicted_pos, concordance_metric = concordance_metric, rank_by = rank_by)
     neg_concordance = calculate_concordance(de_actual_neg, de_predicted_neg, concordance_metric = concordance_metric, rank_by = rank_by)
 
-
+    
     if n_permutation is not None:
+        rng = np.random.default_rng(seed) 
         de_random = de_actual.copy()
         pos_concordance_rand, neg_concordance_rand = [], []
         for _ in tqdm_outer_only(range(n_permutation)):
-            de_random.features = np.random.permutation(feature_names)
+            de_random.features = rng.permutation(feature_names) #np.random.permutation(feature_names)
             de_random_pos, de_random_neg = _split_de(de_random)
             pos_cr = calculate_concordance(de_actual_pos, de_random_pos, concordance_metric = concordance_metric, rank_by = rank_by)
             neg_cr = calculate_concordance(de_actual_neg, de_random_neg, concordance_metric = concordance_metric, rank_by = rank_by)
@@ -143,6 +146,32 @@ def concordance_subpipeline(test_data, predicted_data, ctrl_data,
     return pos_concordance, neg_concordance, pos_concordance_rand, neg_concordance_rand
 
 
+def _one_subsample_worker(
+    one_seed: int,
+    larger,
+    smaller,
+    k: int,
+    test_is_larger: bool,
+    ctrl_data,
+    feature_names,
+    alpha: float,
+    rank_by: str,
+    concordance_metric: str,
+    n_permutation
+):
+    rng = np.random.default_rng(int(one_seed))
+    idx = rng.choice(larger.shape[0], k, replace=False)
+    larger_sub = larger[idx, :]
+
+    test_in = larger_sub if test_is_larger else smaller
+    pred_in = smaller if test_is_larger else larger_sub
+
+    return concordance_subpipeline(
+        test_in, pred_in, ctrl_data, feature_names,
+        alpha, rank_by, concordance_metric,
+        n_permutation, int(one_seed)
+    )
+
 def concordance_pipeline(
     tf_adata_actual, 
     tf_adata_predicted, 
@@ -156,7 +185,8 @@ def concordance_pipeline(
     alpha: float = 0.1, 
     rank_by: Literal['effect_size', 'significance'] = 'effect_size', 
     concordance_metric: Literal['de_score', 'jaccard'] = 'de_score', 
-    seed: int = 888
+    seed: int = 888,
+    n_cores: int = None
 ):
     """Calculates differential-expression concordance within a given condition. This is a comparison of comparisons: 
     (DE of actual test vs control) compared to (DE of predicted test vs control).
@@ -244,28 +274,65 @@ def concordance_pipeline(
         test_is_larger = test_data.shape[0] > predicted_data.shape[0]
         larger, smaller = (test_data, predicted_data) if test_is_larger else (predicted_data, test_data)
         k = smaller.shape[0]
+        if n_cores is not None and n_cores > 1:
+            feature_names = np.asarray(feature_names)
+            ctrl_data = np.asarray(ctrl_data)
+            test_data = np.asarray(test_data)
+            predicted_data = np.asarray(predicted_data)
 
-        pos_concordance, neg_concordance = [], []
-        pos_concordance_rand, neg_concordance_rand = [], []
+            rng = np.random.default_rng(seed)
+            sub_seeds = rng.integers(0, 2**32 - 1, size=n_subsample, dtype=np.uint32)
 
-        np.random.seed(seed)
-        for _ in tqdm_outer_only(range(n_subsample)):
-            idx = np.random.choice(larger.shape[0], k, replace=False)
-            larger_sub = larger[idx, :]
+            results = Parallel(
+                n_jobs=min(n_cores, n_subsample),      
+                prefer="processes",
+                batch_size=1,
+                max_nbytes="50M",                # memmap large arrays to reduce copying
+                mmap_mode="r"
+            )(
+                delayed(_one_subsample_worker)(
+                    int(s),
+                    larger, smaller, k, test_is_larger,
+                    ctrl_data, feature_names,
+                    alpha, rank_by, concordance_metric,
+                    n_permutation
+                )
+                for s in sub_seeds
+            )
 
-            # keep the pipeline’s (test, predicted) argument order
-            test_in  = larger_sub if test_is_larger else smaller
-            pred_in  = smaller if test_is_larger else larger_sub
+            pos_concordance = []
+            neg_concordance = []
+            pos_concordance_rand = []
+            neg_concordance_rand = []
 
-            res = concordance_subpipeline(test_in, pred_in, ctrl_data, feature_names, alpha, rank_by, concordance_metric, 
-                                                               n_permutation, seed)
-            pos_c, neg_c, pos_c_rand, neg_c_rand = res
+            for pos_c, neg_c, pos_c_rand, neg_c_rand in results:
+                pos_concordance.append(pos_c)
+                neg_concordance.append(neg_c)
+                if n_permutation is not None:
+                    pos_concordance_rand.append(pos_c_rand.median(axis=1).tolist())
+                    neg_concordance_rand.append(neg_c_rand.median(axis=1).tolist())
+        else:
+            pos_concordance, neg_concordance = [], []
+            pos_concordance_rand, neg_concordance_rand = [], []
 
-            pos_concordance.append(pos_c)
-            neg_concordance.append(neg_c)
-            if n_permutation is not None:
-                pos_concordance_rand.append(pos_c_rand.median(axis = 1).tolist())
-                neg_concordance_rand.append(neg_c_rand.median(axis = 1).tolist())
+            np.random.seed(seed)
+            for i in tqdm_outer_only(range(n_subsample)):
+                idx = np.random.choice(larger.shape[0], k, replace=False)
+                larger_sub = larger[idx, :]
+
+                # keep the pipeline’s (test, predicted) argument order
+                test_in  = larger_sub if test_is_larger else smaller
+                pred_in  = smaller if test_is_larger else larger_sub
+
+                res = concordance_subpipeline(test_in, pred_in, ctrl_data, feature_names, alpha, rank_by, concordance_metric, 
+                                                                   n_permutation, seed + i)
+                pos_c, neg_c, pos_c_rand, neg_c_rand = res
+
+                pos_concordance.append(pos_c)
+                neg_concordance.append(neg_c)
+                if n_permutation is not None:
+                    pos_concordance_rand.append(pos_c_rand.median(axis = 1).tolist())
+                    neg_concordance_rand.append(neg_c_rand.median(axis = 1).tolist())
 
         pos_concordance = _format_concordance_list(pos_concordance)
         neg_concordance = _format_concordance_list(neg_concordance)

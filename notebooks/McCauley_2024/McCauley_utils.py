@@ -529,3 +529,35 @@ def adata_dimviz(
     viz_df = viz_df.sample(frac=1, random_state = seed).reset_index(drop=True)
     
     return viz_df
+
+
+def load_test_tfadata(fold):
+    """For a given fold, loads predicted and actual data (but not controls)."""
+    key = 'none_{}'.format(fold)
+    tf_adata_merged = merged_adatas[key].copy()
+
+    split = get_split(fold, author)
+    test_conds = split['test_conds']
+
+    test_cond_mask = tf_adata_merged.obs.condition.isin(test_conds)
+    tf_adata_test = tf_adata_merged[test_cond_mask,:].copy()
+    assert 'predicted_ctrl' not in tf_adata_test.obs.batch, 'Unexpected training predictions present'
+
+    predicted_mask = (tf_adata_test.obs.batch == 'predicted')
+
+    tf_adata_predicted = tf_adata_test[predicted_mask, :].copy()
+    tf_adata_actual = tf_adata_test[~predicted_mask, :].copy()
+    assert len(np.where(tf_adata.obs.condition.isin(test_conds))[0]) == tf_adata_actual.shape[0], 'Incorrect subsetting of actual data'
+
+    return tf_adata_actual, tf_adata_predicted
+
+
+def clear_adata(adata):
+    for k in copy.deepcopy(adata.obsm.keys()):
+        del adata.obsm[k]
+    for k in copy.deepcopy(adata.varm.keys()):
+        del adata.varm[k]
+    for k in copy.deepcopy(adata.obsp.keys()):
+        del adata.obsp[k]
+    
+    return adata

@@ -154,18 +154,52 @@ def get_pearson_delta(tf_adata_actual,
     return np.mean(r)
 
 
-def get_EMD_loss(tf_adata_actual, tf_adata_predicted, device = device):
-    """Calculates the loss between predicted and actual data per condition. 
-    geom_loss by default normalizes to sample size so that doesn't need to be done. 
-    Does take average across conditions for the total loss (rather than simply summing), so that it does not change with 
-    the number of conditions 
+def get_EMD_loss(tf_adata_actual, tf_adata_predicted, 
+                 groupby_col: str = 'condition', 
+                 latent_models: dict = None, 
+                 device = device):
+    """Calculates the Earth Mover's Distance between predicted and actual data. 
+
+
+    Parameters
+    ----------
+    tf_adata_actual : 
+        the actual data
+    tf_adata_predicted : 
+        the predicted data
+    groupby_col : str, optional
+        if not None, will calculate EMD loss per categorical label in `groupby_col` of `tf_adata_predicted.obs`
+         will average across `groupby_col` for the total loss (rather than simply summing), so that it does not change with 
+    with the number of labels 
+    latent_models : dict, optional
+        by default None
+        if not None, this is a dictionary mapping each label in `groupby_col` to a fit model 
+        with a `.transform` attribute which will be used to transform the full feature space to a latent space to run the calculations on 
+    device : 
+        torch device to run computation on
     """
+
     loss_fn = SamplesLoss("sinkhorn", p=2, blur=0.05).to(device)
     loss = {}
-    conds = tf_adata_predicted.obs.condition.unique()
+    
+    if groupby_col is None:
+        raise ValueError('Currently this code is only written to calculate loss per label in `groupby_col`')
+    
+    conds = tf_adata_predicted.obs[groupby_col].unique()
+    if latent_models is not None:
+        assert len(set(conds).difference(latent_models)) == 0, 'A latent model must be specificed for *each* label in {}'.format(groupby_col)
+    
     for cond in conds:
-        y_predicted = torch.tensor(tf_adata_predicted[tf_adata_predicted.obs.condition == cond, ].to_df().values).to(device)
-        y_actual = torch.tensor(tf_adata_actual[tf_adata_actual.obs.condition == cond, ].to_df().values).to(device)
+        y_predicted = tf_adata_predicted[tf_adata_predicted.obs[groupby_col] == cond, ].to_df().values
+        y_actual = tf_adata_actual[tf_adata_actual.obs[groupby_col] == cond, ].to_df().values
+        
+        if latent_models is not None:
+            y_predicted = latent_models[cond].transform(y_predicted)
+            y_actual = latent_models[cond].transform(y_actual)
+        
+        y_predicted = torch.tensor(y_predicted).to(device)
+        y_actual = torch.tensor(y_actual).to(device)
+        
         loss[cond] = loss_fn(y_predicted, y_actual)
         utils.clear_memory()
     loss['Mean EMD Loss'] = sum(loss.values())/len(loss) # averaged across condition to not scale with n_conditions
@@ -181,6 +215,7 @@ def rank_score(
     tf_adata_predicted, 
     pert_col: str, 
     distance_metric: str = 'manhattan', 
+    latent_model = None,
 #     method: Literal['perturbench', 'virtual_cell_challenge'] = 'virtual_cell_challenge',
     **kwargs
 ):
@@ -208,6 +243,9 @@ def rank_score(
         DEPRECATED: only difference is whether individual rank denominator is subtracted by 1
         whether to use the scoring based on the description in PerturBench (https://arxiv.org/html/2408.10609v3)
         or Virtual Cell Challenge (https://virtualcellchallenge.org/evaluation). Should be very similar.
+    latent_model : 
+        by default None
+        if not None, this will map the feature space to the latent space using this model by calling the `.transform` method 
     **kwargs
         key word arguments to pass to `sklearn.metrics.pairwise_distances`
         
@@ -230,14 +268,21 @@ def rank_score(
     psuedobulked_perts_actual = sc.get.aggregate(tf_adata_actual, by = pert_col, axis = 0, func = 'mean')
     psuedobulked_perts_predicted = sc.get.aggregate(tf_adata_predicted, by = pert_col, axis = 0, func = 'mean')
 
+    if latent_model is None:
+        X_actual = psuedobulked_perts_actual.layers['mean']
+        X_predicted = psuedobulked_perts_predicted.layers['mean']
+    else:
+        X_actual = latent_model.transform(psuedobulked_perts_actual.layers['mean'])
+        X_predicted = latent_model.transform(psuedobulked_perts_predicted.layers['mean'])
+
     # get pairwise distances as in virtual cell challenge
     if distance_metric == 'rmse':
         raise ValueError("Consider whether this should be the `sklearn.metrics.root_mean_squared_error` (mean per sample) or `rmse` (global rmse) function")
         distance_metric = rmse
     
     distances = sklearn.metrics.pairwise_distances(
-        psuedobulked_perts_actual.layers['mean'],
-        psuedobulked_perts_predicted.layers['mean'],
+        X_actual,
+        X_predicted,
         metric=distance_metric, 
     #     **kwargs
     )
@@ -262,6 +307,3 @@ def rank_score(
     rank_score_average = sum(rank_scores.values())/len(rank_scores)
     
     return rank_score_average, rank_scores
-
-
-
