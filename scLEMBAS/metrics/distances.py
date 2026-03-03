@@ -296,7 +296,7 @@ def rank_score(
     for pred_pert in distances.columns:
         corresponding_distance = distances.loc[pred_pert, pred_pert] # self distance
 
-        all_distances = distances.loc[:, pred_pert]
+        all_distances = distances.loc[pred_pert, :] # compare to all other predictions
         pred_mask = (all_distances.index != pred_pert) # exclude self
         rank = (all_distances[pred_mask] <= corresponding_distance).sum()
 
