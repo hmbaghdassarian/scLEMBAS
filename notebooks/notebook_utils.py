@@ -5,6 +5,7 @@ warnings.filterwarnings(
     category=ImplicitModificationWarning
 )
 
+import copy
 import os
 import json
 from typing import Literal
@@ -248,3 +249,34 @@ def pb_y_pred(fold, author, baseline_type: Literal['RF', 'linear', 'mean'], tf_a
     assert assert_rows_equal_within_type2(y_pred_baseline_condition, atol = 1e-5, rtol = 1e-8), 'Condition baselines should be the same across perturbations'
     
     return y_pred_baseline_pert, y_pred_baseline_condition
+
+def load_test_tfadata(fold, author, merged_adatas, tf_adata):
+    """For a given fold, loads predicted and actual data (but not controls)."""
+    key = 'none_{}'.format(fold)
+    tf_adata_merged = merged_adatas[key].copy()
+
+    split = get_split(fold, author)
+    test_conds = split['test_conds']
+
+    test_cond_mask = tf_adata_merged.obs.condition.isin(test_conds)
+    tf_adata_test = tf_adata_merged[test_cond_mask,:].copy()
+    assert 'predicted_ctrl' not in tf_adata_test.obs.batch, 'Unexpected training predictions present'
+
+    predicted_mask = (tf_adata_test.obs.batch == 'predicted')
+
+    tf_adata_predicted = tf_adata_test[predicted_mask, :].copy()
+    tf_adata_actual = tf_adata_test[~predicted_mask, :].copy()
+    assert len(np.where(tf_adata.obs.condition.isin(test_conds))[0]) == tf_adata_actual.shape[0], 'Incorrect subsetting of actual data'
+
+    return tf_adata_actual, tf_adata_predicted
+
+
+def clear_adata(adata):
+    for k in copy.deepcopy(adata.obsm.keys()):
+        del adata.obsm[k]
+    for k in copy.deepcopy(adata.varm.keys()):
+        del adata.varm[k]
+    for k in copy.deepcopy(adata.obsp.keys()):
+        del adata.obsp[k]
+    
+    return adata
