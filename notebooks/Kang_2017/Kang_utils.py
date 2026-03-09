@@ -22,6 +22,7 @@ sclembas = '/home/hmbaghda/Projects/scLEMBAS'
 sys.path.insert(1, os.path.join(sclembas))
 from scLEMBAS import io
 from scLEMBAS import preprocess as pp 
+from scLEMBAS import latent_separation as ls
 from scLEMBAS.model.train import TrainSC
 from scLEMBAS.model.scl import SignalingModel
 
@@ -429,7 +430,14 @@ def initialize_mod_and_trainer(
     return mod, trainer
 
 
+class ProxyPCAMod:
+    def __init__(self, tf_adata_pca):
+        self.tf_adata_pca = tf_adata_pca
+    def transform(self, X):
+        return ls.project_to_pca(X, tf_adata_pca)
 
+tf_adata_pca = tf_adata.copy()
+pca_mod = ProxyPCAMod(tf_adata_pca)
 
 
 # def setup_prediction(mod, 

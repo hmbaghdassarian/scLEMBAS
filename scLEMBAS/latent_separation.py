@@ -245,6 +245,14 @@ def project_to_pca(X_new, adata):
     else:
         # Direct projection without centering
         X_pca = X_working @ loadings_working
+        
+    if 'pca' in adata.uns and 'pca_rank' in adata.uns['pca']:
+        pc_rank = adata.uns['pca']['pca_rank']
+        if pc_rank is not None:
+            if isinstance(X_pca, pd.DataFrame):
+                X_pca = X_pca.iloc[:, :pc_rank]
+            elif isinstance(X_pca, np.ndarray):
+                X_pca = X_pca[:, :pc_rank]
     
     return X_pca.astype(np.float32)
 

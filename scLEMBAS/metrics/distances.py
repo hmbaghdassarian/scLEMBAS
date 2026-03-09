@@ -5,12 +5,14 @@ from typing import Literal
 import pandas as pd
 import scanpy as sc
 import numpy as np
+import anndata
 
 import sklearn
 from sklearn.metrics import root_mean_squared_error
 from scipy import stats
 
 from .. import utilities as utils
+from .. import latent_separation as ls
 
 from geomloss import SamplesLoss
 import torch
@@ -32,9 +34,13 @@ def psuedobulk_adata(adata, groupby_col, embedding_model = None):
     y = y.groupby(groupby_col, observed = True).mean()
     
     if embedding_model is not None:
-        y = pd.DataFrame(embedding_model.transform(y.values), 
-             index = y.index)
-    
+        if hasattr(embedding_model, 'transform'):
+            y = pd.DataFrame(embedding_model.transform(y.values), 
+                 index = y.index)
+        # pca projection with scanpy pca:
+        elif type(embedding_model) == dict and 'adata_pca' in embedding_model and type(embedding_model['adata_pca']) == type(embedding_model['adata_pca']) == anndata.AnnData:
+            y = ls.project_to_pca(y, embedding_model['adata_pca'])
+
     return y
 
 def get_rmse(tf_adata_actual, 
