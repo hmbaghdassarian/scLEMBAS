@@ -635,6 +635,10 @@ def calculate_pls_q2y(pls_model, X, y, n_folds=5, seed=888):
     following the PRESS definition:
 
         Q²Y = 1 - PRESS / SSY
+        
+    For multi-variate y, this returns a variance- weighted average across targets. If one target has many more
+    labels than the other, this may be biased. As a simple diagnostic compared to permutation, this should still suffice. 
+    #TODO: report the q2y per target for multi-variate why
 
     Parameters
     ----------
@@ -659,6 +663,8 @@ def calculate_pls_q2y(pls_model, X, y, n_folds=5, seed=888):
     q2y : float
         The Q²Y metric.
     """
+    #TODO: report the q2y per target for multi-variate why
+    
     rng = check_random_state(seed)
 
     # Ensure y is 2D
@@ -694,55 +700,44 @@ def calculate_pls_q2y(pls_model, X, y, n_folds=5, seed=888):
     return Q2Y
 
 
-def calculate_pls_accuracy(pls_model, X, y, n_folds=5, seed=888):
-    """
-    Compute model accuracy for a fitted PLSRegression model using K-fold CV, similar to Q2Y.
-
-    Parameters
-    ----------
-    pls_model : sklearn.cross_decomposition.PLSRegression
-        A fitted PLSRegression model. Only its hyperparameters are used;
-        the model is refit inside each fold.
-
-    X : array-like of shape (n_samples, n_features)
-        Predictor matrix.
-
-    y : array-like of shape (n_samples, n_classes)
-        One-hot encoded response matrix for PLS-DA.
-
-    n_folds : int, default=5
-        Number of CV folds.
-
-    seed : int, default=888
-        Random seed for reproducibility.
-
-    Returns
-    -------
-    accuracy : float
-        Mean cross-validated classification accuracy.
-    """
+def calculate_pls_accuracy(pls_model, X, y, enc_Y=None, n_folds=5, seed=888):
     rng = check_random_state(seed)
-
     kf = KFold(n_splits=n_folds, shuffle=True, random_state=seed)
-    
+
+    # Precompute split points if multivariate
+    if enc_Y is not None and len(enc_Y.categories_) > 1:
+        n_cats_per_target = [len(cats) for cats in enc_Y.categories_]
+        splits = np.cumsum(n_cats_per_target[:-1])
+    else:
+        splits = None
+
     accuracy = []
     for train_idx, test_idx in kf.split(X):
         X_train, X_test = X[train_idx], X[test_idx]
         y_train, y_test = y[train_idx], y[test_idx]
 
-        # Clone and fit model
         pls_cv = clone(pls_model)
         pls_cv.fit(X_train, y_train)
-
-        # Predict
         y_pred = pls_cv.predict(X_test)
-        
-        accuracy_cv = accuracy_score(np.argmax(y_test, axis = 1), np.argmax(y_pred, axis = 1))
-        accuracy.append(accuracy_cv)
+
+        if splits is None:
+            # Original univariate behaviour
+            acc = accuracy_score(np.argmax(y_test, axis=1), np.argmax(y_pred, axis=1))
+        else:
+            # Per-target argmax, correct only if ALL targets match
+            correct = np.ones(len(test_idx), dtype=bool)
+            for chunk_test, chunk_pred in zip(
+                np.split(y_test, splits, axis=1),
+                np.split(y_pred, splits, axis=1),
+            ):
+                correct &= np.argmax(chunk_test, axis=1) == np.argmax(chunk_pred, axis=1)
+            acc = correct.mean()
+
+        accuracy.append(acc)
 
     return np.mean(accuracy)
 
-def _single_pls_assess_perm(ir, pls_model, X, y, seed, n_folds, 
+def _single_pls_assess_perm(ir, pls_model, X, y, enc_Y, seed, n_folds, 
                  get_q2_pval, get_r2_pval, get_accuracy_pval):
 
     rng = check_random_state(seed + ir + 1)
@@ -767,6 +762,7 @@ def _single_pls_assess_perm(ir, pls_model, X, y, seed, n_folds,
     return q2, r2, acc
 
 def assess_pls_model(pls_model, X, y, 
+                     enc_Y = None, # only necessary for multi-variate y and to assess accuracy
                      n_perm: int = 100,
                      get_q2_pval: bool = True, 
                      get_r2_pval: bool = False, 
@@ -832,7 +828,7 @@ def assess_pls_model(pls_model, X, y,
 
     R2X, R2Y = calculate_pls_reconstruction_r2(pls_model, X, y)
     Q2Y = calculate_pls_q2y(pls_model, X, y, n_folds=n_folds, seed=seed)
-    accuracy = calculate_pls_accuracy(pls_model, X, y, n_folds=n_folds, seed=seed)
+    accuracy = calculate_pls_accuracy(pls_model, X, y, enc_Y, n_folds=n_folds, seed=seed)
     
     
     p_Q2Y = None
@@ -867,12 +863,12 @@ def assess_pls_model(pls_model, X, y,
                     
                 if get_accuracy_pval:
                     pls_perm_accuracy = clone(pls_model)
-                    accuracy_perm[ir] = calculate_pls_accuracy(pls_perm_accuracy, X, y_perm, n_folds=n_folds, seed=seed + ir + 1)
+                    accuracy_perm[ir] = calculate_pls_accuracy(pls_perm_accuracy, X, y_perm, enc_Y, n_folds=n_folds, seed=seed + ir + 1)
         else:
             with tqdm_joblib(tqdm(total=n_perm, desc="PLS Assessment Permutations")):
                 results = Parallel(n_jobs=n_cores, backend="loky")(
                     delayed(_single_pls_assess_perm)(
-                        ir, pls_model, X, y, seed, n_folds,
+                        ir, pls_model, X, y, enc_Y, seed, n_folds,
                         get_q2_pval, get_r2_pval, get_accuracy_pval
                     )
                     for ir in range(n_perm)
@@ -894,7 +890,8 @@ def assess_pls_model(pls_model, X, y,
 
 
 def select_pls_components(
-    pls_model, X, y,
+    pls_model, X, y, 
+    enc_Y = None, # only necessary for multi-variate y and to assess accuracy
     max_components: int = 25,
     metric: Literal['Q2Y', 'R2Y', 'accuracy'] = 'accuracy', 
     method: Literal['maximize', 'elbow'] = 'elbow', 
@@ -952,7 +949,7 @@ def select_pls_components(
             if metric == 'Q2Y':
                 metric_per_rank[r-1] = calculate_pls_q2y(pls_model_ranking, X, y, n_folds=n_folds, seed=seed)
             elif metric == 'accuracy':
-                metric_per_rank[r-1] = calculate_pls_accuracy(pls_model_ranking, X, y, n_folds=n_folds, seed=seed)
+                metric_per_rank[r-1] = calculate_pls_accuracy(pls_model_ranking, X, y, enc_Y, n_folds=n_folds, seed=seed)
 
     # get the non-zero_indexed rank 
     if method == 'elbow':
@@ -988,7 +985,7 @@ def pls_da(
     assess: bool = True,
     enc_X = None,
     enc_Y = None,
-    separate_by: Literal['perturbation', 'category'] = 'perturbation',
+    separate_by: Literal['perturbation', 'category', 'interaction', 'both'] = 'perturbation',
     pert_col: str = 'drug',
     cat_col: str = 'cell_line', 
     pls_kwargs = None, 
@@ -1019,7 +1016,15 @@ def pls_da(
         fit model for y encoding. If not provided (when fitting on actual data) will fit an encoding.
         If provided (when projecting predicted data), will use the fit encoding to transform the input. 
     separate_by : Literal[perturbation, category], optional
-        whether to fit the PLS model to separate by the `pert_col` ('perturbation') or `cat_col` ('categorical), by default 'perturbation'
+        response label to separate by in PLS-DA
+            - 'perturbation': separates by `pert_col`
+            - 'categorical': separates by `cat_col`
+            - 'interaction': separates by the concatenation of `pert_col` and `cat_col`
+            - 'both': uses a multivariate response Y with each of 'pert_col' and 'cat_col'
+                      *Note: sklearn's PLSRegression treats all Y columns as a flat set of targets (PLS2-like
+                      deflation but without structural awareness of target grouping). This differs from a true
+                      PLS2 implementation. May be beneficial when the cat × pert combination space is sparse,
+                      as marginal signals reinforce each other across combinations.
     pert_col: str, optional
         specifies the label of the perturbation column in the metadata
     cat_col: str, optional
@@ -1057,9 +1062,15 @@ def pls_da(
         y = adata.obs[pert_col].astype(str).values.reshape(-1,1)
     elif separate_by == 'category':
         y = adata.obs[cat_col].astype(str).values.reshape(-1,1)
-
+    elif separate_by == 'interaction':
+        y = (
+            adata.obs[cat_col].astype(str) + '^' + adata.obs[pert_col].astype(str)
+        ).values.reshape(-1, 1)
+    elif separate_by == 'both':
+        y = adata.obs[[cat_col, pert_col]].astype(str).values
+        
     if enc_Y is None:
-        enc_Y = OneHotEncoder(sparse_output=False, drop=None)
+        enc_Y = OneHotEncoder(sparse_output=False, drop=None) # TODO: drop = 'if_binary' if separate_by != 'both' else None is better but NIPALS handles multi-collinearity well 
         enc_Y.fit(y)
     y_encoded = enc_Y.transform(y)
 
@@ -1074,7 +1085,7 @@ def pls_da(
         component_selection_kwargs = {**default_pls_component_selection_kwargs, **component_selection_kwargs}
         n_components, metric_per_component = select_pls_components(
             pls_model = PLSRegression(**pls_kwargs), 
-            X = X, y = y_encoded,
+            X = X, y = y_encoded, enc_Y = enc_Y,
             verbose = verbose,
             **component_selection_kwargs
         )
@@ -1093,7 +1104,7 @@ def pls_da(
 
         assessment_kwargs = {**default_pls_assessment_kwargs, **assessment_kwargs}
         R2X, R2Y, Q2Y, accuracy, p_R2Y, p_Q2Y, p_accuracy = assess_pls_model(
-            pls_model, X, y_encoded, 
+            pls_model, X, y_encoded, enc_Y, 
             n_cores = n_cores,
             **assessment_kwargs
         )
@@ -1129,7 +1140,6 @@ def manual_pls_projections(pls_model, X):
     
     return T_manual
 
-
 def compute_vip(pls_model):
     """
     Compute Variable Importance in Projection (VIP) scores for a fitted sklearn PLSRegression model.
@@ -1145,19 +1155,23 @@ def compute_vip(pls_model):
     vip_scores : np.ndarray of shape (n_features,)
         VIP score for each feature in X.
     """
-    T = pls_model.x_scores_      # (n_samples, n_components)
-    W = pls_model.x_weights_     # (n_features, n_components)
-    Q = pls_model.y_loadings_    # (n_targets, n_components)
+    from sklearn.utils.validation import check_is_fitted
+    check_is_fitted(pls_model)
 
-    # Compute sum of squares of Y explained by each component (across all targets)
-    ssy = np.sum(np.sum((T ** 2), axis=0) * np.sum((Q ** 2), axis=0))  # scalar total
-    ssy_per_comp = np.sum((T ** 2), axis=0) * np.sum((Q ** 2), axis=0)  # per-component
-    
-    p = W.shape[0]  # number of predictors
-    
-    # Compute VIP scores
-    vip = np.sqrt(p * np.sum(ssy_per_comp * (W ** 2) / np.sum(W ** 2, axis=0), axis=1) / ssy)
-    
+    T = pls_model.x_scores_    # (n_samples, n_components)
+    W = pls_model.x_weights_   # (n_features, n_components)
+    Q = pls_model.y_loadings_  # (n_targets, n_components)
+
+    p = W.shape[0]
+
+    # Variance in Y explained per component (summed over targets)
+    ss_per_comp = (T ** 2).sum(axis=0) * (Q ** 2).sum(axis=0)  # (n_components,)
+
+    # Normalized weight contribution per feature per component
+    W_norm_sq = W ** 2 / (W ** 2).sum(axis=0)  # (n_features, n_components)
+
+    vip = np.sqrt(p * (W_norm_sq @ ss_per_comp) / ss_per_comp.sum())
+
     return vip
 
 
