@@ -27,6 +27,7 @@ class SignalingModel(torch.nn.Module):
                  bionet_params: Dict[str, float] = None, 
                  activation_function: str='MML',                 
                  dtype: torch.dtype=torch.float32, device: str = 'cpu', seed: int = 888,
+                _num_self_prune_edges: Optional[int] = None,
                 rand_y_features: bool = False,
                 rand_y_samples: bool = False
                 ):
@@ -97,6 +98,9 @@ class SignalingModel(torch.nn.Module):
             whether to use gpu ("cuda") or cpu ("cpu"), by default "cpu"
         seed : int
             random seed for torch and numpy operations, by default 888
+        _num_self_prune_edges : Optional[int]
+            if not None or 0, adds `self_prune_edges` stochastic edges to the network, by default None
+            mainly for internal use, to test for ability of model to self prune
         rand_y_features : bool
             if True, won't reorder the output feature labels alphabetically as is standardly done, allows for testing against baseline random models when True, by default False
         rand_y_samples : bool
@@ -139,6 +143,7 @@ class SignalingModel(torch.nn.Module):
                                                 n_network_nodes = len(self.node_idx_map), 
                                                 bionet_params = bionet_params, 
                                                 activation_function = activation_function, 
+                                                _num_self_prune_edges = _num_self_prune_edges,
                                                 dtype = self.dtype, device = self.device, seed = self.seed)
         else:
             if self.expr is None:
@@ -150,7 +155,8 @@ class SignalingModel(torch.nn.Module):
                                                    activation_function = activation_function, 
                                                    covariates = covariates, 
                                                    categorical_covariate_keys = categorical_covariate_keys, 
-                                                   dtype = self.dtype, device = self.device, seed = self.seed)
+                                                   _num_self_prune_edges = _num_self_prune_edges,
+                                                   dtype = self.dtype, device = self.device, seed = self.seed) # EDIT
             else:
                 self.signaling_network = BioNetSC(edge_list = edge_list, 
                                                   edge_MOA = edge_MOA,
@@ -161,6 +167,7 @@ class SignalingModel(torch.nn.Module):
                                                   activation_function = activation_function, 
                                                   covariates = covariates, 
                                                   categorical_covariate_keys = categorical_covariate_keys, 
+                                                  _num_self_prune_edges = _num_self_prune_edges,
                                                   dtype = self.dtype, device = self.device, seed = self.seed)
                 
         self.output_layer = ProjectOutput(node_idx_map = self.node_idx_map, 

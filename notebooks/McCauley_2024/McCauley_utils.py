@@ -123,6 +123,7 @@ def initialize_mod_and_trainer(
     fold: int, 
     adversarial_penalty: bool = True, 
     randomize: bool = False, 
+    num_stochastic_edges: int = None,
     seed: int = 888):
     """_summary_
 
@@ -136,6 +137,8 @@ def initialize_mod_and_trainer(
     randomize : bool, optional
         whether to permute the features, by default False
         if True, creates a random baseline model
+    num_stochastic_edges : int
+        whether to add stochastic edges to the network
     seed : int, optional
         the seed to use for initialization and training, by default 888
     """
@@ -431,6 +434,7 @@ def initialize_mod_and_trainer(
         projection_amplitude_out = projection_amplitude_out,
         weight_label = weight_label, source_label = source_label, target_label = target_label,
         bionet_params = bionet_params, 
+        _num_self_prune_edges = num_stochastic_edges,
         dtype = torch.float32, device = device, seed = seed)
 
     mod.input_layer.weights.requires_grad = False # don't learn scaling factors for the ligand input concentrations

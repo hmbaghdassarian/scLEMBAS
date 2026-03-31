@@ -22,7 +22,6 @@ from .activation_functions import activation_function_map
 from .model_components import GaussianVariationalEncoder
 from ..utilities import set_seeds
 
-
 class BioNetBase(nn.Module):
     """Builds the RNN on the signaling network topology."""
     
@@ -34,9 +33,11 @@ class BioNetBase(nn.Module):
                  n_network_nodes: int, 
                  activation_function: str = 'MML', 
                  bionet_params: Optional[Dict[str, float]] = None, 
+                 _num_self_prune_edges: Optional[int] = None,
                  dtype: torch.dtype=torch.float32, 
                 device: str = 'cpu', 
-                seed: int = 888):
+                seed: int = 888,
+                ):
         """Initialization method.
 
         Parameters
@@ -63,6 +64,9 @@ class BioNetBase(nn.Module):
                 - 'MML': Michaelis-Menten-like
                 - 'leaky_relu': Leaky ReLU
                 - 'sigmoid': sigmoid 
+        _num_self_prune_edges : bool, optional
+            if not None or 0, adds `self_prune_edges` stochastic edges to the network, by default None
+            mainly for internal use, to test for ability of model to self prune
         dtype : torch.dtype, optional
            datatype to store values in torch, by default torch.float32
         device : str
@@ -94,6 +98,13 @@ class BioNetBase(nn.Module):
         self.edge_list = (np_to_torch(edge_list[0,:], dtype = torch.int32, device = 'cpu'), 
                           np_to_torch(edge_list[1,:], dtype = torch.int32, device = 'cpu'))
         self.edge_MOA = np_to_torch(edge_MOA, dtype=torch.bool, device = self.device)
+        
+        # self pruning
+        self.added_edges = None
+        self.edge_real_edges = None
+        self._num_self_prune_edges = _num_self_prune_edges
+        if self._num_self_prune_edges is not None and self._num_self_prune_edges > 0:
+            self.add_preferential_edges()
 
         # initialize weights and biases
         self.initialize_weights()
@@ -102,7 +113,7 @@ class BioNetBase(nn.Module):
         self.activation = activation_function_map[self.activation_function]['activation']
         self.delta = activation_function_map[self.activation_function]['delta']
         self.onestepdelta_activation_factor = activation_function_map[self.activation_function]['onestepdelta']
-        
+
 #     def get_device(self):
 #         if self.device == 'cuda':
 #             device = next(self.parameters()).device
@@ -335,6 +346,104 @@ class BioNetBase(nn.Module):
     
         return SS_deviation, aprox_spectral_radius
     
+    def add_preferential_edges(self):
+        """
+        Add stochastic edges to the current edge list using preferential attachment and extend MOA labels.
+
+        This method samples new directed edges between nodes with probability proportional
+        to their total degree (in-degree + out-degree).
+        New edges are added in-place to `self.edge_list`, avoiding self-loops
+        and duplicates relative to the existing graph.
+
+        In addition, mechanism-of-action (MOA) labels for the newly added edges are
+        constructed by randomly sampling (with replacement) from the MOA labels of
+        existing edges, ensuring alignment between the augmented edge set and its
+        associated metadata.
+
+        Updates
+        -------
+        self.edge_real_edges : Tuple[torch.Tensor, torch.Tensor]
+            Snapshot of the original edge list prior to augmentation.
+
+        self.added_edges : Tuple[torch.Tensor, torch.Tensor]
+            Newly added edges of shape (num_new_edges,).
+
+        self.edge_list : Tuple[torch.Tensor, torch.Tensor]
+            Updated edge list including both original and newly added edges.
+
+        self.edge_MOA : torch.Tensor
+            Updated MOA matrix with additional columns corresponding to the new edges.
+
+        Notes
+        -----
+        - The number of edges added is determined by `self._num_self_prune_edges`.
+        - Node sampling is degree-weighted (not uniform).
+        - A small constant is added to degrees to avoid zero-probability nodes.
+        - The method enforces:
+            * no self-loops (s != t)
+            * no duplicate edges relative to the existing edge set
+        """
+        self.edge_real_edges = self.edge_list 
+        src, dst = self.edge_list
+
+        num_nodes = int(torch.max(torch.cat([src, dst])).item()) + 1
+
+        deg = torch.zeros(num_nodes, dtype=src.dtype, device = src.device)
+        deg.scatter_add_(0, src, torch.ones_like(src, dtype=src.dtype))
+        deg.scatter_add_(0, dst, torch.ones_like(dst, dtype=src.dtype))
+
+        probs = deg + 1e-6
+        probs = probs / probs.sum()
+
+        existing = set(zip(src.cpu().tolist(), dst.cpu().tolist()))
+
+        new_src, new_dst = [], []
+
+        gen_src = torch.Generator(device=src.device)
+        gen_moa = torch.Generator(device=self.device)
+        if self.seed is not None:
+            gen_src.manual_seed(self.seed)
+            gen_moa.manual_seed(self.seed)
+
+        max_new_edges = num_nodes * (num_nodes - 1) - len(existing)
+        if self._num_self_prune_edges > max_new_edges:
+            raise ValueError('Too many pruning edges')
+
+        while len(new_src) < self._num_self_prune_edges :
+            s = torch.multinomial(probs, 1, generator=gen_src).item()
+            t = torch.multinomial(probs, 1, generator=gen_src).item()
+
+            if s == t:
+                continue
+            if (s, t) in existing:
+                continue
+
+            existing.add((s, t))
+            new_src.append(s)
+            new_dst.append(t)
+    
+        new_src = torch.tensor(new_src, device = src.device, dtype = src.dtype)
+        new_dst = torch.tensor(new_dst, device = dst.device, dtype = src.dtype)
+
+        self.added_edges = (new_src,new_dst)
+        self.edge_list = (
+            torch.cat([self.edge_list[0], new_src]),
+            torch.cat([self.edge_list[1], new_dst])
+        )
+
+        # ---- add num_self_prune_edges realistic MOA edges ----
+        num_edges = self.edge_real_edges[0].shape[0]
+        idx = torch.randint(
+            0, num_edges,
+            (self._num_self_prune_edges,),
+            device=self.device,
+            generator=gen_moa
+        )
+
+        # append corresponding MOA labels (copy from sampled edges)
+        extra_moa = self.edge_MOA[:,idx]
+        self.edge_MOA = torch.cat([self.edge_MOA, extra_moa], dim=1)
+    
 
 class BioNetSimple(BioNetBase):
     """Builds the RNN on the signaling network topology for bulk data with no categorical covariates."""
@@ -345,13 +454,16 @@ class BioNetSimple(BioNetBase):
                  n_network_nodes: int, 
                  activation_function: str = 'MML', 
                  bionet_params: Optional[Dict[str, float]] = None, 
+                 _num_self_prune_edges: Optional[int] = None,
                  dtype: torch.dtype=torch.float32, 
                 device: str = 'cpu', 
                 seed: int = 888):
         """See BioNetBase for details."""
         super().__init__(edge_list = edge_list, edge_MOA = edge_MOA, input_node_idx = input_node_idx, 
                      n_network_nodes = n_network_nodes, activation_function = activation_function, 
-                     bionet_params = bionet_params, dtype = dtype, device = device, seed = seed)
+                     bionet_params = bionet_params, 
+                     _num_self_prune_edges = _num_self_prune_edges,
+                     dtype = dtype, device = device, seed = seed)
         self.make_mask()
 
     def initialize_weight_values(self):
@@ -510,14 +622,18 @@ class BioNetCat(BioNetBase):
                  categorical_covariate_keys: List[str],
                  activation_function: str = 'MML', 
                  bionet_params: Optional[Dict[str, float]] = None, 
+                 _num_self_prune_edges: Optional[int] = None,
                  dtype: torch.dtype=torch.float32, 
                 device: str = 'cpu', 
-                seed: int = 888):    
+                seed: int = 888,
+                ):    
         
         # embed covariates needed for some methods called in super().__init__
         super().__init__(edge_list = edge_list, edge_MOA = edge_MOA, input_node_idx = input_node_idx, 
                          n_network_nodes = n_network_nodes, activation_function = activation_function, 
-                         bionet_params = bionet_params, dtype = dtype, device = device, seed = seed)
+                         bionet_params = bionet_params, 
+                         _num_self_prune_edges = _num_self_prune_edges,
+                         dtype = dtype, device = device, seed = seed)
         self.covariates = covariates[categorical_covariate_keys]
         self.embed_covariates()
         self.make_mask()
@@ -839,15 +955,18 @@ class BioNetSC(BioNetCat):
                  categorical_covariate_keys: List[str],
                  activation_function: str = 'MML', 
                  bionet_params: Optional[Dict[str, float]] = None, 
+                 _num_self_prune_edges: Optional[int] = None,
                  dtype: torch.dtype=torch.float32, 
                 device: str = 'cpu', 
-                seed: int = 888):    
+                seed: int = 888,self_prune: bool = False):    
         
         # embed covariates needed for some methods called in super().__init__
         super().__init__(edge_list = edge_list, edge_MOA = edge_MOA, input_node_idx = input_node_idx, 
                          n_network_nodes = n_network_nodes, covariates = covariates, 
                          categorical_covariate_keys = categorical_covariate_keys, activation_function = activation_function, 
-                         bionet_params = bionet_params, dtype = dtype, device = device, seed = seed)
+                         bionet_params = bionet_params, 
+                         _num_self_prune_edges = _num_self_prune_edges,
+                         dtype = dtype, device = device, seed = seed)
 
         self.vae = GaussianVariationalEncoder(n_features = n_genes, 
                                    n_latent = self.n_network_nodes_in, 
