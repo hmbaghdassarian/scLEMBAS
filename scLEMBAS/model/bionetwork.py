@@ -383,7 +383,7 @@ class BioNetBase(nn.Module):
             * no self-loops (s != t)
             * no duplicate edges relative to the existing edge set
         """
-        self.edge_real_edges = self.edge_list 
+        self.edge_real_edges = (self.edge_list[0].clone(), self.edge_list[1].clone())
         src, dst = self.edge_list
 
         num_nodes = int(torch.max(torch.cat([src, dst])).item()) + 1

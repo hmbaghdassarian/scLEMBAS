@@ -48,10 +48,10 @@ os.environ["NUMEXPR_NUM_THREADS"] = str(1)
 # In[ ]:
 
 
-n_ensembles_per_seed = 4 # because one exists already 
+n_ensembles_per_seed = 9#4 # because one exists already 
 seed_multiplier = 21234
 
-fold = 3
+fold = 0
 # -------------------- SINGLE-CELL MODELS --------------------
 fn_base = os.path.join(data_path, 'processed', '{}_fold{}'.format(author, fold))
 

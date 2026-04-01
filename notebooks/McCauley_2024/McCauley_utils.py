@@ -124,6 +124,7 @@ def initialize_mod_and_trainer(
     adversarial_penalty: bool = True, 
     randomize: bool = False, 
     num_stochastic_edges: int = None,
+    bn_weights_lambda_L2: float = 1e-7,
     seed: int = 888):
     """_summary_
 
@@ -139,6 +140,9 @@ def initialize_mod_and_trainer(
         if True, creates a random baseline model
     num_stochastic_edges : int
         whether to add stochastic edges to the network
+    bn_weights_lambda_L2 : float, optional
+        L2 regularization strength for the signaling network weights, by default 1e-7
+        only alter for exploring self pruning behavior
     seed : int, optional
         the seed to use for initialization and training, by default 888
     """
@@ -213,7 +217,7 @@ def initialize_mod_and_trainer(
     regularization_params = {
         'input_lambda_L2': 0, # irrelevant because setting the requires grad to False
 
-        'bn_weights_lambda_L2': 1e-7,
+        'bn_weights_lambda_L2': bn_weights_lambda_L2, #1e-7,
         'moa_lambda_L1': 1e2,
         'uniform_lambda_L2': 0, #1e-7, 
         'uniform_min': -1/projection_amplitude_out,

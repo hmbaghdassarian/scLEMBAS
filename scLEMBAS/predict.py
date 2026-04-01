@@ -21,6 +21,7 @@ def setup_prediction(mod,
                      ctrl_pert: str, 
                      counterfactual: Literal['perturbation', 'category', None] = 'perturbation',
                      cat_counterfactual_map: dict = None,
+                     predict_from_pert: str = None, 
                      ):
     
     """Creates model inputs for running a prediction with counterfactuals
@@ -53,10 +54,16 @@ def setup_prediction(mod,
         a dictionary mapping each test condition to a  different cell line in 
         the train data that has the same perturbation from which to ask the 'category' counterfactual
         only needed when setting `counterfactual`  = 'category', by default None
+    predict_from_pert : str, optional
+        for instances where the training condition being predicted from is NOT the control perturbation
     """
 
     if counterfactual == 'category' and cat_counterfactual_map is None:
         raise ValueError('Need to specify a mapping from test to train cells for counterfactual across category')
+    if predict_from_pert is None:
+        predict_from_pert = ctrl_pert
+    elif counterfactual == 'category':
+        raise ValueError('Cannot predict from a perturbation for a categorical counterfactual')
         
     print('Set up inputs for prediction')
 
@@ -93,7 +100,7 @@ def setup_prediction(mod,
         ct, pert = cond.split('^')
 
         if counterfactual == 'perturbation': # predict test perturbation from ctrl pert of same cell line 
-            ctrl_cond = ct + '^' + ctrl_pert if not binary_pert else ct + '^' + rev_stim[pert]
+            ctrl_cond = ct + '^' + predict_from_pert if not binary_pert else ct + '^' + rev_stim[pert]
         elif counterfactual == 'category':
             ctrl_cond = cat_counterfactual_map[cond] + '^' + pert
         elif counterfactual == None: # no counterfactual, just predict the same thing
@@ -377,6 +384,7 @@ def get_prediction(
     max_cells = None, 
     return_full: bool = False, 
     stim_label_map: bool = None,
+    predict_from_pert: str = None,
 ):
     """Get prediction from a model given a counterfactual
 
@@ -425,6 +433,8 @@ def get_prediction(
         the max cells in a forward pass; for cuda memory, will break up into chunks
     return_full : bool, optional
         whether to return model output prior to ProjectOutput transformation (True) or after (False), by default False
+    predict_from_pert : str, optional
+        for instances where the training condition being predicted from is NOT the control perturbation, by default None
     """
     
     max_cells = np.inf if max_cells is None else max_cells
@@ -438,7 +448,8 @@ def get_prediction(
         pert_col = pert_col, 
         ctrl_pert = ctrl_pert, 
         counterfactual = counterfactual, 
-        cat_counterfactual_map = cat_counterfactual_map
+        cat_counterfactual_map = cat_counterfactual_map, 
+        predict_from_pert = predict_from_pert,
     )
 
     print('Get the predictions')
