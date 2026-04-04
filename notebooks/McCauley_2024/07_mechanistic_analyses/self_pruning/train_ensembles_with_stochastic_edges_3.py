@@ -55,7 +55,7 @@ seed_multiplier = 21234
 
 fold = 3
 # -------------------- SINGLE-CELL MODELS --------------------
-bn_weight_l2 = 1e-4
+bn_weight_l2 = 1e-1
 l2_string = '{:.0E}'.format(bn_weight_l2).replace('E-0', 'E-')
 fn_base = os.path.join(data_path, 'processed', 'pruning_ensembles', '{}_fold{}_l2{}'.format(author, fold, l2_string))
 
