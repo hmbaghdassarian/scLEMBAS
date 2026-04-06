@@ -96,6 +96,7 @@ class TrainBase:
                    'gradient_noise_scale': 1e-9}
     REGULARIZATION_PARAMS = {'input_lambda_L2': 0, # assuming frozen weights
                              'bn_weights_lambda_L2': 1e-6,  
+                             'bn_weights_lambda_L1': 0,
                              'output_weights_lambda_L2': 1e-6,
                              'output_bias_lambda_L2': 1e-6,
                              'moa_lambda_L1': 0.1, #'ligand_lambda_L2': 1e-5, 
@@ -1149,6 +1150,7 @@ class TrainSC(TrainBase):
                             'sn_param_reg_weights_kl_divergence',
                             'sn_param_reg_weights_L2_loss', 
                             'sn_param_reg_global_bias_L2_loss', 'sn_param_reg_cat_bias_L2_loss',
+                            'sn_param_reg_weights_L1_loss',
                             'sn_param_reg_global_bias_L1_loss', 'sn_param_reg_cat_bias_L1_loss', 'sn_param_reg_cat_bias_pert',
                             'output_param_reg_weights_loss', 'output_param_reg_bias_loss',
                             'vae_param_reg_loss', 'vae_grad_l2_norm', 'global_bias_kl_divergence',
@@ -1961,10 +1963,12 @@ class TrainSC(TrainBase):
                     cat_bias_lambda_L2=self.hyper_params['cat_bias_lambda_L2'],
                     output_weights_lambda_L2=self.hyper_params['output_weights_lambda_L2'],
                     output_bias_lambda_L2=self.hyper_params['output_bias_lambda_L2'])
-                sn_bias_l1_reg = self.mod.signaling_network.L1_reg_bias(
+                
+                sn_l1_reg = self.mod.signaling_network.L1_reg(
                     bias_global = torch.tensor(0) if not self._run_adv else bias_global,
                     global_bias_lambda_L1 = self.hyper_params['global_bias_lambda_L1'],
-                    cat_bias_lambda_L1 = self.hyper_params['cat_bias_lambda_L1']
+                    cat_bias_lambda_L1 = self.hyper_params['cat_bias_lambda_L1'], 
+                    weights_lambda_L1=self.hyper_params['bn_weights_lambda_L1'],
                 )
     #                 from collections import OrderedDict
     #                 sn_cat_bias_orthogonality_reg = OrderedDict({'cat_bias_orthogonality_loss': 0})
@@ -1978,7 +1982,7 @@ class TrainSC(TrainBase):
                     covariates_idx = covariates_idx_)
                 sn_cat_bias_pert_reg = self.cat_pert_regularizer()
                     
-                sn_param_reg = {**sn_param_reg, **sn_bias_l1_reg, **sn_cat_bias_pert_reg}
+                sn_param_reg = {**sn_param_reg, **sn_l1_reg, **sn_cat_bias_pert_reg}
                 param_reg = input_param_reg + sum(sn_param_reg.values()) + sum(output_param_reg.values())
                 vae_reg = torch.tensor(0.0)
                 if self._run_adv:

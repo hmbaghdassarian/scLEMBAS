@@ -1204,8 +1204,9 @@ class BioNetSC(BioNetCat):
         Y_full = X_new.T
         return Y_full, None, t
     
-    def L1_reg_bias(self, 
+    def L1_reg(self, 
                bias_global, 
+              weights_lambda_L1: Annotated[float, Ge(0)] = 0, 
               global_bias_lambda_L1: Annotated[float, Ge(0)] = 0, 
               cat_bias_lambda_L1: Annotated[float, Ge(0)] = 0):
         """Get the L1 regularization term for the bias parameters.
@@ -1223,6 +1224,7 @@ class BioNetSC(BioNetCat):
          : OrderedDict
             the regularization term
         """
+        weight_l1_loss = L1_reg(weights_lambda_L1, self.weights)
         # will not use biass loss since implementing KL divergence, however keep the input for consistency with other code
         # cat embeddings in the cat one are already normalized
         global_bias_loss = L1_reg(global_bias_lambda_L1, bias_global)
@@ -1233,7 +1235,7 @@ class BioNetSC(BioNetCat):
                 cat_bias_loss = cat_bias_loss + torch.sum(torch.abs(cat_embedding.weight.clone()))
             cat_bias_loss = cat_bias_loss*cat_bias_lambda_L1
         
-        return OrderedDict({'global_bias_L1_loss': global_bias_loss, 'cat_bias_L1_loss': cat_bias_loss})
+        return OrderedDict({'weight_L1_loss': weight_l1_loss, 'global_bias_L1_loss': global_bias_loss, 'cat_bias_L1_loss': cat_bias_loss})
 
     def L2_reg(self, 
                bias_global, 

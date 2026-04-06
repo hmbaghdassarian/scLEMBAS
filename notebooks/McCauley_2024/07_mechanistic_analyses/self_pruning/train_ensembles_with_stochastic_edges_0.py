@@ -54,27 +54,33 @@ n_ensembles_per_seed = 5
 seed_multiplier = 21234
 
 fold = 0
-# -------------------- SINGLE-CELL MODELS --------------------
-bn_weight_l2 = 1e-1
-l2_string = '{:.0E}'.format(bn_weight_l2).replace('E-0', 'E-')
-fn_base = os.path.join(data_path, 'processed', 'pruning_ensembles', '{}_fold{}_l2{}'.format(author, fold, l2_string))
+import itertools
+bn_weights_l1s = [
+    1e-7, 1e-5]
+bn_weight_l2 = 0
 
-def write_model(mod, trainer, ensemble_idx):
-    io.write_pickled_object(trainer, fn_base + '_pruning_trainer_actual_ensemble{}.pickle'.format(ensemble_idx))
-    torch.save(mod.state_dict(), fn_base + '_pruning_model_actual_ensemble{}.pt'.format(ensemble_idx))
-    del mod, trainer
-    utils.clear_memory()
+iterations_ = itertools.product(range(n_ensembles_per_seed), bn_weights_l1s)
+for (ensemble_idx, bn_weight_l1) in iterations_:
+    l1_string = '{:.0E}'.format(bn_weight_l1).replace('E-0', 'E-')
+    fn_base = os.path.join(data_path, 'processed', 'pruning_ensembles', '{}_fold{}_l20_l1{}'.format(author, fold, l1_string))
 
-for ensemble_idx in range(n_ensembles_per_seed):
-    curr_seed = seed + ensemble_idx + 1 + (seed_multiplier * ensemble_idx * fold)        
-    if os.path.isfile(fn_base + '_pruning_model_actual_ensemble{}.pt'.format(ensemble_idx)):
-        continue
-    mod, trainer = initialize_mod_and_trainer(
-        fold = fold, 
-        adversarial_penalty = True, 
-        randomize = False, 
-        num_stochastic_edges = num_stochastic_edges, 
-        bn_weights_lambda_L2 = bn_weight_l2,
-        seed = curr_seed)
-    mod = trainer.train_model(verbose = False)
-    write_model(mod, trainer, ensemble_idx = ensemble_idx)
+    def write_model(mod, trainer, ensemble_idx):
+        io.write_pickled_object(trainer, fn_base + '_pruning_trainer_actual_ensemble{}.pickle'.format(ensemble_idx))
+        torch.save(mod.state_dict(), fn_base + '_pruning_model_actual_ensemble{}.pt'.format(ensemble_idx))
+        del mod, trainer
+        utils.clear_memory()
+
+    for ensemble_idx in range(n_ensembles_per_seed):
+        curr_seed = seed + ensemble_idx + 1 + (seed_multiplier * ensemble_idx * fold)        
+        if os.path.isfile(fn_base + '_pruning_model_actual_ensemble{}.pt'.format(ensemble_idx)):
+            continue
+        mod, trainer = initialize_mod_and_trainer(
+            fold = fold, 
+            adversarial_penalty = True, 
+            randomize = False, 
+            num_stochastic_edges = num_stochastic_edges, 
+            bn_weights_lambda_L2 = bn_weight_l2, 
+            bn_weights_lambda_L1 = bn_weight_l1, # 0
+            seed = curr_seed)
+        mod = trainer.train_model(verbose = False)
+        write_model(mod, trainer, ensemble_idx = ensemble_idx)

@@ -125,6 +125,7 @@ def initialize_mod_and_trainer(
     randomize: bool = False, 
     num_stochastic_edges: int = None,
     bn_weights_lambda_L2: float = 1e-7,
+    bn_weights_lambda_L1: float = 0,
     seed: int = 888):
     """_summary_
 
@@ -143,6 +144,8 @@ def initialize_mod_and_trainer(
     bn_weights_lambda_L2 : float, optional
         L2 regularization strength for the signaling network weights, by default 1e-7
         only alter for exploring self pruning behavior
+    bn_weights_lambda_L1 : float, optional
+        same as L2 but for L1 regularization
     seed : int, optional
         the seed to use for initialization and training, by default 888
     """
@@ -218,6 +221,7 @@ def initialize_mod_and_trainer(
         'input_lambda_L2': 0, # irrelevant because setting the requires grad to False
 
         'bn_weights_lambda_L2': bn_weights_lambda_L2, #1e-7,
+        'bn_weights_lambda_L1': bn_weights_lambda_L1, #0,
         'moa_lambda_L1': 1e2,
         'uniform_lambda_L2': 0, #1e-7, 
         'uniform_min': -1/projection_amplitude_out,
