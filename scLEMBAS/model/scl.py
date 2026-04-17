@@ -189,7 +189,7 @@ class SignalingModel(torch.nn.Module):
         ----------
         net: pd.DataFrame
             signaling network adjacency list with the following columns:
-                - `weight_label`: whether the interaction is stimulating (1) or inhibiting (-1) or unknown (0). Exclude non-interacting (0)
+                - `weight_label`: whether the interaction is stimulating (1) or inhibiting (-1) or unknown (0.1). Exclude non-interacting (0)
                 nodes. 
                 - `source_label`: source node column name
                 - `target_label`: target node column name

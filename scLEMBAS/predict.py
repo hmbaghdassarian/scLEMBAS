@@ -96,6 +96,7 @@ def setup_prediction(mod,
     counterfactual_cond_map = {} # map from control to prediction
     
     # plates = []
+    predict_cells_from_all = []
     for cond in tqdm(sorted(iterable_conds)):
         ct, pert = cond.split('^')
 
@@ -115,6 +116,8 @@ def setup_prediction(mod,
         predict_cells_from = tf_adata[train_cells, :].obs.condition == ctrl_cond
         predict_cells_from = predict_cells_from[predict_cells_from].index.tolist()
         expr_in = mod.df_to_tensor(mod.expr.loc[predict_cells_from, :])  
+        
+        predict_cells_from_all += predict_cells_from
         # record the corresponding plate for running PLSR if needed
         # plates += tf_adata.obs.loc[predict_cells_from, 'plate'].tolist()
         
@@ -140,19 +143,19 @@ def setup_prediction(mod,
 
         utils.clear_memory()
 
-        # format metadata
-        obs = pd.DataFrame(full_covariates.detach().cpu().numpy())
-        obs.columns = [cat_col]
-        obs[cat_col] = obs[cat_col].map(cov_rev_map)
+    # format metadata
+    obs = pd.DataFrame(full_covariates.detach().cpu().numpy())
+    obs.columns = [cat_col]
+    obs[cat_col] = obs[cat_col].map(cov_rev_map)
 
-        pert_vals = pd.DataFrame(full_X.detach().cpu().numpy(), 
-                                columns = [i for i in pert_columns if i != ctrl_pert])
-        pert_vals.insert(ctrl_idx, ctrl_pert, 0.0)
-        obs[pert_col] = pert_vals.idxmax(axis=1)
+    pert_vals = pd.DataFrame(full_X.detach().cpu().numpy(), 
+                            columns = [i for i in pert_columns if i != ctrl_pert])
+    pert_vals.insert(ctrl_idx, ctrl_pert, 0.0)
+    obs[pert_col] = pert_vals.idxmax(axis=1)
 
-        # add in ctrl pertrubation
-        ctrl_cells = pert_vals[pert_vals.sum(axis = 1) == 0].index.tolist()
-        obs.loc[ctrl_cells, pert_col] = ctrl_pert
+    # add in ctrl pertrubation
+    ctrl_cells = pert_vals[pert_vals.sum(axis = 1) == 0].index.tolist()
+    obs.loc[ctrl_cells, pert_col] = ctrl_pert
         
     ################## sanity check  ##################
     assert not set(torch.unique(full_X.sum(axis = 1)).detach().cpu().numpy()).difference([0,1]), 'Combinatorial perturbations are present'
@@ -172,7 +175,6 @@ def setup_prediction(mod,
             obs[col] = pd.Categorical(obs[col], 
                              categories = tf_adata.obs[col].cat.categories)
             obs[col] = obs[col].cat.remove_unused_categories()
-
     unique_conds = sorted(obs.condition.unique())
 
     if counterfactual is not None:
@@ -181,6 +183,8 @@ def setup_prediction(mod,
     else:
         if unique_conds != sorted(train_conds):
             raise ValueError("Something went wrong in adding train conditions")
+    obs['vae_input_barcodes'] = predict_cells_from_all
+
 
     return full_expr, full_X, full_covariates, obs
 

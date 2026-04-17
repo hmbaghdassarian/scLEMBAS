@@ -123,9 +123,13 @@ def initialize_mod_and_trainer(
     fold: int, 
     adversarial_penalty: bool = True, 
     randomize: bool = False, 
+    
+    #### arguments for mechanistic exploration
     num_stochastic_edges: int = None,
     bn_weights_lambda_L2: float = 1e-7,
     bn_weights_lambda_L1: float = 0,
+    net = None,
+    ####
     seed: int = 888):
     """_summary_
 
@@ -146,11 +150,15 @@ def initialize_mod_and_trainer(
         only alter for exploring self pruning behavior
     bn_weights_lambda_L1 : float, optional
         same as L2 but for L1 regularization
+    net : 
+        if going to modify the input network prior to training, by default `sn_ppis` from `load_data()`
     seed : int, optional
         the seed to use for initialization and training, by default 888
     """
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    if net is None:
+        net = sn_ppis.copy()
 
     # ------------------------------------- BATCHES -------------------------------------
     
@@ -276,7 +284,7 @@ def initialize_mod_and_trainer(
     
     # building
     n_layers_vae = 3
-    n_nodes = len(set(sn_ppis[source_label].tolist() + sn_ppis[target_label].tolist()))
+    n_nodes = len(set(net[source_label].tolist() + net[target_label].tolist()))
     vae_n_hidden_nodes = list(np.round(np.linspace(adata.shape[1], n_nodes, n_layers_vae + 2)).astype(int)[1:-1])
 
     vae_mod_params = {
@@ -431,7 +439,7 @@ def initialize_mod_and_trainer(
 
     
     mod = SignalingModel(
-        net = sn_ppis,
+        net = net,
         X_in = X_in,
         y_out = y_out, 
         rand_y_features = randomize,
