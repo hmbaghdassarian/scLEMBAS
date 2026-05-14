@@ -26,4 +26,5 @@ dependencies:
   - pip:
     - cliffs-delta
     - geomloss
+    - tqdm-joblib
 prefix: /orcd/pool/005/hmbaghda/miniforge3/envs/scLEMBAS
