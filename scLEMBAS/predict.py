@@ -3,6 +3,7 @@
 from typing import Literal, List, Union 
 
 from tqdm import tqdm, trange
+import torch.testing
 
 import torch
 import pandas as pd
@@ -200,7 +201,8 @@ def run_prediction(
     pert_col: str,
     ctrl_pert: str = 'CTRL',
     return_full: bool = False, 
-    stim_label_map: dict = None
+    stim_label_map: dict = None, 
+    check_forward: bool = True, 
 ):
     """Gets the model prediction.
 
@@ -234,6 +236,8 @@ def run_prediction(
     stim_label_map : dict, optional
         will map `obs[pert_col]` labels using this map, if needed for congruence with `mod.node_idx_map`
         should basically always be None, special use case for Kang et al. 
+    check_forward : bool, optional
+        whether to check whether the forward pass matches the direct model one. can avoid for tolerance issues for quick-and-dirty passes
 
     Returns
     -------
@@ -347,15 +351,29 @@ def run_prediction(
         
         utils.clear_memory()
 
-    if remove_type == ['none']:
-        consistent_forward = True
+#     if remove_type == ['none']:
+#         consistent_forward = True
+#         y_predicted_, Y_full_, biases_ = mod(X_in, covariates_idx, expr)
+#         for tt_1, tt_2 in zip([y_predicted, Y_full, bias_global, bias_mu, bias_log_sigma_squared], 
+#                               [y_predicted_, Y_full_, *biases_]):
+#             if not torch.equal(tt_1, tt_2):
+#                 consistent_forward = False
+#         if not consistent_forward:
+#             raise ValueError('Prediction here does not match forward pass')
+#         del y_predicted_, Y_full_, biases_
+
+
+    if remove_type == ['none'] and check_forward:
         y_predicted_, Y_full_, biases_ = mod(X_in, covariates_idx, expr)
-        for tt_1, tt_2 in zip([y_predicted, Y_full, bias_global, bias_mu, bias_log_sigma_squared], 
-                              [y_predicted_, Y_full_, *biases_]):
-            if not torch.equal(tt_1, tt_2):
-                consistent_forward = False
-        if not consistent_forward:
-            raise ValueError('Prediction here does not match forward pass')
+        names = ['y_predicted', 'Y_full', 'bias_global', 'bias_mu', 'bias_log_sigma_squared']
+        for name, tt_1, tt_2 in zip(names,
+                                    [y_predicted, Y_full, bias_global, bias_mu, bias_log_sigma_squared],
+                                    [y_predicted_, Y_full_, *biases_]):
+            torch.testing.assert_close(
+                tt_1, tt_2,
+                rtol=1e-4, atol=1e-6,
+                msg=lambda m, name=name: f'Prediction here does not match forward pass [{name}]: {m}'
+            )
         del y_predicted_, Y_full_, biases_
 
     y_predicted = pd.DataFrame(y_predicted.detach().cpu().numpy())
@@ -389,6 +407,7 @@ def get_prediction(
     return_full: bool = False, 
     stim_label_map: bool = None,
     predict_from_pert: str = None,
+    check_forward: bool = True
 ):
     """Get prediction from a model given a counterfactual
 
@@ -468,7 +487,7 @@ def get_prediction(
                              pert_col = pert_col,
                              ctrl_pert = ctrl_pert,
                             return_full = return_full, 
-                             stim_label_map = stim_label_map
+                             stim_label_map = stim_label_map, check_forward = check_forward
                             )
 
     else:
@@ -491,7 +510,7 @@ def get_prediction(
                                  covariates_idx_chunks[chunk_idx], 
                                  expr_chunks[chunk_idx], 
                                 obs.loc[obs_chunks[chunk_idx], :], 
-                                 pert_col, ctrl_pert, return_full, stim_label_map)
+                                 pert_col, ctrl_pert, return_full, stim_label_map, check_forward)
             res.append(res_)
 
         if not return_bias:
