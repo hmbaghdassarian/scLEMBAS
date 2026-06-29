@@ -27,4 +27,5 @@ dependencies:
     - cliffs-delta
     - geomloss
     - tqdm-joblib
+    - scperturb
 prefix: /orcd/pool/005/hmbaghda/miniforge3/envs/scLEMBAS
