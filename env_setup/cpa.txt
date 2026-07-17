@@ -1,1 +1,0 @@
-mamba install -y conda-forge::lightning conda-forge::pandas conda-forge::scvi-tools">=0.20.3,<1.0.0" conda-forge::seaborn conda-forge::adjusttext conda-forge::scanpy conda-forge::ipykernel

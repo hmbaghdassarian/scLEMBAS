@@ -1,5 +1,6 @@
-# python setup.py develop
-# python setup.py install
+# Install from the repository root with:
+#   pip install .            (regular install)
+#   pip install -e .         (editable / development install)
 from setuptools import setup
 from setuptools import find_packages
 
@@ -26,26 +27,43 @@ LICENSE = 'MIT'
 VERSION = '0.1.0'
 ISRELEASED = False
 
-# PYTHON_MIN_VERSION = '3.8'
-# PYTHON_MAX_VERSION = '3.9'
-# PYTHON_REQUIRES = f'>={PYTHON_MIN_VERSION}, <={PYTHON_MAX_VERSION}'
+PYTHON_REQUIRES = '>=3.9'
 
+# Runtime dependencies. These mirror the packages actually imported by the
+# scLEMBAS source and are kept consistent with env_setup/env_main.yml.
+# NOTE: cuml (RAPIDS) is an optional GPU-only dependency imported lazily inside
+# scLEMBAS/_scanpy_umap.py; it is not pip-installable and is therefore omitted.
 INSTALL_REQUIRES = [
-    'pandas', # 1.4.0
-    'scikit-learn', # 2.2.0'
-    'plotnine', # 0.13.1
-    'leidenalg', # 0.10.2
     'torch>=2.1.0',
-    'annotated-types', 
-    # TODO
+    'numpy<2.0',
+    'scipy<1.13',
+    'numba<0.59',
+    'pandas',
+    'scikit-learn',
+    'scanpy',
+    'anndata',
+    'decoupler==1.5.0',
+    'omnipath',
+    'umap-learn',
+    'pynndescent',
+    'plotnine',
+    'seaborn',
+    'matplotlib',
+    'statsmodels',
+    'networkx',
+    'leidenalg',
+    'kneed',
+    'geomloss',
+    'cliffs-delta',
+    'tqdm',
+    'tqdm-joblib',
+    'joblib',
+    'annotated-types',
 ]
 
-EXTRAS_REQUIRES = {'interactive': ['jupyter', 'ipykerne']
-                  }
-
-PACKAGES = [
-    'scLEMBAS'
-]
+EXTRAS_REQUIRES = {
+    'interactive': ['jupyter', 'ipykernel'],
+}
 
 with open('README.md') as f:
     long_description = f.read()
@@ -59,13 +77,13 @@ metadata = dict(
     long_description_content_type="text/markdown",
     long_description=long_description,
     url='https://github.com/hmbaghdassarian/scLEMBAS',  # homepage
-    packages=find_packages(include=('LEMBAS*'), exclude=('*test*',)),  # PACKAGES
+    packages=find_packages(include=['scLEMBAS', 'scLEMBAS.*'], exclude=('*test*',)),
     project_urls={'Documentation': 'https://hmbaghdassarian.github.io/scLEMBAS/'},
-    # python_requires=PYTHON_REQUIRES,
+    python_requires=PYTHON_REQUIRES,
     install_requires=INSTALL_REQUIRES,
     extras_require=EXTRAS_REQUIRES,
     classifiers=classifiers,
-    license=LICENSE
+    license=LICENSE,
 )
 
 

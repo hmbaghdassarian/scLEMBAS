@@ -1,31 +1,49 @@
 name: scLEMBAS
 channels:
   - conda-forge
+  - bioconda
 dependencies:
   - python=3.11
-  - pytorch
-  - scanpy
   - pip
-  - leidenalg
-  - kneed
-  - omnipath
-  - ipykernel
-  - decoupler-py=1.5.0
+  - pytorch
+  # --- core scientific stack (pinned for compatibility) ---
   - numpy[version='<2.0']
   - numba[version='<0.59']
   - scipy[version='<1.13']
-  - conda-forge::annotated-types
-  - conda-forge::papermill
-  - nbconvert
-  - nbformat
-  - conda-forge::pooch
-  - conda-forge::fastparquet
+  - pandas
+  - scikit-learn
+  - statsmodels
+  # --- single-cell / bioinformatics ---
+  - scanpy
+  - anndata
+  - leidenalg
+  - umap-learn
+  - pynndescent
+  - decoupler-py=1.5.0
+  - omnipath
+  - kneed
   - conda-forge::pertpy
   - bioconda::gseapy
   - conda-forge::pygam
+  # --- plotting ---
+  - matplotlib
+  - seaborn
+  - plotnine
+  # --- utilities ---
+  - tqdm
+  - conda-forge::annotated-types
+  - conda-forge::pooch
+  - conda-forge::fastparquet
+  # --- notebooks / reporting ---
+  - ipykernel
+  - conda-forge::papermill
+  - nbconvert
+  - nbformat
   - pip:
     - cliffs-delta
     - geomloss
     - tqdm-joblib
     - scperturb
-prefix: /orcd/pool/005/hmbaghda/miniforge3/envs/scLEMBAS
+    # install scLEMBAS itself (run from the repository root:
+    #   conda env create -f env_setup/env_main.yml)
+    - .
