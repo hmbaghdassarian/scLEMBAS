@@ -44,6 +44,6 @@ dependencies:
     - geomloss
     - tqdm-joblib
     - scperturb
-    # install scLEMBAS itself (run from the repository root:
-    #   conda env create -f env_setup/env_main.yml)
-    - .
+# After creating the environment, install scLEMBAS itself from the repo root:
+#   conda activate scLEMBAS
+#   pip install .

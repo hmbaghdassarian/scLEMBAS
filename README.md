@@ -15,6 +15,7 @@ git clone https://github.com/hmbaghdassarian/scLEMBAS.git
 cd scLEMBAS
 conda env create -f env_setup/env_main.yml
 conda activate scLEMBAS
+pip install .
 ```
 
 Verify the install:
