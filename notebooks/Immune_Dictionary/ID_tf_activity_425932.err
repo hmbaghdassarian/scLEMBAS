@@ -1,26 +1,0 @@
-/nobackup/users/hmbaghda/Software/miniforge3/envs/scLEMBAS/lib/python3.11/site-packages/numpy/linalg/linalg.py:539: RuntimeWarning: overflow encountered in cast
-  return wrap(ainv.astype(result_t, copy=False))
-  0%|                                                                                              | 0/10 [00:00<?, ?it/s]  0%|                                                                                              | 0/10 [00:02<?, ?it/s]
-Traceback (most recent call last):
-  File "/home/hmbaghda/Projects/scLEMBAS/notebooks/Immune_Dictionary/01_TF_activity.py", line 256, in <module>
-    adata = get_tf_activity(adata, organism = 'mouse', grn = 'collectri', verbose = True,
-            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/hmbaghda/Projects/scLEMBAS/scLEMBAS/preprocess.py", line 102, in get_tf_activity
-    dc.decouple(mat=adata, net=net, source='source', target='target', weight='weight', consensus = consensus,
-  File "/nobackup/users/hmbaghda/Software/miniforge3/envs/scLEMBAS/lib/python3.11/site-packages/decoupler/decouple.py", line 141, in decouple
-    results = run_methods(mat, net, source, target, weight, methods, args, min_n, verbose, use_raw)
-              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/nobackup/users/hmbaghda/Software/miniforge3/envs/scLEMBAS/lib/python3.11/site-packages/decoupler/decouple.py", line 49, in run_methods
-    res = f(mat=mat, net=net, source=source, target=target, weight=weight, **a)
-          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/nobackup/users/hmbaghda/Software/miniforge3/envs/scLEMBAS/lib/python3.11/site-packages/decoupler/method_mlm.py", line 126, in run_mlm
-    estimate, pvals = mlm(m, net, batch_size=batch_size, verbose=verbose)
-                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/nobackup/users/hmbaghda/Software/miniforge3/envs/scLEMBAS/lib/python3.11/site-packages/decoupler/method_mlm.py", line 62, in mlm
-    es[srt:end] = fit_mlm(net, y, inv, df)[:, 1:]
-                  ^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/nobackup/users/hmbaghda/Software/miniforge3/envs/scLEMBAS/lib/python3.11/site-packages/decoupler/method_mlm.py", line 27, in fit_mlm
-    raise ValueError("""Couldn\'t fit a multivariate linear model. This can happen because there are more sources
-ValueError: Couldn't fit a multivariate linear model. This can happen because there are more sources
-        (covariates) than unique targets (samples), or because the network's matrix rank is smaller than the number of
-        sources.
