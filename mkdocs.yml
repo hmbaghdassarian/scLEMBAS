@@ -1,28 +1,52 @@
 site_name: scLEMBAS
-site_description: "This is a python package for mecahnistically modeling ligand responses at single-cell resolution."
+site_description: "Python package for mechanistically modeling ligand responses at single-cell resolution."
+site_url: https://hmbaghdassarian.github.io/scLEMBAS/
 
 repo_url: https://github.com/hmbaghdassarian/scLEMBAS
 repo_name: hmbaghdassarian/scLEMBAS
 
 theme: readthedocs
+
 plugins:
   - search
   - mkdocstrings:
       default_handler: python
       handlers:
         python:
-          selection:
-            docstring_style: "numpy"
-          rendering:
-            show_source: true
           options:
-            show_submodules: true
-  - mkdocs-jupyter
+            docstring_style: numpy
+            docstring_section_style: table
+            show_source: true
+            show_root_heading: true
+            show_root_full_path: false
+            show_if_no_docstring: false
+            members_order: source
+            filters:
+              - "!^_"
+            separate_signature: true
+            show_signature_annotations: true
+            signature_crossrefs: true
+            merge_init_into_class: true
+            heading_level: 3
+  - mkdocs-jupyter:
+      execute: false
+      include_source: true
+      ignore_h1_titles: true
 
 markdown_extensions:
-  - pymdownx.highlight
+  - admonition
+  - toc:
+      permalink: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
   - pymdownx.superfences
 
 nav:
   - "Home": index.md
+  - "Installation": installation.md
+  - "Tutorials":
+      - "Overview": tutorials/index.md
+      - "Kang et al. example": tutorials/Kang_example.ipynb
   - "API": api.md
