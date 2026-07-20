@@ -1,0 +1,10 @@
+# Documentation build dependencies.
+# Install alongside the package itself:
+#   pip install -r docs/requirements.txt
+#   pip install .
+mkdocs>=1.6,<2.0
+mkdocstrings>=0.26,<1.0
+mkdocstrings-python>=1.11,<2.0
+mkdocs-jupyter>=0.25,<1.0
+pymdown-extensions>=10.0
+
