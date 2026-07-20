@@ -22,3 +22,4 @@
 *.egg-info/
 build/
 dist/
+.cache/
