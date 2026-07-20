@@ -2,6 +2,8 @@
 
 scLEMBAS is a single-cell extension of LEMBAS ([ref 1](https://doi.org/10.1038/s41467-022-30684-y), [ref 2](https://doi.org/10.1101/2025.10.24.684155)), enabling context aware computational modeling of signaling pathway activity in response to perturbation.
 
+Associated data files can be found [here](https://zenodo.org/records/21419937). 
+
 ## Installation
 
 scLEMBAS requires Python >= 3.9. 
